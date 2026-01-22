@@ -8,11 +8,552 @@
 import SwiftUI
 import Combine
 import AVFoundation
+import StoreKit
+import Charts
+import UserNotifications
 
-// MARK: - Color Theme
+// MARK: - Persistence Manager
+
+class PersistenceManager {
+    static let shared = PersistenceManager()
+
+    private let defaults = UserDefaults.standard
+
+    // Keys
+    private let savedCardsKey = "savedCardIDs"
+    private let masteredCardsKey = "masteredCardIDs"
+    private let consecutiveCorrectKey = "consecutiveCorrect"
+    private let userCardsKey = "userCreatedCards"
+    private let studySetsKey = "studySets"
+    private let userStatsKey = "userStats"
+    private let spacedRepDataKey = "spacedRepetitionData"
+    private let isSubscribedKey = "isSubscribed"
+    private let selectedCategoriesKey = "selectedCategories"
+    private let cardNotesKey = "cardNotes"
+    private let flaggedCardsKey = "flaggedCardIDs"
+    private let testHistoryKey = "testHistory"
+    private let hasSeenOnboardingKey = "hasSeenOnboarding"
+
+    // MARK: - Onboarding
+
+    func hasSeenOnboarding() -> Bool {
+        return defaults.bool(forKey: hasSeenOnboardingKey)
+    }
+
+    func setOnboardingComplete() {
+        defaults.set(true, forKey: hasSeenOnboardingKey)
+    }
+
+    // MARK: - Save Methods
+
+    func saveSavedCards(_ ids: Set<UUID>) {
+        let array = ids.map { $0.uuidString }
+        defaults.set(array, forKey: savedCardsKey)
+    }
+
+    func saveMasteredCards(_ ids: Set<UUID>) {
+        let array = ids.map { $0.uuidString }
+        defaults.set(array, forKey: masteredCardsKey)
+    }
+
+    func saveConsecutiveCorrect(_ dict: [UUID: Int]) {
+        let stringDict = Dictionary(uniqueKeysWithValues: dict.map { ($0.key.uuidString, $0.value) })
+        defaults.set(stringDict, forKey: consecutiveCorrectKey)
+    }
+
+    func saveUserCards(_ cards: [Flashcard]) {
+        if let encoded = try? JSONEncoder().encode(cards) {
+            defaults.set(encoded, forKey: userCardsKey)
+        }
+    }
+
+    func saveStudySets(_ sets: [StudySet]) {
+        if let encoded = try? JSONEncoder().encode(sets) {
+            defaults.set(encoded, forKey: studySetsKey)
+        }
+    }
+
+    func saveUserStats(_ stats: UserStats) {
+        if let encoded = try? JSONEncoder().encode(stats) {
+            defaults.set(encoded, forKey: userStatsKey)
+        }
+    }
+
+    func saveSpacedRepData(_ data: [UUID: SpacedRepetitionData]) {
+        let stringDict = Dictionary(uniqueKeysWithValues: data.map { ($0.key.uuidString, $0.value) })
+        if let encoded = try? JSONEncoder().encode(stringDict) {
+            defaults.set(encoded, forKey: spacedRepDataKey)
+        }
+    }
+
+    func saveSubscriptionStatus(_ isSubscribed: Bool) {
+        defaults.set(isSubscribed, forKey: isSubscribedKey)
+    }
+
+    func saveSelectedCategories(_ categories: Set<ContentCategory>) {
+        let array = categories.map { $0.rawValue }
+        defaults.set(array, forKey: selectedCategoriesKey)
+    }
+
+    func saveCardNotes(_ notes: [UUID: CardNote]) {
+        let stringDict = Dictionary(uniqueKeysWithValues: notes.map { ($0.key.uuidString, $0.value) })
+        if let encoded = try? JSONEncoder().encode(stringDict) {
+            defaults.set(encoded, forKey: cardNotesKey)
+        }
+    }
+
+    func saveFlaggedCards(_ ids: Set<UUID>) {
+        let array = ids.map { $0.uuidString }
+        defaults.set(array, forKey: flaggedCardsKey)
+    }
+
+    func saveTestHistory(_ history: [TestResult]) {
+        if let encoded = try? JSONEncoder().encode(history) {
+            defaults.set(encoded, forKey: testHistoryKey)
+        }
+    }
+
+    // MARK: - Load Methods
+
+    func loadSavedCards() -> Set<UUID> {
+        guard let array = defaults.stringArray(forKey: savedCardsKey) else { return [] }
+        return Set(array.compactMap { UUID(uuidString: $0) })
+    }
+
+    func loadMasteredCards() -> Set<UUID> {
+        guard let array = defaults.stringArray(forKey: masteredCardsKey) else { return [] }
+        return Set(array.compactMap { UUID(uuidString: $0) })
+    }
+
+    func loadConsecutiveCorrect() -> [UUID: Int] {
+        guard let stringDict = defaults.dictionary(forKey: consecutiveCorrectKey) as? [String: Int] else { return [:] }
+        return Dictionary(uniqueKeysWithValues: stringDict.compactMap { key, value in
+            guard let uuid = UUID(uuidString: key) else { return nil }
+            return (uuid, value)
+        })
+    }
+
+    func loadUserCards() -> [Flashcard] {
+        guard let data = defaults.data(forKey: userCardsKey),
+              let cards = try? JSONDecoder().decode([Flashcard].self, from: data) else { return [] }
+        return cards
+    }
+
+    func loadStudySets() -> [StudySet] {
+        guard let data = defaults.data(forKey: studySetsKey),
+              let sets = try? JSONDecoder().decode([StudySet].self, from: data) else { return [] }
+        return sets
+    }
+
+    func loadUserStats() -> UserStats {
+        guard let data = defaults.data(forKey: userStatsKey),
+              let stats = try? JSONDecoder().decode(UserStats.self, from: data) else { return UserStats() }
+        return stats
+    }
+
+    func loadSpacedRepData() -> [UUID: SpacedRepetitionData] {
+        guard let data = defaults.data(forKey: spacedRepDataKey),
+              let stringDict = try? JSONDecoder().decode([String: SpacedRepetitionData].self, from: data) else { return [:] }
+        return Dictionary(uniqueKeysWithValues: stringDict.compactMap { key, value in
+            guard let uuid = UUID(uuidString: key) else { return nil }
+            return (uuid, value)
+        })
+    }
+
+    func loadSubscriptionStatus() -> Bool {
+        return defaults.bool(forKey: isSubscribedKey)
+    }
+
+    func loadSelectedCategories() -> Set<ContentCategory> {
+        guard let array = defaults.stringArray(forKey: selectedCategoriesKey) else {
+            return Set(ContentCategory.allCases)
+        }
+        let categories = array.compactMap { ContentCategory(rawValue: $0) }
+        return categories.isEmpty ? Set(ContentCategory.allCases) : Set(categories)
+    }
+
+    func loadCardNotes() -> [UUID: CardNote] {
+        guard let data = defaults.data(forKey: cardNotesKey),
+              let stringDict = try? JSONDecoder().decode([String: CardNote].self, from: data) else { return [:] }
+        return Dictionary(uniqueKeysWithValues: stringDict.compactMap { key, value in
+            guard let uuid = UUID(uuidString: key) else { return nil }
+            return (uuid, value)
+        })
+    }
+
+    func loadFlaggedCards() -> Set<UUID> {
+        guard let array = defaults.stringArray(forKey: flaggedCardsKey) else { return [] }
+        return Set(array.compactMap { UUID(uuidString: $0) })
+    }
+
+    func loadTestHistory() -> [TestResult] {
+        guard let data = defaults.data(forKey: testHistoryKey),
+              let history = try? JSONDecoder().decode([TestResult].self, from: data) else { return [] }
+        return history
+    }
+}
+
+// MARK: - Test Result Model
+
+struct TestResult: Codable, Identifiable {
+    let id: UUID
+    let date: Date
+    let questionCount: Int
+    let correctCount: Int
+    let timeSpentSeconds: Int
+    let categoryBreakdown: [String: CategoryTestResult]
+    let answers: [TestAnswer]
+
+    var accuracy: Double {
+        guard questionCount > 0 else { return 0 }
+        return Double(correctCount) / Double(questionCount) * 100
+    }
+
+    init(questionCount: Int, correctCount: Int, timeSpentSeconds: Int, categoryBreakdown: [String: CategoryTestResult], answers: [TestAnswer]) {
+        self.id = UUID()
+        self.date = Date()
+        self.questionCount = questionCount
+        self.correctCount = correctCount
+        self.timeSpentSeconds = timeSpentSeconds
+        self.categoryBreakdown = categoryBreakdown
+        self.answers = answers
+    }
+}
+
+struct CategoryTestResult: Codable {
+    var correct: Int = 0
+    var total: Int = 0
+
+    var accuracy: Double {
+        guard total > 0 else { return 0 }
+        return Double(correct) / Double(total) * 100
+    }
+}
+
+struct TestAnswer: Codable, Identifiable {
+    let id: UUID
+    let cardID: UUID
+    let question: String
+    let correctAnswer: String
+    let selectedAnswer: String
+    let isCorrect: Bool
+    let rationale: String
+    let category: String
+
+    init(card: Flashcard, selectedAnswer: String, isCorrect: Bool) {
+        self.id = UUID()
+        self.cardID = card.id
+        self.question = card.question
+        self.correctAnswer = card.answer
+        self.selectedAnswer = selectedAnswer
+        self.isCorrect = isCorrect
+        self.rationale = card.rationale
+        self.category = card.contentCategory.rawValue
+    }
+}
+
+// MARK: - Spaced Repetition Data Model
+
+struct SpacedRepetitionData: Codable {
+    var easeFactor: Double = 2.5
+    var interval: Int = 0
+    var repetitions: Int = 0
+    var nextReviewDate: Date = Date()
+
+    // SM-2 Algorithm implementation
+    mutating func processResponse(quality: Int) {
+        // quality: 0-5 (0-2 = fail, 3-5 = pass)
+        if quality >= 3 {
+            // Correct response
+            if repetitions == 0 {
+                interval = 1
+            } else if repetitions == 1 {
+                interval = 6
+            } else {
+                interval = Int(Double(interval) * easeFactor)
+            }
+            repetitions += 1
+        } else {
+            // Incorrect response - reset
+            repetitions = 0
+            interval = 1
+        }
+
+        // Update ease factor
+        let newEF = easeFactor + (0.1 - Double(5 - quality) * (0.08 + Double(5 - quality) * 0.02))
+        easeFactor = max(1.3, newEF)
+
+        // Set next review date
+        nextReviewDate = Calendar.current.date(byAdding: .day, value: interval, to: Date()) ?? Date()
+    }
+
+    var isDue: Bool {
+        return Date() >= nextReviewDate
+    }
+
+    var daysUntilDue: Int {
+        let days = Calendar.current.dateComponents([.day], from: Date(), to: nextReviewDate).day ?? 0
+        return max(0, days)
+    }
+}
+
+// MARK: - Card Notes Model
+
+struct CardNote: Codable, Identifiable {
+    let id: UUID
+    let cardID: UUID
+    var note: String
+    let createdDate: Date
+    var modifiedDate: Date
+
+    init(id: UUID = UUID(), cardID: UUID, note: String) {
+        self.id = id
+        self.cardID = cardID
+        self.note = note
+        self.createdDate = Date()
+        self.modifiedDate = Date()
+    }
+}
+
+// MARK: - Achievement System
+
+enum AchievementType: String, Codable, CaseIterable {
+    case firstCard = "First Steps"
+    case tenCards = "Getting Started"
+    case fiftyCards = "Dedicated Learner"
+    case hundredCards = "Century Club"
+    case fiveHundredCards = "Card Master"
+    case firstMastered = "First Mastery"
+    case tenMastered = "Growing Strong"
+    case fiftyMastered = "Knowledge Builder"
+    case hundredMastered = "Expert Level"
+    case threeDayStreak = "On a Roll"
+    case sevenDayStreak = "Week Warrior"
+    case thirtyDayStreak = "Monthly Master"
+    case firstTest = "Test Taker"
+    case perfectTest = "Perfect Score"
+    case allCategories = "Well Rounded"
+
+    var icon: String {
+        switch self {
+        case .firstCard, .tenCards, .fiftyCards, .hundredCards, .fiveHundredCards:
+            return "square.stack.fill"
+        case .firstMastered, .tenMastered, .fiftyMastered, .hundredMastered:
+            return "star.fill"
+        case .threeDayStreak, .sevenDayStreak, .thirtyDayStreak:
+            return "flame.fill"
+        case .firstTest, .perfectTest:
+            return "doc.text.fill"
+        case .allCategories:
+            return "chart.pie.fill"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .firstCard: return "Study your first card"
+        case .tenCards: return "Study 10 cards"
+        case .fiftyCards: return "Study 50 cards"
+        case .hundredCards: return "Study 100 cards"
+        case .fiveHundredCards: return "Study 500 cards"
+        case .firstMastered: return "Master your first card"
+        case .tenMastered: return "Master 10 cards"
+        case .fiftyMastered: return "Master 50 cards"
+        case .hundredMastered: return "Master 100 cards"
+        case .threeDayStreak: return "3 day study streak"
+        case .sevenDayStreak: return "7 day study streak"
+        case .thirtyDayStreak: return "30 day study streak"
+        case .firstTest: return "Complete your first test"
+        case .perfectTest: return "Get 100% on a test"
+        case .allCategories: return "Study all categories"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .firstCard, .tenCards: return .mintGreen
+        case .fiftyCards, .hundredCards, .fiveHundredCards: return .softLavender
+        case .firstMastered, .tenMastered: return .pastelPink
+        case .fiftyMastered, .hundredMastered: return .coralPink
+        case .threeDayStreak: return .peachOrange
+        case .sevenDayStreak, .thirtyDayStreak: return .orange
+        case .firstTest, .perfectTest: return .skyBlue
+        case .allCategories: return .lavenderGreen
+        }
+    }
+}
+
+struct Achievement: Codable, Identifiable {
+    let id: UUID
+    let type: AchievementType
+    let unlockedDate: Date
+
+    init(type: AchievementType) {
+        self.id = UUID()
+        self.type = type
+        self.unlockedDate = Date()
+    }
+}
+
+// MARK: - Notification Manager
+
+class NotificationManager: ObservableObject {
+    static let shared = NotificationManager()
+    @Published var isAuthorized = false
+    @Published var reminderTime: Date = Calendar.current.date(from: DateComponents(hour: 9, minute: 0)) ?? Date()
+
+    private let reminderTimeKey = "studyReminderTime"
+    private let remindersEnabledKey = "studyRemindersEnabled"
+
+    init() {
+        loadSettings()
+        checkAuthorizationStatus()
+    }
+
+    func loadSettings() {
+        if let timeInterval = UserDefaults.standard.object(forKey: reminderTimeKey) as? TimeInterval {
+            reminderTime = Date(timeIntervalSince1970: timeInterval)
+        }
+    }
+
+    func saveSettings() {
+        UserDefaults.standard.set(reminderTime.timeIntervalSince1970, forKey: reminderTimeKey)
+    }
+
+    func checkAuthorizationStatus() {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            DispatchQueue.main.async {
+                self.isAuthorized = settings.authorizationStatus == .authorized
+            }
+        }
+    }
+
+    func requestAuthorization() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
+            DispatchQueue.main.async {
+                self.isAuthorized = granted
+                if granted {
+                    self.scheduleStudyReminder()
+                }
+            }
+        }
+    }
+
+    func scheduleStudyReminder() {
+        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
+
+        let content = UNMutableNotificationContent()
+        content.title = "Time to Study! 📚"
+        content.body = "Your NCLEX prep is waiting. Keep your streak going!"
+        content.sound = .default
+
+        let calendar = Calendar.current
+        let components = calendar.dateComponents([.hour, .minute], from: reminderTime)
+
+        let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
+        let request = UNNotificationRequest(identifier: "studyReminder", content: content, trigger: trigger)
+
+        UNUserNotificationCenter.current().add(request)
+        saveSettings()
+    }
+
+    func cancelReminders() {
+        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
+    }
+}
+
+// MARK: - Achievement Manager
+
+class AchievementManager: ObservableObject {
+    @Published var unlockedAchievements: [Achievement] = []
+    @Published var newAchievement: Achievement?
+
+    private let achievementsKey = "unlockedAchievements"
+
+    init() {
+        loadAchievements()
+    }
+
+    func loadAchievements() {
+        if let data = UserDefaults.standard.data(forKey: achievementsKey),
+           let achievements = try? JSONDecoder().decode([Achievement].self, from: data) {
+            unlockedAchievements = achievements
+        }
+    }
+
+    func saveAchievements() {
+        if let data = try? JSONEncoder().encode(unlockedAchievements) {
+            UserDefaults.standard.set(data, forKey: achievementsKey)
+        }
+    }
+
+    func hasAchievement(_ type: AchievementType) -> Bool {
+        unlockedAchievements.contains { $0.type == type }
+    }
+
+    func unlock(_ type: AchievementType) {
+        guard !hasAchievement(type) else { return }
+        let achievement = Achievement(type: type)
+        unlockedAchievements.append(achievement)
+        newAchievement = achievement
+        saveAchievements()
+
+        // Trigger app review prompt for achievements
+        ReviewManager.shared.recordAchievementUnlocked()
+    }
+
+    func checkAchievements(stats: UserStats, masteredCount: Int, categoriesStudied: Set<String>) {
+        // Cards studied achievements
+        if stats.totalCardsStudied >= 1 { unlock(.firstCard) }
+        if stats.totalCardsStudied >= 10 { unlock(.tenCards) }
+        if stats.totalCardsStudied >= 50 { unlock(.fiftyCards) }
+        if stats.totalCardsStudied >= 100 { unlock(.hundredCards) }
+        if stats.totalCardsStudied >= 500 { unlock(.fiveHundredCards) }
+
+        // Mastery achievements
+        if masteredCount >= 1 { unlock(.firstMastered) }
+        if masteredCount >= 10 { unlock(.tenMastered) }
+        if masteredCount >= 50 { unlock(.fiftyMastered) }
+        if masteredCount >= 100 { unlock(.hundredMastered) }
+
+        // Streak achievements
+        if stats.currentStreak >= 3 { unlock(.threeDayStreak) }
+        if stats.currentStreak >= 7 { unlock(.sevenDayStreak) }
+        if stats.currentStreak >= 30 { unlock(.thirtyDayStreak) }
+
+        // Category achievement
+        if categoriesStudied.count >= ContentCategory.allCases.count {
+            unlock(.allCategories)
+        }
+    }
+
+    func checkTestAchievements(isFirstTest: Bool, isPerfect: Bool) {
+        if isFirstTest { unlock(.firstTest) }
+        if isPerfect { unlock(.perfectTest) }
+    }
+}
+
+// MARK: - Color Theme (Dark Mode Adaptive)
 
 extension Color {
-    static let creamyBackground = Color(red: 255/255, green: 249/255, blue: 240/255)
+    // Adaptive colors using UIColor for dark mode support
+    static var creamyBackground: Color {
+        Color(UIColor { traitCollection in
+            traitCollection.userInterfaceStyle == .dark
+                ? UIColor(red: 28/255, green: 28/255, blue: 30/255, alpha: 1)
+                : UIColor(red: 255/255, green: 249/255, blue: 240/255, alpha: 1)
+        })
+    }
+
+    static var cardBackground: Color {
+        Color(UIColor { traitCollection in
+            traitCollection.userInterfaceStyle == .dark
+                ? UIColor(red: 44/255, green: 44/255, blue: 46/255, alpha: 1)
+                : UIColor.white
+        })
+    }
+
+    // Accent colors (these work in both modes)
     static let pastelPink = Color(red: 255/255, green: 183/255, blue: 178/255)
     static let mintGreen = Color(red: 181/255, green: 234/255, blue: 215/255)
     static let lavenderGreen = Color(red: 226/255, green: 240/255, blue: 203/255)
@@ -25,9 +566,11 @@ extension Color {
 // MARK: - Enums
 
 enum Screen {
+    case onboarding
     case menu
     case swipeGame
     case quizGame
+    case smartReview
     case matchGame
     case cardBrowser
     case createCard
@@ -41,14 +584,16 @@ enum Screen {
 enum GameMode: String, CaseIterable {
     case swipe = "Cozy Swipe"
     case quiz = "Bear Quiz"
+    case smartReview = "Smart Review"
     case match = "Cozy Match"
     case write = "Write Mode"
-    case test = "Test Mode"
+    case test = "Practice Test"
 
     var icon: String {
         switch self {
         case .swipe: return "hand.draw"
         case .quiz: return "questionmark.circle"
+        case .smartReview: return "brain.head.profile"
         case .match: return "square.grid.2x2"
         case .write: return "pencil.line"
         case .test: return "doc.text"
@@ -59,6 +604,7 @@ enum GameMode: String, CaseIterable {
         switch self {
         case .swipe: return "Tinder-style study"
         case .quiz: return "Multiple choice"
+        case .smartReview: return "Spaced repetition"
         case .match: return "Memory match"
         case .write: return "Type answers"
         case .test: return "Practice exam"
@@ -68,7 +614,7 @@ enum GameMode: String, CaseIterable {
     var isPaid: Bool {
         switch self {
         case .swipe, .quiz: return false
-        case .match, .write, .test: return true
+        case .match, .write, .test, .smartReview: return true
         }
     }
 }
@@ -196,6 +742,10 @@ struct Flashcard: Identifiable, Equatable, Codable {
     }
 
     var allAnswers: [String] {
+        wrongAnswers + [answer]
+    }
+
+    func shuffledAnswers() -> [String] {
         (wrongAnswers + [answer]).shuffled()
     }
 
@@ -5826,6 +6376,293 @@ extension Flashcard {
             difficulty: .easy,
             questionType: .standard,
             isPremium: true
+        ),
+        // Additional 26 Premium Cards
+        Flashcard(
+            question: "A nurse is caring for a patient with diabetic ketoacidosis (DKA). Which laboratory finding is expected?",
+            answer: "Blood glucose > 300 mg/dL and pH < 7.35",
+            wrongAnswers: ["Blood glucose < 70 mg/dL and pH > 7.45", "Normal glucose with elevated potassium", "Low sodium with metabolic alkalosis"],
+            rationale: "DKA presents with hyperglycemia (>300), metabolic acidosis (pH <7.35), ketonemia, and dehydration. Treatment includes IV fluids, insulin drip, and electrolyte replacement. Monitor potassium closely as insulin drives K+ into cells.",
+            contentCategory: .medSurg,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A patient with heart failure is prescribed furosemide. Which electrolyte imbalance should the nurse monitor for?",
+            answer: "Hypokalemia",
+            wrongAnswers: ["Hyperkalemia", "Hypernatremia", "Hypercalcemia"],
+            rationale: "Loop diuretics like furosemide cause potassium wasting. Monitor K+ levels, watch for muscle weakness, irregular heartbeat, and fatigue. Encourage potassium-rich foods or supplements as ordered. Normal K+: 3.5-5.0 mEq/L.",
+            contentCategory: .pharmacology,
+            nclexCategory: .physiological,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A nurse is teaching a patient about warfarin therapy. Which statement indicates understanding?",
+            answer: "I should eat consistent amounts of green leafy vegetables",
+            wrongAnswers: ["I should avoid all vegetables completely", "I can take aspirin whenever I have a headache", "I should double my dose if I miss one"],
+            rationale: "Warfarin is antagonized by Vitamin K. Patients should maintain consistent Vitamin K intake, not eliminate it. Avoid NSAIDs/aspirin (bleeding risk). Never double doses. Monitor INR regularly (therapeutic: 2-3 for most conditions).",
+            contentCategory: .pharmacology,
+            nclexCategory: .healthPromotion,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A 6-month-old infant is brought to the clinic. Which developmental milestone should the nurse expect?",
+            answer: "Sits with support and transfers objects between hands",
+            wrongAnswers: ["Walks independently", "Speaks in full sentences", "Rides a tricycle"],
+            rationale: "6-month milestones: sits with support, rolls over, transfers objects hand-to-hand, babbles, recognizes familiar faces. Walking occurs around 12 months. Speech develops gradually through first years.",
+            contentCategory: .pediatrics,
+            nclexCategory: .healthPromotion,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A pregnant patient at 28 weeks reports decreased fetal movement. What is the nurse's priority action?",
+            answer: "Perform a non-stress test to assess fetal well-being",
+            wrongAnswers: ["Tell the patient this is normal", "Schedule an appointment for next week", "Advise the patient to drink caffeine"],
+            rationale: "Decreased fetal movement can indicate fetal distress. Priority is assessment via non-stress test (NST) to evaluate fetal heart rate patterns. Kick counts: <10 movements in 2 hours warrants evaluation. Never dismiss maternal concerns about movement.",
+            contentCategory: .maternity,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .priority,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A patient with schizophrenia reports hearing voices telling him to hurt himself. What is the priority intervention?",
+            answer: "Ensure patient safety and initiate suicide precautions",
+            wrongAnswers: ["Ignore the voices as they are not real", "Leave the patient alone to rest", "Tell the patient to stop pretending"],
+            rationale: "Command hallucinations ordering self-harm are psychiatric emergencies. Priority: safety. Initiate suicide precautions, one-to-one observation, remove harmful objects, notify provider immediately. Never dismiss or argue about hallucinations.",
+            contentCategory: .mentalHealth,
+            nclexCategory: .psychosocial,
+            difficulty: .hard,
+            questionType: .priority,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A nurse discovers a medication error made by a colleague. What is the appropriate action?",
+            answer: "Complete an incident report and notify the charge nurse",
+            wrongAnswers: ["Hide the error to protect your colleague", "Only tell the patient's family", "Wait until the next shift to report"],
+            rationale: "Medication errors require immediate reporting through proper channels: incident report, notify charge nurse/supervisor, assess patient, document objectively. Never hide errors. This is about patient safety and system improvement, not punishment.",
+            contentCategory: .leadership,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A patient is receiving a blood transfusion and develops fever, chills, and back pain. What should the nurse do first?",
+            answer: "Stop the transfusion immediately",
+            wrongAnswers: ["Slow the transfusion rate", "Give acetaminophen and continue", "Increase IV fluids"],
+            rationale: "These symptoms suggest transfusion reaction. STOP transfusion immediately, keep IV open with normal saline, notify provider and blood bank, monitor vitals, save blood bag and tubing for analysis. Reactions can be fatal if transfusion continues.",
+            contentCategory: .medSurg,
+            nclexCategory: .physiological,
+            difficulty: .hard,
+            questionType: .priority,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A nurse is caring for a patient in restraints. How often should circulation and skin integrity be assessed?",
+            answer: "Every 15-30 minutes",
+            wrongAnswers: ["Every 4 hours", "Once per shift", "Only when removing restraints"],
+            rationale: "Restraints require frequent monitoring: circulation, skin integrity, and vital signs every 15-30 minutes. Document behavior, offer toileting, ROM exercises, nutrition. Restraints are last resort and require ongoing physician orders.",
+            contentCategory: .safety,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A patient with COPD is on 2L oxygen via nasal cannula. The SpO2 is 91%. What action should the nurse take?",
+            answer: "Maintain current oxygen settings as this is acceptable for COPD",
+            wrongAnswers: ["Increase oxygen to 6L immediately", "Remove the oxygen completely", "Prepare for intubation"],
+            rationale: "COPD patients retain CO2 and rely on hypoxic drive. Target SpO2: 88-92%. Higher oxygen can suppress respiratory drive. 91% is within acceptable range. Monitor closely, but don't over-oxygenate. High-flow O2 can cause respiratory failure in COPD.",
+            contentCategory: .medSurg,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A nurse is teaching about proper hand hygiene. When is alcohol-based hand rub NOT appropriate?",
+            answer: "When hands are visibly soiled or contaminated with blood",
+            wrongAnswers: ["Before entering a patient room", "After removing gloves", "Between caring for different patients"],
+            rationale: "Alcohol-based rubs are effective for most situations but cannot remove visible soil, blood, or body fluids. Use soap and water when hands are visibly dirty, after caring for C. diff patients, and before eating. Rub hands for 20+ seconds.",
+            contentCategory: .fundamentals,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A child is prescribed amoxicillin for otitis media. What should the nurse teach the parents?",
+            answer: "Complete the entire course of antibiotics even if symptoms improve",
+            wrongAnswers: ["Stop medication when fever resolves", "Give only half the dose to reduce side effects", "Save remaining medication for future infections"],
+            rationale: "Incomplete antibiotic courses contribute to antibiotic resistance. Even when symptoms improve, bacteria may remain. Complete full course as prescribed. Don't save antibiotics. Report allergic reactions (rash, difficulty breathing) immediately.",
+            contentCategory: .pediatrics,
+            nclexCategory: .healthPromotion,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A patient in labor has a prolapsed umbilical cord. What is the nurse's priority action?",
+            answer: "Apply upward pressure to the presenting part to relieve cord compression",
+            wrongAnswers: ["Push the cord back into the vagina", "Have the patient bear down", "Wait for spontaneous delivery"],
+            rationale: "Prolapsed cord is an emergency. Push presenting part UP off the cord (not cord back in). Position patient in Trendelenburg or knee-chest. Keep cord moist with saline. Prepare for emergency cesarean. Continuous fetal monitoring.",
+            contentCategory: .maternity,
+            nclexCategory: .physiological,
+            difficulty: .hard,
+            questionType: .priority,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A patient with depression states 'I have a plan to end my life tonight.' What is the nurse's priority response?",
+            answer: "Ask directly about the plan and means, then initiate safety precautions",
+            wrongAnswers: ["Change the subject to something positive", "Leave to get the physician", "Promise to keep it confidential"],
+            rationale: "Direct questioning about suicide does NOT increase risk. Assess plan, means, and intent. Having a specific plan with available means = high risk. Never leave patient alone. Never promise confidentiality for safety issues. Initiate suicide precautions immediately.",
+            contentCategory: .mentalHealth,
+            nclexCategory: .psychosocial,
+            difficulty: .hard,
+            questionType: .priority,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A nurse is delegating tasks to unlicensed assistive personnel (UAP). Which task is appropriate to delegate?",
+            answer: "Measuring and recording vital signs on a stable patient",
+            wrongAnswers: ["Administering IV push medications", "Performing initial patient assessment", "Teaching a newly diagnosed diabetic about insulin"],
+            rationale: "UAP can perform routine tasks on stable patients: vital signs, hygiene, feeding, ambulation, I&O. RNs cannot delegate assessment, teaching, IV medications, or unstable patient care. Remember the 5 Rights of Delegation.",
+            contentCategory: .leadership,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A patient is admitted with suspected meningitis. Which isolation precaution should be implemented?",
+            answer: "Droplet precautions",
+            wrongAnswers: ["Contact precautions only", "Airborne precautions", "Standard precautions only"],
+            rationale: "Bacterial meningitis requires droplet precautions: private room, mask within 3 feet of patient. N. meningitidis spreads via respiratory droplets. Healthcare workers in close contact need prophylactic antibiotics. Different from TB which requires airborne precautions.",
+            contentCategory: .safety,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A patient with cirrhosis has a serum ammonia level of 90 mcg/dL. Which medication should the nurse anticipate?",
+            answer: "Lactulose",
+            wrongAnswers: ["Spironolactone", "Propranolol", "Vitamin K"],
+            rationale: "Elevated ammonia causes hepatic encephalopathy. Lactulose traps ammonia in the gut for excretion. Goal: 2-3 soft stools/day. Also restrict protein temporarily. Monitor for asterixis, confusion. Normal ammonia: 15-45 mcg/dL.",
+            contentCategory: .pharmacology,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A nurse is caring for a patient with chest tubes. Which finding requires immediate intervention?",
+            answer: "Continuous bubbling in the water seal chamber",
+            wrongAnswers: ["Tidaling in the water seal chamber", "Drainage of 50 mL/hour", "Fluctuation with breathing"],
+            rationale: "Continuous bubbling indicates air leak in the system. Check all connections, assess insertion site. Tidaling (fluctuation with breathing) is NORMAL. Absence of tidaling may indicate obstruction or lung re-expansion. Never clamp chest tubes without order.",
+            contentCategory: .medSurg,
+            nclexCategory: .physiological,
+            difficulty: .hard,
+            questionType: .standard,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A 2-year-old is admitted with suspected epiglottitis. Which action should the nurse avoid?",
+            answer: "Examining the throat with a tongue depressor",
+            wrongAnswers: ["Keeping the child calm", "Monitoring oxygen saturation", "Preparing emergency airway equipment"],
+            rationale: "NEVER examine the throat in suspected epiglottitis - can cause complete airway obstruction. Keep child calm, upright, NPO. Have emergency intubation equipment ready. Classic signs: drooling, tripod position, stridor, high fever.",
+            contentCategory: .pediatrics,
+            nclexCategory: .physiological,
+            difficulty: .hard,
+            questionType: .priority,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A postpartum patient's fundus is boggy and displaced to the right. What should the nurse do first?",
+            answer: "Have the patient empty her bladder",
+            wrongAnswers: ["Administer oxytocin immediately", "Prepare for surgery", "Apply ice packs to the abdomen"],
+            rationale: "Fundus displaced to the right usually indicates full bladder. Have patient void first, then reassess. If still boggy after emptying bladder, massage fundus and notify provider. Full bladder prevents uterine contraction and increases hemorrhage risk.",
+            contentCategory: .maternity,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .priority,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A patient taking lithium has a level of 2.0 mEq/L. What symptoms should the nurse expect?",
+            answer: "Severe toxicity: confusion, seizures, cardiac arrhythmias",
+            wrongAnswers: ["Therapeutic effect with no symptoms", "Mild hand tremor only", "Increased energy and alertness"],
+            rationale: "Lithium therapeutic range: 0.6-1.2 mEq/L. Level of 2.0 = severe toxicity. Symptoms: confusion, ataxia, seizures, arrhythmias, renal failure. Hold lithium, notify provider, monitor cardiac rhythm, prepare for dialysis. Ensure adequate hydration and sodium intake.",
+            contentCategory: .pharmacology,
+            nclexCategory: .physiological,
+            difficulty: .hard,
+            questionType: .standard,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A nurse is caring for a patient with a new colostomy. Which food should be recommended to reduce odor?",
+            answer: "Yogurt and parsley",
+            wrongAnswers: ["Beans and cabbage", "Eggs and fish", "Onions and garlic"],
+            rationale: "Odor-reducing foods: yogurt, parsley, buttermilk. Odor-causing foods: eggs, fish, onions, garlic, cabbage, beans. Gas-producing: beans, carbonated drinks, chewing gum. Each patient responds differently - keep a food diary.",
+            contentCategory: .medSurg,
+            nclexCategory: .healthPromotion,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A patient with borderline personality disorder threatens to harm herself if the nurse leaves the room. What is the best response?",
+            answer: "Set clear limits while ensuring safety monitoring continues",
+            wrongAnswers: ["Stay in the room indefinitely", "Tell the patient you don't believe her", "Ignore the behavior completely"],
+            rationale: "Borderline PD often involves manipulation and fear of abandonment. Set firm, consistent limits while ensuring safety. Don't reinforce manipulative behavior by staying, but don't dismiss safety concerns. Arrange for appropriate observation level.",
+            contentCategory: .mentalHealth,
+            nclexCategory: .psychosocial,
+            difficulty: .hard,
+            questionType: .standard,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "During a fire emergency, what does the 'A' in RACE stand for?",
+            answer: "Alarm - activate the fire alarm",
+            wrongAnswers: ["Assess - check patient conditions", "Assist - help firefighters", "Avoid - stay away from flames"],
+            rationale: "RACE: R-Rescue patients in immediate danger, A-Alarm (pull fire alarm, call 911), C-Confine/Contain (close doors), E-Extinguish/Evacuate. Know fire extinguisher use: PASS (Pull, Aim, Squeeze, Sweep).",
+            contentCategory: .safety,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A nurse is triaging patients in the emergency department. Which patient should be seen first?",
+            answer: "Patient with chest pain radiating to the left arm",
+            wrongAnswers: ["Patient with sprained ankle", "Patient with sore throat for 3 days", "Patient requesting prescription refill"],
+            rationale: "Chest pain radiating to arm suggests MI - life-threatening emergency. Triage priority: immediate threats to life (airway, breathing, circulation). Sprained ankle, sore throat, and prescription refills are lower priority.",
+            contentCategory: .leadership,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .priority,
+            isPremium: true
+        ),
+        Flashcard(
+            question: "A patient asks why the nurse is checking two identifiers before medication administration. What is the best response?",
+            answer: "This ensures I'm giving the right medication to the right patient",
+            wrongAnswers: ["It's just hospital policy that I have to follow", "I don't trust what you tell me", "The computer makes me do it"],
+            rationale: "Two patient identifiers (name + DOB, or name + MRN) are required before any medication, treatment, or procedure. This is a critical safety measure to prevent wrong-patient errors. Explain rationale to promote patient involvement in safety.",
+            contentCategory: .fundamentals,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: true
         )
     ]
 
@@ -5837,19 +6674,167 @@ extension Flashcard {
 // MARK: - Managers
 
 class AppManager: ObservableObject {
-    @Published var currentScreen: Screen = .menu
+    @Published var currentScreen: Screen
+
+    init() {
+        // Check if user has seen onboarding
+        if PersistenceManager.shared.hasSeenOnboarding() {
+            currentScreen = .menu
+        } else {
+            currentScreen = .onboarding
+        }
+    }
+
+    func completeOnboarding() {
+        PersistenceManager.shared.setOnboardingComplete()
+        withAnimation(.easeInOut(duration: 0.5)) {
+            currentScreen = .menu
+        }
+    }
 }
 
 class SubscriptionManager: ObservableObject {
     @Published var isSubscribed: Bool = false
+    @Published var products: [Product] = []
+    @Published var purchaseError: String?
+    @Published var isLoading: Bool = false
 
+    private let productIDs = ["com.cozynclex.weekly", "com.cozynclex.monthly", "com.cozynclex.yearly"]
+    private var updateListenerTask: Task<Void, Error>?
+
+    init() {
+        // Load cached subscription status
+        isSubscribed = PersistenceManager.shared.loadSubscriptionStatus()
+
+        // Start listening for transactions
+        updateListenerTask = listenForTransactions()
+
+        // Load products and check subscription status
+        Task {
+            await loadProducts()
+            await checkSubscriptionStatus()
+        }
+    }
+
+    deinit {
+        updateListenerTask?.cancel()
+    }
+
+    @MainActor
+    func loadProducts() async {
+        do {
+            products = try await Product.products(for: productIDs)
+            products.sort { $0.price < $1.price }
+        } catch {
+            print("Failed to load products: \(error)")
+        }
+    }
+
+    func listenForTransactions() -> Task<Void, Error> {
+        return Task.detached {
+            for await result in Transaction.updates {
+                do {
+                    let transaction = try self.checkVerified(result)
+                    await self.updateSubscriptionStatus()
+                    await transaction.finish()
+                } catch {
+                    print("Transaction failed verification")
+                }
+            }
+        }
+    }
+
+    func checkVerified<T>(_ result: VerificationResult<T>) throws -> T {
+        switch result {
+        case .unverified:
+            throw StoreError.failedVerification
+        case .verified(let safe):
+            return safe
+        }
+    }
+
+    @MainActor
+    func purchase(_ product: Product) async {
+        isLoading = true
+        purchaseError = nil
+
+        do {
+            let result = try await product.purchase()
+
+            switch result {
+            case .success(let verification):
+                let transaction = try checkVerified(verification)
+                await updateSubscriptionStatus()
+                await transaction.finish()
+            case .userCancelled:
+                break
+            case .pending:
+                purchaseError = "Purchase is pending approval"
+            @unknown default:
+                break
+            }
+        } catch StoreError.failedVerification {
+            purchaseError = "Purchase verification failed"
+        } catch {
+            purchaseError = "Purchase failed: \(error.localizedDescription)"
+        }
+
+        isLoading = false
+    }
+
+    @MainActor
+    func checkSubscriptionStatus() async {
+        var hasActiveSubscription = false
+
+        for await result in Transaction.currentEntitlements {
+            do {
+                let transaction = try checkVerified(result)
+                if transaction.productType == .autoRenewable {
+                    hasActiveSubscription = true
+                    break
+                }
+            } catch {
+                continue
+            }
+        }
+
+        isSubscribed = hasActiveSubscription
+        PersistenceManager.shared.saveSubscriptionStatus(hasActiveSubscription)
+    }
+
+    @MainActor
+    func updateSubscriptionStatus() async {
+        await checkSubscriptionStatus()
+    }
+
+    @MainActor
+    func restore() async {
+        isLoading = true
+        do {
+            try await AppStore.sync()
+            await checkSubscriptionStatus()
+        } catch {
+            purchaseError = "Restore failed: \(error.localizedDescription)"
+        }
+        isLoading = false
+    }
+
+    // Legacy methods for compatibility / testing
     func subscribe() {
-        isSubscribed = true
+        if let product = products.first {
+            Task {
+                await purchase(product)
+            }
+        } else {
+            // No products available (testing mode) - unlock directly
+            isSubscribed = true
+            PersistenceManager.shared.saveSubscriptionStatus(true)
+        }
     }
+}
 
-    func restore() {
-        isSubscribed = true
-    }
+enum StoreError: Error {
+    case failedVerification
 }
 
 class CardManager: ObservableObject {
@@ -5859,8 +6844,97 @@ class CardManager: ObservableObject {
     @Published var currentFilter: CardFilter = .all
     @Published var userCreatedCards: [Flashcard] = []
     @Published var studySets: [StudySet] = []
+    @Published var selectedCategories: Set<ContentCategory> = Set(ContentCategory.allCases)
+    @Published var spacedRepData: [UUID: SpacedRepetitionData] = [:]
+    @Published var cardNotes: [UUID: CardNote] = [:]
+    @Published var flaggedCardIDs: Set<UUID> = []
+    @Published var testHistory: [TestResult] = []
 
     let masteryThreshold = 3
+    private let persistence = PersistenceManager.shared
+
+    init() {
+        loadData()
+    }
+
+    // MARK: - Persistence
+
+    func loadData() {
+        savedCardIDs = persistence.loadSavedCards()
+        masteredCardIDs = persistence.loadMasteredCards()
+        consecutiveCorrect = persistence.loadConsecutiveCorrect()
+        userCreatedCards = persistence.loadUserCards()
+        studySets = persistence.loadStudySets()
+        spacedRepData = persistence.loadSpacedRepData()
+        selectedCategories = persistence.loadSelectedCategories()
+        cardNotes = persistence.loadCardNotes()
+        flaggedCardIDs = persistence.loadFlaggedCards()
+        testHistory = persistence.loadTestHistory()
+    }
+
+    func saveAll() {
+        persistence.saveSavedCards(savedCardIDs)
+        persistence.saveMasteredCards(masteredCardIDs)
+        persistence.saveConsecutiveCorrect(consecutiveCorrect)
+        persistence.saveUserCards(userCreatedCards)
+        persistence.saveStudySets(studySets)
+        persistence.saveSpacedRepData(spacedRepData)
+        persistence.saveSelectedCategories(selectedCategories)
+        persistence.saveCardNotes(cardNotes)
+        persistence.saveFlaggedCards(flaggedCardIDs)
+        persistence.saveTestHistory(testHistory)
+    }
+
+    // MARK: - Notes
+
+    func getNote(for cardID: UUID) -> CardNote? {
+        return cardNotes[cardID]
+    }
+
+    func saveNote(for cardID: UUID, text: String) {
+        if text.isEmpty {
+            cardNotes.removeValue(forKey: cardID)
+        } else {
+            if var existing = cardNotes[cardID] {
+                existing.note = text
+                existing.modifiedDate = Date()
+                cardNotes[cardID] = existing
+            } else {
+                cardNotes[cardID] = CardNote(cardID: cardID, note: text)
+            }
+        }
+        persistence.saveCardNotes(cardNotes)
+    }
+
+    // MARK: - Flagging
+
+    func toggleFlagged(_ card: Flashcard) {
+        if flaggedCardIDs.contains(card.id) {
+            flaggedCardIDs.remove(card.id)
+        } else {
+            flaggedCardIDs.insert(card.id)
+        }
+        persistence.saveFlaggedCards(flaggedCardIDs)
+    }
+
+    func isFlagged(_ card: Flashcard) -> Bool {
+        flaggedCardIDs.contains(card.id)
+    }
+
+    func getFlaggedCards(isSubscribed: Bool) -> [Flashcard] {
+        getAvailableCards(isSubscribed: isSubscribed).filter { flaggedCardIDs.contains($0.id) }
+    }
+
+    // MARK: - Test History
+
+    func saveTestResult(_ result: TestResult) {
+        testHistory.insert(result, at: 0)
+        // Keep only last 50 tests
+        if testHistory.count > 50 {
+            testHistory = Array(testHistory.prefix(50))
+        }
+        persistence.saveTestHistory(testHistory)
+    }
 
     var allCards: [Flashcard] {
         Flashcard.freeCards + (SubscriptionManager().isSubscribed ? Flashcard.premiumCards : []) + userCreatedCards
@@ -5872,7 +6946,13 @@ class CardManager: ObservableObject {
     }
 
     func getFilteredCards(isSubscribed: Bool) -> [Flashcard] {
-        let available = getAvailableCards(isSubscribed: isSubscribed)
+        var available = getAvailableCards(isSubscribed: isSubscribed)
+
+        // Apply category filter
+        if selectedCategories.count < ContentCategory.allCases.count {
+            available = available.filter { selectedCategories.contains($0.contentCategory) }
+        }
+
         switch currentFilter {
         case .all:
             return available
@@ -5881,13 +6961,89 @@ class CardManager: ObservableObject {
         case .saved:
             return available.filter { savedCardIDs.contains($0.id) }
         case .userCreated:
-            return userCreatedCards
+            return userCreatedCards.filter { selectedCategories.contains($0.contentCategory) }
         }
     }
 
     func getGameCards(isSubscribed: Bool) -> [Flashcard] {
-        getAvailableCards(isSubscribed: isSubscribed).filter { !masteredCardIDs.contains($0.id) }
+        var cards = getAvailableCards(isSubscribed: isSubscribed).filter { !masteredCardIDs.contains($0.id) }
+        // Apply category filter for games
+        if selectedCategories.count < ContentCategory.allCases.count {
+            cards = cards.filter { selectedCategories.contains($0.contentCategory) }
+        }
+        return cards
     }
+
+    // MARK: - Spaced Repetition
+
+    func getCardsForSpacedReview(isSubscribed: Bool) -> [Flashcard] {
+        let available = getAvailableCards(isSubscribed: isSubscribed)
+        var dueCards: [Flashcard] = []
+        var newCards: [Flashcard] = []
+
+        for card in available {
+            if let srData = spacedRepData[card.id] {
+                if srData.isDue {
+                    dueCards.append(card)
+                }
+            } else {
+                // New card - never reviewed
+                newCards.append(card)
+            }
+        }
+
+        // Apply category filter
+        if selectedCategories.count < ContentCategory.allCases.count {
+            dueCards = dueCards.filter { selectedCategories.contains($0.contentCategory) }
+            newCards = newCards.filter { selectedCategories.contains($0.contentCategory) }
+        }
+
+        // Prioritize due cards, then add new cards (limit new cards to 20 per session)
+        let limitedNewCards = Array(newCards.prefix(20))
+        return dueCards + limitedNewCards
+    }
+
+    func getDueCardCount(isSubscribed: Bool) -> Int {
+        let available = getAvailableCards(isSubscribed: isSubscribed)
+        return available.filter { card in
+            guard let srData = spacedRepData[card.id] else { return true }
+            return srData.isDue
+        }.count
+    }
+
+    func recordSpacedRepResponse(card: Flashcard, quality: Int) {
+        var data = spacedRepData[card.id] ?? SpacedRepetitionData()
+        data.processResponse(quality: quality)
+        spacedRepData[card.id] = data
+        persistence.saveSpacedRepData(spacedRepData)
+    }
+
+    func getSpacedRepInfo(card: Flashcard) -> SpacedRepetitionData? {
+        return spacedRepData[card.id]
+    }
+
+    // MARK: - Category Management
+
+    func toggleCategory(_ category: ContentCategory) {
+        if selectedCategories.contains(category) {
+            selectedCategories.remove(category)
+        } else {
+            selectedCategories.insert(category)
+        }
+        persistence.saveSelectedCategories(selectedCategories)
+    }
+
+    func selectAllCategories() {
+        selectedCategories = Set(ContentCategory.allCases)
+        persistence.saveSelectedCategories(selectedCategories)
+    }
+
+    func deselectAllCategories() {
+        selectedCategories = []
+        persistence.saveSelectedCategories(selectedCategories)
+    }
+
+    // MARK: - Card Actions
 
     func toggleSaved(_ card: Flashcard) {
         if savedCardIDs.contains(card.id) {
@@ -5895,6 +7051,7 @@ class CardManager: ObservableObject {
         } else {
             savedCardIDs.insert(card.id)
         }
+        persistence.saveSavedCards(savedCardIDs)
     }
 
     func recordCorrectAnswer(_ card: Flashcard) {
@@ -5902,11 +7059,26 @@ class CardManager: ObservableObject {
         consecutiveCorrect[card.id] = current + 1
         if consecutiveCorrect[card.id]! >= masteryThreshold {
             masteredCardIDs.insert(card.id)
+            persistence.saveMasteredCards(masteredCardIDs)
         }
+        persistence.saveConsecutiveCorrect(consecutiveCorrect)
+
+        // Also update spaced repetition (quality 4 = correct with hesitation)
+        recordSpacedRepResponse(card: card, quality: 4)
     }
 
     func recordWrongAnswer(_ card: Flashcard) {
         consecutiveCorrect[card.id] = 0
+        persistence.saveConsecutiveCorrect(consecutiveCorrect)
+
+        // Also update spaced repetition (quality 1 = wrong)
+        recordSpacedRepResponse(card: card, quality: 1)
+    }
+
+    func recordEasyAnswer(_ card: Flashcard) {
+        // Perfect recall - update spaced repetition with quality 5
+        recordCorrectAnswer(card)
+        recordSpacedRepResponse(card: card, quality: 5)
     }
 
     func toggleMastered(_ card: Flashcard) {
@@ -5916,19 +7088,46 @@ class CardManager: ObservableObject {
         } else {
             masteredCardIDs.insert(card.id)
         }
+        persistence.saveMasteredCards(masteredCardIDs)
+        persistence.saveConsecutiveCorrect(consecutiveCorrect)
     }
 
     func isSaved(_ card: Flashcard) -> Bool { savedCardIDs.contains(card.id) }
     func isMastered(_ card: Flashcard) -> Bool { masteredCardIDs.contains(card.id) }
     func progressTowardsMastery(_ card: Flashcard) -> Int { consecutiveCorrect[card.id] ?? 0 }
 
+    // MARK: - User Cards
+
     func addUserCard(_ card: Flashcard) {
         userCreatedCards.append(card)
+        persistence.saveUserCards(userCreatedCards)
     }
 
     func deleteUserCard(_ card: Flashcard) {
         userCreatedCards.removeAll { $0.id == card.id }
+        persistence.saveUserCards(userCreatedCards)
     }
+
+    // MARK: - Study Sets
+
+    func addStudySet(_ set: StudySet) {
+        studySets.append(set)
+        persistence.saveStudySets(studySets)
+    }
+
+    func updateStudySet(_ set: StudySet) {
+        if let index = studySets.firstIndex(where: { $0.id == set.id }) {
+            studySets[index] = set
+            persistence.saveStudySets(studySets)
+        }
+    }
+
+    func deleteStudySet(_ set: StudySet) {
+        studySets.removeAll { $0.id == set.id }
+        persistence.saveStudySets(studySets)
+    }
+
+    // MARK: - Search
 
     func searchCards(query: String, isSubscribed: Bool) -> [Flashcard] {
         guard !query.isEmpty else { return [] }
@@ -5944,6 +7143,13 @@ class CardManager: ObservableObject {
 class StatsManager: ObservableObject {
     @Published var stats: UserStats = UserStats()
 
+    private let persistence = PersistenceManager.shared
+
+    init() {
+        stats = persistence.loadUserStats()
+        checkStreakReset()
+    }
+
     func recordSession(cardsStudied: Int, correct: Int, timeSeconds: Int, mode: String) {
         stats.totalCardsStudied += cardsStudied
         stats.totalCorrectAnswers += correct
@@ -5952,7 +7158,13 @@ class StatsManager: ObservableObject {
         let session = StudySession(date: Date(), cardsStudied: cardsStudied, correctAnswers: correct, timeSpentSeconds: timeSeconds, mode: mode)
         stats.sessions.append(session)
 
+        // Keep only last 100 sessions to avoid bloat
+        if stats.sessions.count > 100 {
+            stats.sessions = Array(stats.sessions.suffix(100))
+        }
+
         updateStreak()
+        save()
     }
 
     func updateStreak() {
@@ -5968,6 +7180,7 @@ class StatsManager: ObservableObject {
             } else if daysDiff > 1 {
                 stats.currentStreak = 1
             }
+            // daysDiff == 0 means same day, don't change streak
         } else {
             stats.currentStreak = 1
         }
@@ -5976,11 +7189,119 @@ class StatsManager: ObservableObject {
         stats.longestStreak = max(stats.longestStreak, stats.currentStreak)
     }
 
+    func checkStreakReset() {
+        // Check if streak should be reset (missed a day)
+        guard let lastDate = stats.lastStudyDate else { return }
+
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let lastDay = calendar.startOfDay(for: lastDate)
+        let daysDiff = calendar.dateComponents([.day], from: lastDay, to: today).day ?? 0
+
+        if daysDiff > 1 {
+            stats.currentStreak = 0
+            save()
+        }
+    }
+
     func recordCategoryResult(category: String, correct: Bool) {
         var current = stats.categoryAccuracy[category] ?? CategoryStats()
         current.total += 1
         if correct { current.correct += 1 }
         stats.categoryAccuracy[category] = current
+        save()
+    }
+
+    func getWeakCategories() -> [String] {
+        // Return categories with accuracy below 70%
+        return stats.categoryAccuracy
+            .filter { $0.value.total >= 5 && $0.value.accuracy < 70 }
+            .sorted { $0.value.accuracy < $1.value.accuracy }
+            .map { $0.key }
+    }
+
+    func getStrongCategories() -> [String] {
+        // Return categories with accuracy above 80%
+        return stats.categoryAccuracy
+            .filter { $0.value.total >= 5 && $0.value.accuracy >= 80 }
+            .sorted { $0.value.accuracy > $1.value.accuracy }
+            .map { $0.key }
+    }
+
+    func save() {
+        persistence.saveUserStats(stats)
+    }
+}
+
+// MARK: - App Review Manager
+import StoreKit
+
+class ReviewManager {
+    static let shared = ReviewManager()
+
+    private let defaults = UserDefaults.standard
+    private let reviewRequestCountKey = "reviewRequestCount"
+    private let lastReviewRequestDateKey = "lastReviewRequestDate"
+    private let hasRequestedReviewKey = "hasRequestedReview"
+
+    private var reviewRequestCount: Int {
+        get { defaults.integer(forKey: reviewRequestCountKey) }
+        set { defaults.set(newValue, forKey: reviewRequestCountKey) }
+    }
+
+    private var lastReviewRequestDate: Date? {
+        get { defaults.object(forKey: lastReviewRequestDateKey) as? Date }
+        set { defaults.set(newValue, forKey: lastReviewRequestDateKey) }
+    }
+
+    private var hasRequestedReview: Bool {
+        get { defaults.bool(forKey: hasRequestedReviewKey) }
+        set { defaults.set(newValue, forKey: hasRequestedReviewKey) }
+    }
+
+    /// Call this when the user completes a quiz with good results
+    func recordPositiveExperience() {
+        reviewRequestCount += 1
+        checkAndRequestReview()
+    }
+
+    /// Call this when user unlocks an achievement
+    func recordAchievementUnlocked() {
+        reviewRequestCount += 2 // Achievements count double
+        checkAndRequestReview()
+    }
+
+    /// Call this when user reaches a streak milestone (3, 7, 14 days)
+    func recordStreakMilestone() {
+        reviewRequestCount += 3 // Streaks count triple
+        checkAndRequestReview()
+    }
+
+    private func checkAndRequestReview() {
+        // Don't request too frequently - minimum 30 days between requests
+        if let lastRequest = lastReviewRequestDate {
+            let daysSinceLastRequest = Calendar.current.dateComponents([.day], from: lastRequest, to: Date()).day ?? 0
+            if daysSinceLastRequest < 30 {
+                return
+            }
+        }
+
+        // Request review after 5+ positive interactions
+        // Or immediately if user unlocks achievement and hasn't been asked before
+        if reviewRequestCount >= 5 || (!hasRequestedReview && reviewRequestCount >= 3) {
+            requestReview()
+        }
+    }
+
+    private func requestReview() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                SKStoreReviewController.requestReview(in: windowScene)
+                self.lastReviewRequestDate = Date()
+                self.hasRequestedReview = true
+                self.reviewRequestCount = 0 // Reset counter after request
+            }
+        }
     }
 }
 
@@ -6014,9 +7335,11 @@ struct ContentView: View {
             Color.creamyBackground.ignoresSafeArea()
 
             switch appManager.currentScreen {
+            case .onboarding: OnboardingView()
             case .menu: MainMenuView()
             case .swipeGame: SwipeGameView()
             case .quizGame: BearQuizView()
+            case .smartReview: SmartReviewView()
             case .matchGame: CozyMatchView()
             case .cardBrowser: CardBrowserView()
             case .createCard: CreateCardView()
@@ -6035,6 +7358,223 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Onboarding View
+
+struct OnboardingView: View {
+    @EnvironmentObject var appManager: AppManager
+    @State private var currentPage = 0
+    @State private var showContent = false
+    @State private var mascotOffset: CGFloat = 50
+    @State private var mascotOpacity: Double = 0
+
+    private let pages: [(title: String, subtitle: String, icon: String, color: Color, isSourcesPage: Bool)] = [
+        ("Welcome to CozyNCLEX!", "Your cozy companion for NCLEX success", "heart.fill", .pastelPink, false),
+        ("Trusted Sources", "Content compiled from leading NCLEX prep resources", "checkmark.seal.fill", .mintGreen, true),
+        ("Study Your Way", "Multiple study modes to fit your learning style", "books.vertical.fill", .skyBlue, false),
+        ("Track Progress", "Watch yourself grow with detailed stats", "chart.line.uptrend.xyaxis", .peachOrange, false),
+        ("Let's Get Started!", "Your nursing journey begins now", "star.fill", .softLavender, false)
+    ]
+
+    var body: some View {
+        ZStack {
+            // Animated gradient background
+            LinearGradient(
+                colors: [
+                    pages[currentPage].color.opacity(0.2),
+                    Color.creamyBackground,
+                    Color.creamyBackground
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+            .animation(.easeInOut(duration: 0.5), value: currentPage)
+
+            VStack(spacing: 0) {
+                Spacer()
+
+                // Mascot
+                Image("NurseBear")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 180, height: 180)
+                    .shadow(color: .black.opacity(0.1), radius: 10, y: 5)
+                    .offset(y: mascotOffset)
+                    .opacity(mascotOpacity)
+                    .onAppear {
+                        withAnimation(.spring(response: 0.8, dampingFraction: 0.6).delay(0.2)) {
+                            mascotOffset = 0
+                            mascotOpacity = 1
+                        }
+                    }
+
+                Spacer().frame(height: 30)
+
+                // Page content
+                VStack(spacing: 16) {
+                    // Icon
+                    ZStack {
+                        Circle()
+                            .fill(pages[currentPage].color.opacity(0.2))
+                            .frame(width: 80, height: 80)
+
+                        Image(systemName: pages[currentPage].icon)
+                            .font(.system(size: 36))
+                            .foregroundColor(pages[currentPage].color)
+                    }
+                    .scaleEffect(showContent ? 1 : 0.5)
+                    .opacity(showContent ? 1 : 0)
+
+                    // Title
+                    Text(pages[currentPage].title)
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .multilineTextAlignment(.center)
+                        .offset(y: showContent ? 0 : 20)
+                        .opacity(showContent ? 1 : 0)
+
+                    // Subtitle
+                    Text(pages[currentPage].subtitle)
+                        .font(.system(size: 16, design: .rounded))
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 40)
+                        .offset(y: showContent ? 0 : 20)
+                        .opacity(showContent ? 1 : 0)
+
+                    // Sources list for credentials page
+                    if pages[currentPage].isSourcesPage {
+                        VStack(spacing: 12) {
+                            SourceBadge(name: "Kaplan", color: .blue)
+                            SourceBadge(name: "Archer Review", color: .green)
+                            SourceBadge(name: "UWorld", color: .orange)
+                            SourceBadge(name: "NCSBN", color: .purple)
+                            SourceBadge(name: "CAT Methodology", color: .pink)
+                        }
+                        .padding(.top, 10)
+                        .offset(y: showContent ? 0 : 30)
+                        .opacity(showContent ? 1 : 0)
+                    }
+                }
+                .animation(.spring(response: 0.5, dampingFraction: 0.8), value: showContent)
+                .onChange(of: currentPage) { _, _ in
+                    showContent = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        withAnimation { showContent = true }
+                    }
+                }
+
+                Spacer()
+
+                // Page indicators
+                HStack(spacing: 8) {
+                    ForEach(0..<pages.count, id: \.self) { index in
+                        Circle()
+                            .fill(index == currentPage ? pages[currentPage].color : Color.gray.opacity(0.3))
+                            .frame(width: index == currentPage ? 10 : 8, height: index == currentPage ? 10 : 8)
+                            .animation(.spring(response: 0.3), value: currentPage)
+                    }
+                }
+                .padding(.bottom, 30)
+
+                // Buttons
+                VStack(spacing: 12) {
+                    if currentPage < pages.count - 1 {
+                        Button(action: nextPage) {
+                            Text("Continue")
+                                .font(.system(size: 18, weight: .bold, design: .rounded))
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 18)
+                                .background(
+                                    LinearGradient(
+                                        colors: [pages[currentPage].color, pages[currentPage].color.opacity(0.8)],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .cornerRadius(16)
+                        }
+
+                        Button(action: { appManager.completeOnboarding() }) {
+                            Text("Skip")
+                                .font(.system(size: 15, weight: .medium, design: .rounded))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.top, 4)
+                    } else {
+                        Button(action: { appManager.completeOnboarding() }) {
+                            HStack {
+                                Text("Start Studying")
+                                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                                Image(systemName: "arrow.right")
+                                    .font(.system(size: 16, weight: .bold))
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 18)
+                            .background(
+                                LinearGradient(
+                                    colors: [.mintGreen, .green.opacity(0.8)],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .cornerRadius(16)
+                        }
+                    }
+                }
+                .padding(.horizontal, 30)
+                .padding(.bottom, 50)
+            }
+        }
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                withAnimation { showContent = true }
+            }
+        }
+        .gesture(
+            DragGesture()
+                .onEnded { value in
+                    if value.translation.width < -50 && currentPage < pages.count - 1 {
+                        nextPage()
+                    } else if value.translation.width > 50 && currentPage > 0 {
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                            currentPage -= 1
+                        }
+                    }
+                }
+        )
+    }
+
+    func nextPage() {
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+            currentPage += 1
+        }
+    }
+}
+
+struct SourceBadge: View {
+    let name: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundColor(color)
+                .font(.system(size: 18))
+            Text(name)
+                .font(.system(size: 16, weight: .medium, design: .rounded))
+                .foregroundColor(.primary)
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(color.opacity(0.1))
+        .cornerRadius(12)
+        .padding(.horizontal, 30)
+    }
+}
+
 // MARK: - Main Menu View
 
 struct MainMenuView: View {
@@ -6043,11 +7583,13 @@ struct MainMenuView: View {
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
     @State private var showSubscriptionSheet = false
+    @State private var showCategoryFilter = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-                HeaderSection()
+                HeaderSection(showCategoryFilter: $showCategoryFilter)
+                CategoryFilterBadge(showCategoryFilter: $showCategoryFilter)
                 StreakBanner()
                 QuickStatsSection()
                 QuickActionsSection()
@@ -6061,21 +7603,85 @@ struct MainMenuView: View {
         .sheet(isPresented: $showSubscriptionSheet) {
             SubscriptionSheet()
         }
+        .sheet(isPresented: $showCategoryFilter) {
+            CategoryFilterSheet()
+        }
+    }
+}
+
+struct CategoryFilterBadge: View {
+    @EnvironmentObject var cardManager: CardManager
+    @Binding var showCategoryFilter: Bool
+
+    var selectedCount: Int { cardManager.selectedCategories.count }
+    var totalCount: Int { ContentCategory.allCases.count }
+    var isFiltered: Bool { selectedCount < totalCount }
+
+    var body: some View {
+        if isFiltered {
+            Button(action: { showCategoryFilter = true }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "line.3.horizontal.decrease.circle.fill")
+                        .font(.system(size: 16))
+                    Text("\(selectedCount) of \(totalCount) categories selected")
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                    Spacer()
+                    Text("Edit")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.pastelPink)
+                        .cornerRadius(10)
+                }
+                .foregroundColor(.primary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(Color.softLavender.opacity(0.3))
+                .cornerRadius(12)
+            }
+        }
     }
 }
 
 struct HeaderSection: View {
     @EnvironmentObject var appManager: AppManager
+    @EnvironmentObject var cardManager: CardManager
+    @Binding var showCategoryFilter: Bool
+
+    var isFiltered: Bool {
+        cardManager.selectedCategories.count < ContentCategory.allCases.count
+    }
 
     var body: some View {
         HStack(spacing: 12) {
-            Text("🐻").font(.system(size: 50))
-            Text("🩺").font(.system(size: 30)).foregroundColor(.gray)
+            Image("NurseBear")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 60, height: 60)
             VStack(alignment: .leading, spacing: 2) {
                 Text("CozyNCLEX").font(.system(size: 28, weight: .bold, design: .rounded))
-                Text("Prep 2026 ✨").font(.system(size: 18, weight: .medium, design: .rounded)).foregroundColor(.secondary)
+                Text("Prep 2026").font(.system(size: 18, weight: .medium, design: .rounded)).foregroundColor(.secondary)
             }
             Spacer()
+            Button(action: { showCategoryFilter = true }) {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                        .font(.system(size: 20))
+                        .foregroundColor(.primary)
+                        .padding(10)
+                        .background(Color.white)
+                        .clipShape(Circle())
+                        .shadow(color: .black.opacity(0.1), radius: 4)
+
+                    if isFiltered {
+                        Circle()
+                            .fill(Color.pastelPink)
+                            .frame(width: 10, height: 10)
+                            .offset(x: 2, y: -2)
+                    }
+                }
+            }
             Button(action: { appManager.currentScreen = .search }) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 20))
@@ -6257,6 +7863,7 @@ struct GameModesSection: View {
             switch mode {
             case .swipe: appManager.currentScreen = .swipeGame
             case .quiz: appManager.currentScreen = .quizGame
+            case .smartReview: appManager.currentScreen = .smartReview
             case .match: appManager.currentScreen = .matchGame
             case .write: appManager.currentScreen = .writeMode
             case .test: appManager.currentScreen = .testMode
@@ -6273,6 +7880,7 @@ struct CompactModeCard: View {
         switch mode {
         case .swipe: return .mintGreen
         case .quiz: return .pastelPink
+        case .smartReview: return .softLavender
         case .match: return .softLavender
         case .write: return .skyBlue
         case .test: return .peachOrange
@@ -6307,6 +7915,7 @@ struct GameModeCard: View {
         switch mode {
         case .swipe: return .mintGreen
         case .quiz: return .pastelPink
+        case .smartReview: return .softLavender
         case .match: return .softLavender
         case .write: return .skyBlue
         case .test: return .peachOrange
@@ -6364,42 +7973,160 @@ struct SubscribeButton: View {
 struct SubscriptionSheet: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @Environment(\.dismiss) var dismiss
+    @State private var selectedProduct: Product?
 
     var body: some View {
         VStack(spacing: 20) {
             Spacer()
-            Text("🐻").font(.system(size: 70))
+            Image("NurseBear")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 120, height: 120)
             Text("Unlock Everything!").font(.system(size: 26, weight: .bold, design: .rounded))
+
             VStack(alignment: .leading, spacing: 10) {
                 FeatureRow(icon: "square.stack.3d.up.fill", text: "500+ NCLEX Questions")
+                FeatureRow(icon: "brain.head.profile", text: "Smart Review (Spaced Repetition)")
                 FeatureRow(icon: "gamecontroller.fill", text: "All Study Modes")
-                FeatureRow(icon: "text.bubble.fill", text: "Detailed Rationales")
-                FeatureRow(icon: "chart.line.uptrend.xyaxis", text: "Progress Tracking")
-                FeatureRow(icon: "flame.fill", text: "Daily Streaks")
+                FeatureRow(icon: "doc.text.fill", text: "Practice Tests")
             }
             .padding()
             .background(Color.white)
             .cornerRadius(16)
 
-            Text("$4.99/week • Cancel anytime").font(.system(size: 14, design: .rounded)).foregroundColor(.secondary)
+            // Product options
+            if subscriptionManager.products.isEmpty {
+                // Fallback UI when products not loaded
+                Text("$4.99/week • Cancel anytime")
+                    .font(.system(size: 14, design: .rounded))
+                    .foregroundColor(.secondary)
 
-            Button(action: { subscriptionManager.subscribe(); dismiss() }) {
-                Text("Start Free Trial")
-                    .font(.system(size: 17, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
-                    .cornerRadius(14)
+                Button(action: {
+                    subscriptionManager.subscribe()
+                    dismiss()
+                }) {
+                    Text("Start Free Trial")
+                        .font(.system(size: 17, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
+                        .cornerRadius(14)
+                }
+            } else {
+                // Real StoreKit products
+                VStack(spacing: 10) {
+                    ForEach(subscriptionManager.products, id: \.id) { product in
+                        SubscriptionProductRow(
+                            product: product,
+                            isSelected: selectedProduct?.id == product.id,
+                            action: { selectedProduct = product }
+                        )
+                    }
+                }
+
+                if let product = selectedProduct ?? subscriptionManager.products.first {
+                    Button(action: {
+                        Task {
+                            await subscriptionManager.purchase(product)
+                            if subscriptionManager.isSubscribed {
+                                dismiss()
+                            }
+                        }
+                    }) {
+                        HStack {
+                            if subscriptionManager.isLoading {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            } else {
+                                Text("Subscribe - \(product.displayPrice)")
+                            }
+                        }
+                        .font(.system(size: 17, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
+                        .cornerRadius(14)
+                    }
+                    .disabled(subscriptionManager.isLoading)
+                }
+
+                if let error = subscriptionManager.purchaseError {
+                    Text(error)
+                        .font(.system(size: 12, design: .rounded))
+                        .foregroundColor(.red)
+                        .multilineTextAlignment(.center)
+                }
             }
 
-            Button(action: { subscriptionManager.restore(); dismiss() }) {
-                Text("Restore Purchases").font(.system(size: 15, design: .rounded)).foregroundColor(.secondary)
+            Button(action: {
+                Task {
+                    await subscriptionManager.restore()
+                    if subscriptionManager.isSubscribed {
+                        dismiss()
+                    }
+                }
+            }) {
+                if subscriptionManager.isLoading {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .secondary))
+                } else {
+                    Text("Restore Purchases")
+                        .font(.system(size: 15, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
             }
+            .disabled(subscriptionManager.isLoading)
+
             Spacer()
         }
         .padding()
         .background(Color.creamyBackground)
+        .onAppear {
+            selectedProduct = subscriptionManager.products.first
+        }
+    }
+}
+
+struct SubscriptionProductRow: View {
+    let product: Product
+    let isSelected: Bool
+    let action: () -> Void
+
+    var periodText: String {
+        switch product.subscription?.subscriptionPeriod.unit {
+        case .week: return "week"
+        case .month: return "month"
+        case .year: return "year"
+        default: return ""
+        }
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(product.displayName)
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundColor(.primary)
+                    Text("\(product.displayPrice)/\(periodText)")
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 22))
+                    .foregroundColor(isSelected ? .mintGreen : .gray.opacity(0.4))
+            }
+            .padding()
+            .background(isSelected ? Color.mintGreen.opacity(0.1) : Color.white)
+            .cornerRadius(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(isSelected ? Color.mintGreen : Color.gray.opacity(0.2), lineWidth: isSelected ? 2 : 1)
+            )
+        }
     }
 }
 
@@ -6423,9 +8150,14 @@ struct CardBrowserView: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
     @State private var selectedCard: Flashcard? = nil
+    @State private var showCategoryFilter = false
 
     var filteredCards: [Flashcard] {
         cardManager.getFilteredCards(isSubscribed: subscriptionManager.isSubscribed)
+    }
+
+    var isFiltered: Bool {
+        cardManager.selectedCategories.count < ContentCategory.allCases.count
     }
 
     var body: some View {
@@ -6435,6 +8167,21 @@ struct CardBrowserView: View {
                 Spacer()
                 Text(cardManager.currentFilter.rawValue).font(.system(size: 18, weight: .bold, design: .rounded))
                 Spacer()
+                Button(action: { showCategoryFilter = true }) {
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                            .font(.system(size: 18))
+                            .foregroundColor(.primary)
+
+                        if isFiltered {
+                            Circle()
+                                .fill(Color.pastelPink)
+                                .frame(width: 8, height: 8)
+                                .offset(x: 4, y: -4)
+                        }
+                    }
+                }
+                .padding(.trailing, 8)
                 Text("\(filteredCards.count)").font(.system(size: 14, weight: .bold)).foregroundColor(.white)
                     .padding(.horizontal, 10).padding(.vertical, 5).background(Color.pastelPink).cornerRadius(10)
             }
@@ -6472,6 +8219,9 @@ struct CardBrowserView: View {
         .background(Color.creamyBackground)
         .sheet(item: $selectedCard) { card in
             CardDetailSheet(card: card)
+        }
+        .sheet(isPresented: $showCategoryFilter) {
+            CategoryFilterSheet()
         }
     }
 }
@@ -6543,6 +8293,8 @@ struct CardDetailSheet: View {
     @Environment(\.dismiss) var dismiss
     let card: Flashcard
     @State private var showAnswer = false
+    @State private var showNoteEditor = false
+    @State private var noteText = ""
 
     var body: some View {
         ScrollView {
@@ -6558,6 +8310,14 @@ struct CardDetailSheet: View {
                         Text(card.contentCategory.rawValue).font(.system(size: 13, weight: .semibold, design: .rounded)).foregroundColor(.secondary)
                     }
                     Spacer()
+                    // Flag button
+                    Button(action: { cardManager.toggleFlagged(card) }) {
+                        Image(systemName: cardManager.isFlagged(card) ? "flag.fill" : "flag")
+                            .font(.system(size: 14))
+                            .foregroundColor(cardManager.isFlagged(card) ? .orange : .secondary)
+                            .padding(10).background(Color.gray.opacity(0.1)).clipShape(Circle())
+                    }
+                    // Audio button
                     Button(action: { speechManager.speak(showAnswer ? card.answer : card.question) }) {
                         Image(systemName: "speaker.wave.2.fill").font(.system(size: 14))
                             .foregroundColor(.pastelPink).padding(10).background(Color.gray.opacity(0.1)).clipShape(Circle())
@@ -6649,10 +8409,86 @@ struct CardDetailSheet: View {
                     }
                 }
                 .padding(.horizontal)
+
+                // Notes Section
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Image(systemName: "note.text").foregroundColor(.softLavender)
+                        Text("My Notes").font(.system(size: 15, weight: .semibold, design: .rounded))
+                        Spacer()
+                        Button(action: {
+                            noteText = cardManager.getNote(for: card.id)?.note ?? ""
+                            showNoteEditor = true
+                        }) {
+                            Text(cardManager.getNote(for: card.id) != nil ? "Edit" : "Add Note")
+                                .font(.system(size: 13, weight: .medium, design: .rounded))
+                                .foregroundColor(.softLavender)
+                        }
+                    }
+
+                    if let note = cardManager.getNote(for: card.id) {
+                        Text(note.note)
+                            .font(.system(size: 14, design: .rounded))
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("Tap 'Add Note' to save your own notes about this card.")
+                            .font(.system(size: 13, design: .rounded))
+                            .foregroundColor(.secondary.opacity(0.7))
+                    }
+                }
+                .padding()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.softLavender.opacity(0.1))
+                .cornerRadius(16)
+                .padding(.horizontal)
                 .padding(.bottom, 30)
             }
         }
         .background(Color.creamyBackground)
+        .sheet(isPresented: $showNoteEditor) {
+            CardNoteEditor(noteText: $noteText, onSave: {
+                cardManager.saveNote(for: card.id, text: noteText)
+            })
+        }
+    }
+}
+
+// MARK: - Card Note Editor
+
+struct CardNoteEditor: View {
+    @Binding var noteText: String
+    let onSave: () -> Void
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 16) {
+                TextEditor(text: $noteText)
+                    .font(.system(size: 16, design: .rounded))
+                    .padding()
+                    .background(Color.cardBackground)
+                    .cornerRadius(12)
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.2), lineWidth: 1))
+                    .padding()
+
+                Spacer()
+            }
+            .background(Color.creamyBackground)
+            .navigationTitle("Edit Note")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        onSave()
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+        }
     }
 }
 
@@ -6861,6 +8697,9 @@ struct StatsView: View {
     @EnvironmentObject var appManager: AppManager
     @EnvironmentObject var statsManager: StatsManager
     @EnvironmentObject var cardManager: CardManager
+    @StateObject private var achievementManager = AchievementManager()
+    @State private var showAchievements = false
+    @State private var showSettings = false
 
     var body: some View {
         ScrollView {
@@ -6870,10 +8709,15 @@ struct StatsView: View {
                     Spacer()
                     Text("Your Stats").font(.system(size: 18, weight: .bold, design: .rounded))
                     Spacer()
-                    Color.clear.frame(width: 40)
+                    Button(action: { showSettings = true }) {
+                        Image(systemName: "gearshape.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(.secondary)
+                    }
                 }
                 .padding()
 
+                // Main Stats
                 HStack(spacing: 12) {
                     StatBox(title: "Cards Studied", value: "\(statsManager.stats.totalCardsStudied)", icon: "square.stack.fill", color: .softLavender)
                     StatBox(title: "Accuracy", value: String(format: "%.0f%%", statsManager.stats.overallAccuracy), icon: "target", color: .mintGreen)
@@ -6886,6 +8730,96 @@ struct StatsView: View {
                 }
                 .padding(.horizontal)
 
+                // Achievements Button
+                Button(action: { showAchievements = true }) {
+                    HStack {
+                        Image(systemName: "trophy.fill")
+                            .font(.system(size: 22))
+                            .foregroundColor(.yellow)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Achievements")
+                                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                .foregroundColor(.primary)
+                            Text("\(achievementManager.unlockedAchievements.count)/\(AchievementType.allCases.count) unlocked")
+                                .font(.system(size: 12, design: .rounded))
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundColor(.secondary)
+                    }
+                    .padding()
+                    .background(Color.cardBackground)
+                    .cornerRadius(16)
+                }
+                .padding(.horizontal)
+
+                // Weak Areas Section
+                if !statsManager.getWeakCategories().isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.peachOrange)
+                            Text("Areas to Improve")
+                                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        }
+                        ForEach(statsManager.getWeakCategories().prefix(3), id: \.self) { category in
+                            if let stats = statsManager.stats.categoryAccuracy[category] {
+                                HStack {
+                                    Text(category)
+                                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                                    Spacer()
+                                    Text(String(format: "%.0f%%", stats.accuracy))
+                                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                                        .foregroundColor(.coralPink)
+                                }
+                            }
+                        }
+                    }
+                    .padding()
+                    .background(Color.peachOrange.opacity(0.15))
+                    .cornerRadius(16)
+                    .padding(.horizontal)
+                }
+
+                // Category Performance Chart
+                if !statsManager.stats.categoryAccuracy.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Category Performance")
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+
+                        Chart {
+                            ForEach(Array(statsManager.stats.categoryAccuracy.keys.sorted()), id: \.self) { category in
+                                if let stats = statsManager.stats.categoryAccuracy[category], stats.total >= 1 {
+                                    BarMark(
+                                        x: .value("Accuracy", stats.accuracy),
+                                        y: .value("Category", category)
+                                    )
+                                    .foregroundStyle(stats.accuracy >= 70 ? Color.mintGreen : Color.coralPink)
+                                    .cornerRadius(4)
+                                }
+                            }
+                        }
+                        .frame(height: CGFloat(statsManager.stats.categoryAccuracy.count * 35))
+                        .chartXScale(domain: 0...100)
+                        .chartXAxis {
+                            AxisMarks(values: [0, 25, 50, 75, 100]) { value in
+                                AxisValueLabel {
+                                    if let v = value.as(Int.self) {
+                                        Text("\(v)%")
+                                            .font(.system(size: 10))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .padding()
+                    .background(Color.cardBackground)
+                    .cornerRadius(16)
+                    .padding(.horizontal)
+                }
+
+                // Time Studied
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Time Studied").font(.system(size: 15, weight: .semibold, design: .rounded))
                     let hours = statsManager.stats.totalTimeSpentSeconds / 3600
@@ -6894,10 +8828,11 @@ struct StatsView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding()
-                .background(Color.white)
+                .background(Color.cardBackground)
                 .cornerRadius(16)
                 .padding(.horizontal)
 
+                // Recent Sessions
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Recent Sessions").font(.system(size: 15, weight: .semibold, design: .rounded))
                     if statsManager.stats.sessions.isEmpty {
@@ -6915,12 +8850,261 @@ struct StatsView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding()
-                .background(Color.white)
+                .background(Color.cardBackground)
                 .cornerRadius(16)
                 .padding(.horizontal)
+
+                // Test History
+                if !cardManager.testHistory.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Test History").font(.system(size: 15, weight: .semibold, design: .rounded))
+                        ForEach(cardManager.testHistory.prefix(5)) { test in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(test.questionCount) questions")
+                                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                                    Text(test.date, style: .date)
+                                        .font(.system(size: 11, design: .rounded))
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Text(String(format: "%.0f%%", test.accuracy))
+                                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                                    .foregroundColor(test.accuracy >= 70 ? .mintGreen : .coralPink)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    .background(Color.cardBackground)
+                    .cornerRadius(16)
+                    .padding(.horizontal)
+                }
+
+                Spacer(minLength: 20)
             }
         }
         .background(Color.creamyBackground)
+        .sheet(isPresented: $showAchievements) {
+            AchievementsView(achievementManager: achievementManager)
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
+        }
+        .onAppear {
+            achievementManager.checkAchievements(
+                stats: statsManager.stats,
+                masteredCount: cardManager.masteredCardIDs.count,
+                categoriesStudied: Set(statsManager.stats.categoryAccuracy.keys)
+            )
+        }
+    }
+}
+
+// MARK: - Achievements View
+
+struct AchievementsView: View {
+    @ObservedObject var achievementManager: AchievementManager
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
+                    ForEach(AchievementType.allCases, id: \.self) { type in
+                        AchievementCard(
+                            type: type,
+                            isUnlocked: achievementManager.hasAchievement(type)
+                        )
+                    }
+                }
+                .padding()
+            }
+            .background(Color.creamyBackground)
+            .navigationTitle("Achievements")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+struct AchievementCard: View {
+    let type: AchievementType
+    let isUnlocked: Bool
+
+    var body: some View {
+        VStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(isUnlocked ? type.color.opacity(0.2) : Color.gray.opacity(0.1))
+                    .frame(width: 60, height: 60)
+                Image(systemName: type.icon)
+                    .font(.system(size: 26))
+                    .foregroundColor(isUnlocked ? type.color : .gray.opacity(0.4))
+            }
+            Text(type.rawValue)
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundColor(isUnlocked ? .primary : .secondary)
+                .multilineTextAlignment(.center)
+            Text(type.description)
+                .font(.system(size: 11, design: .rounded))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
+        .background(Color.cardBackground)
+        .cornerRadius(16)
+        .opacity(isUnlocked ? 1 : 0.6)
+    }
+}
+
+// MARK: - Settings View
+
+struct SettingsView: View {
+    @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
+    @StateObject private var notificationManager = NotificationManager.shared
+    @State private var remindersEnabled = false
+    @State private var selectedTime = Date()
+    @State private var showRestoreAlert = false
+    @State private var restoreMessage = ""
+
+    private let privacyPolicyURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/privacy.html"
+    private let termsOfServiceURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/terms.html"
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section("Study Reminders") {
+                    Toggle("Daily Reminder", isOn: $remindersEnabled)
+                        .onChange(of: remindersEnabled) { _, newValue in
+                            if newValue {
+                                notificationManager.requestAuthorization()
+                            } else {
+                                notificationManager.cancelReminders()
+                            }
+                        }
+
+                    if remindersEnabled {
+                        DatePicker("Reminder Time", selection: $selectedTime, displayedComponents: .hourAndMinute)
+                            .onChange(of: selectedTime) { _, newValue in
+                                notificationManager.reminderTime = newValue
+                                notificationManager.scheduleStudyReminder()
+                            }
+                    }
+                }
+
+                Section("Subscription") {
+                    HStack {
+                        Text("Status")
+                        Spacer()
+                        Text(subscriptionManager.isSubscribed ? "Premium" : "Free")
+                            .foregroundColor(subscriptionManager.isSubscribed ? .mintGreen : .secondary)
+                            .fontWeight(subscriptionManager.isSubscribed ? .semibold : .regular)
+                    }
+
+                    Button(action: {
+                        Task {
+                            await subscriptionManager.restore()
+                            restoreMessage = subscriptionManager.isSubscribed ? "Subscription restored successfully!" : "No active subscription found."
+                            showRestoreAlert = true
+                        }
+                    }) {
+                        HStack {
+                            Image(systemName: "arrow.clockwise")
+                            Text("Restore Purchases")
+                        }
+                    }
+                }
+
+                Section("Legal") {
+                    Button(action: {
+                        if let url = URL(string: privacyPolicyURL) {
+                            UIApplication.shared.open(url)
+                        }
+                    }) {
+                        HStack {
+                            Image(systemName: "hand.raised.fill")
+                                .foregroundColor(.blue)
+                            Text("Privacy Policy")
+                                .foregroundColor(.primary)
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    Button(action: {
+                        if let url = URL(string: termsOfServiceURL) {
+                            UIApplication.shared.open(url)
+                        }
+                    }) {
+                        HStack {
+                            Image(systemName: "doc.text.fill")
+                                .foregroundColor(.blue)
+                            Text("Terms of Service")
+                                .foregroundColor(.primary)
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                Section(header: Text("Disclaimer"), footer: Text("CozyNCLEX Prep is designed to supplement your NCLEX preparation. Always follow your nursing program's curriculum and consult official NCSBN resources for the most current exam information.")) {
+                    HStack {
+                        Image(systemName: "info.circle.fill")
+                            .foregroundColor(.orange)
+                        Text("This app is a study aid only and does not guarantee exam success. Content is for educational purposes and should not replace professional nursing education or clinical judgment.")
+                            .font(.system(size: 13, design: .rounded))
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                Section("About") {
+                    HStack {
+                        Text("Version")
+                        Spacer()
+                        Text("1.0.0")
+                            .foregroundColor(.secondary)
+                    }
+
+                    HStack {
+                        Text("Content Sources")
+                        Spacer()
+                        Text("Kaplan, Archer, UWorld, NCSBN")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .onAppear {
+                remindersEnabled = notificationManager.isAuthorized
+                selectedTime = notificationManager.reminderTime
+            }
+            .alert("Restore Purchases", isPresented: $showRestoreAlert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(restoreMessage)
+            }
+        }
     }
 }
 
@@ -7276,65 +9460,71 @@ struct BearQuizView: View {
     @State private var showCelebration = false
     @State private var startTime = Date()
     @State private var showRationale = false
+    @State private var cardScale: CGFloat = 1.0
+    @State private var cardOpacity: Double = 1.0
+    @State private var showConfetti = false
+    @State private var streakCount = 0
 
     var availableCards: [Flashcard] { cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed) }
     var currentCard: Flashcard? { currentIndex < availableCards.count ? availableCards[currentIndex] : nil }
 
     var body: some View {
         ZStack {
-            Color.creamyBackground.ignoresSafeArea()
-            VStack(spacing: 16) {
-                HStack {
-                    BackButton { saveSession(); appManager.currentScreen = .menu }
-                    Spacer()
-                    Text("Bear Quiz 🐻").font(.system(size: 18, weight: .bold, design: .rounded))
-                    Spacer()
-                    Text("Score: \(score)").font(.system(size: 14, weight: .bold, design: .rounded)).foregroundColor(.pastelPink)
-                }
-                .padding(.horizontal)
+            // Background gradient
+            LinearGradient(
+                colors: [Color.creamyBackground, Color.pastelPink.opacity(0.1)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
 
-                if !availableCards.isEmpty {
-                    Text("Question \(currentIndex + 1) of \(availableCards.count)")
-                        .font(.system(size: 13, design: .rounded)).foregroundColor(.secondary)
-                }
+            VStack(spacing: 0) {
+                // Header
+                QuizHeader(
+                    score: score,
+                    currentIndex: currentIndex,
+                    total: availableCards.count,
+                    streakCount: streakCount,
+                    onBack: { saveSession(); appManager.currentScreen = .menu }
+                )
 
                 if showCelebration {
-                    CelebrationView(score: score, total: availableCards.count) { resetQuiz() }
+                    QuizCelebrationView(score: score, total: availableCards.count, onPlayAgain: resetQuiz)
                 } else if availableCards.isEmpty {
                     Spacer()
                     AllMasteredView { appManager.currentScreen = .cardBrowser; cardManager.currentFilter = .mastered }
                     Spacer()
                 } else if let card = currentCard {
-                    ScrollView {
-                        VStack(spacing: 16) {
-                            QuestionCard(card: card)
+                    Spacer()
 
-                            ForEach(shuffledAnswers, id: \.self) { answer in
-                                QuizAnswerButton(answer: answer, isSelected: selectedAnswer == answer,
-                                               isCorrect: answer == card.answer, showResult: showResult) {
-                                    selectAnswer(answer, correctAnswer: card.answer)
-                                }
-                            }
+                    // Main Question Modal Card
+                    QuizModalCard(
+                        card: card,
+                        shuffledAnswers: shuffledAnswers,
+                        selectedAnswer: selectedAnswer,
+                        showResult: showResult,
+                        isCorrect: isCorrect,
+                        showRationale: showRationale,
+                        onSelectAnswer: { answer in
+                            selectAnswer(answer, correctAnswer: card.answer)
+                        },
+                        onNext: nextQuestion
+                    )
+                    .scaleEffect(cardScale)
+                    .opacity(cardOpacity)
 
-                            if showResult && showRationale && !card.rationale.isEmpty {
-                                RationaleBox(rationale: card.rationale)
-                            }
+                    Spacer()
 
-                            if showResult {
-                                Button(action: nextQuestion) {
-                                    Text("Next Question").font(.system(size: 16, weight: .bold, design: .rounded))
-                                        .foregroundColor(.white).frame(maxWidth: .infinity).padding()
-                                        .background(Color.pastelPink).cornerRadius(14)
-                                }
-                            }
-                        }
-                        .padding()
-                    }
+                    // Progress dots
+                    QuizProgressDots(current: currentIndex, total: min(availableCards.count, 10))
+                        .padding(.bottom, 20)
                 }
             }
 
-            if showResult && isCorrect {
-                ConfettiView()
+            // Confetti overlay
+            if showConfetti {
+                QuizConfettiOverlay()
+                    .allowsHitTesting(false)
             }
         }
         .onAppear { loadQuestion() }
@@ -7342,33 +9532,682 @@ struct BearQuizView: View {
 
     func loadQuestion() {
         guard let card = currentCard else { return }
-        shuffledAnswers = card.allAnswers
-        selectedAnswer = nil; showResult = false; isCorrect = false; showRationale = false
+
+        // Animate card in
+        cardScale = 0.8
+        cardOpacity = 0
+
+        shuffledAnswers = card.shuffledAnswers()
+        selectedAnswer = nil
+        showResult = false
+        isCorrect = false
+        showRationale = false
+        showConfetti = false
+
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+            cardScale = 1.0
+            cardOpacity = 1.0
+        }
     }
 
     func selectAnswer(_ answer: String, correctAnswer: String) {
         guard !showResult, let card = currentCard else { return }
-        selectedAnswer = answer; showResult = true; isCorrect = answer == correctAnswer
-        if isCorrect { score += 1; cardManager.recordCorrectAnswer(card) }
-        else { cardManager.recordWrongAnswer(card) }
+
+        // Haptic feedback
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.impactOccurred()
+
+        selectedAnswer = answer
+        isCorrect = answer == correctAnswer
+
+        withAnimation(.easeInOut(duration: 0.3)) {
+            showResult = true
+        }
+
+        if isCorrect {
+            score += 1
+            streakCount += 1
+            cardManager.recordCorrectAnswer(card)
+
+            // Show confetti for correct answer
+            withAnimation(.easeOut(duration: 0.2)) {
+                showConfetti = true
+            }
+
+            // Success haptic
+            let successGenerator = UINotificationFeedbackGenerator()
+            successGenerator.notificationOccurred(.success)
+        } else {
+            streakCount = 0
+            cardManager.recordWrongAnswer(card)
+
+            // Error haptic
+            let errorGenerator = UINotificationFeedbackGenerator()
+            errorGenerator.notificationOccurred(.error)
+
+            // Shake animation
+            withAnimation(.default) {
+                cardScale = 0.98
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                withAnimation(.spring(response: 0.2, dampingFraction: 0.5)) {
+                    cardScale = 1.0
+                }
+            }
+        }
+
         statsManager.recordCategoryResult(category: card.contentCategory.rawValue, correct: isCorrect)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { showRationale = true }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            withAnimation(.easeInOut(duration: 0.3)) {
+                showRationale = true
+            }
+        }
     }
 
     func nextQuestion() {
-        if currentIndex + 1 >= availableCards.count { showCelebration = true }
-        else { currentIndex += 1; loadQuestion() }
+        // Animate card out
+        withAnimation(.easeInOut(duration: 0.2)) {
+            cardScale = 0.9
+            cardOpacity = 0
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            if currentIndex + 1 >= availableCards.count {
+                showCelebration = true
+            } else {
+                currentIndex += 1
+                loadQuestion()
+            }
+        }
     }
 
     func resetQuiz() {
-        saveSession(); currentIndex = 0; score = 0; showCelebration = false; startTime = Date(); loadQuestion()
+        saveSession()
+        currentIndex = 0
+        score = 0
+        streakCount = 0
+        showCelebration = false
+        startTime = Date()
+        loadQuestion()
     }
 
     func saveSession() {
         let timeSpent = Int(Date().timeIntervalSince(startTime))
-        if currentIndex > 0 { statsManager.recordSession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent, mode: "Quiz") }
+        if currentIndex > 0 {
+            statsManager.recordSession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent, mode: "Quiz")
+        }
     }
 }
+
+// MARK: - Quiz Header
+
+struct QuizHeader: View {
+    let score: Int
+    let currentIndex: Int
+    let total: Int
+    let streakCount: Int
+    let onBack: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Button(action: onBack) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 14, weight: .semibold))
+                        Text("Back")
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundColor(.pastelPink)
+                }
+
+                Spacer()
+
+                // Mascot and title
+                HStack(spacing: 8) {
+                    Image("NurseBear")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 32, height: 32)
+                    Text("Bear Quiz")
+                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                }
+
+                Spacer()
+
+                // Score badge
+                HStack(spacing: 4) {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.yellow)
+                    Text("\(score)")
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.cardBackground)
+                .cornerRadius(16)
+                .shadow(color: .black.opacity(0.05), radius: 4)
+            }
+            .padding(.horizontal)
+
+            // Progress and streak
+            HStack {
+                Text("Question \(currentIndex + 1) of \(total)")
+                    .font(.system(size: 13, design: .rounded))
+                    .foregroundColor(.secondary)
+
+                Spacer()
+
+                if streakCount > 1 {
+                    HStack(spacing: 4) {
+                        Image(systemName: "flame.fill")
+                            .foregroundColor(.orange)
+                        Text("\(streakCount) streak!")
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .foregroundColor(.orange)
+                    }
+                    .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .padding(.horizontal)
+        }
+        .padding(.top, 8)
+        .padding(.bottom, 16)
+    }
+}
+
+// MARK: - Quiz Modal Card
+
+struct QuizModalCard: View {
+    let card: Flashcard
+    let shuffledAnswers: [String]
+    let selectedAnswer: String?
+    let showResult: Bool
+    let isCorrect: Bool
+    let showRationale: Bool
+    let onSelectAnswer: (String) -> Void
+    let onNext: () -> Void
+
+    // Filter answers when showing result: only show selected + correct answer
+    var visibleAnswers: [(index: Int, answer: String)] {
+        if showResult {
+            return shuffledAnswers.enumerated().filter { (_, answer) in
+                answer == selectedAnswer || answer == card.answer
+            }.map { (index: $0.offset, answer: $0.element) }
+        } else {
+            return shuffledAnswers.enumerated().map { (index: $0.offset, answer: $0.element) }
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Question Section
+            VStack(spacing: 16) {
+                // Category and difficulty badges
+                HStack {
+                    HStack(spacing: 6) {
+                        Image(systemName: card.contentCategory.icon)
+                            .font(.system(size: 12))
+                            .foregroundColor(card.contentCategory.color)
+                        Text(card.contentCategory.rawValue)
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundColor(card.contentCategory.color)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(card.contentCategory.color.opacity(0.15))
+                    .cornerRadius(12)
+
+                    Spacer()
+
+                    Text(card.difficulty.rawValue)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(card.difficulty.color)
+                        .cornerRadius(12)
+                }
+
+                // Question text
+                Text(card.question)
+                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(4)
+                    .padding(.vertical, 8)
+            }
+            .padding(20)
+            .background(Color.cardBackground)
+
+            Divider()
+
+            // Answers Section (scrollable)
+            ScrollView {
+                VStack(spacing: 10) {
+                    ForEach(visibleAnswers, id: \.answer) { item in
+                        QuizAnswerOption(
+                            answer: item.answer,
+                            index: item.index,
+                            isSelected: selectedAnswer == item.answer,
+                            isCorrectAnswer: item.answer == card.answer,
+                            showResult: showResult,
+                            action: { onSelectAnswer(item.answer) }
+                        )
+                    }
+                    .animation(.easeInOut(duration: 0.3), value: showResult)
+
+                    // Rationale (inside scroll so it's viewable)
+                    if showResult && showRationale && !card.rationale.isEmpty {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "lightbulb.fill")
+                                    .foregroundColor(.yellow)
+                                Text("Rationale")
+                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            }
+                            Text(card.rationale)
+                                .font(.system(size: 14, design: .rounded))
+                                .foregroundColor(.secondary)
+                                .lineSpacing(3)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.yellow.opacity(0.1))
+                        .cornerRadius(12)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 20)
+                .padding(.bottom, 10)
+            }
+            .background(Color.cardBackground.opacity(0.5))
+
+            // Continue button (fixed at bottom, outside scroll)
+            if showResult {
+                Button(action: onNext) {
+                    HStack {
+                        Text("Continue")
+                            .font(.system(size: 16, weight: .bold, design: .rounded))
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 14, weight: .bold))
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(
+                        LinearGradient(
+                            colors: isCorrect ? [.mintGreen, .green.opacity(0.8)] : [.pastelPink, .softLavender],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .cornerRadius(14)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(Color.cardBackground)
+                .transition(.scale.combined(with: .opacity))
+            }
+
+            // Result Banner
+            if showResult {
+                ResultBanner(isCorrect: isCorrect)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .background(Color.cardBackground)
+        .cornerRadius(24)
+        .shadow(color: .black.opacity(0.15), radius: 20, y: 10)
+        .padding(.horizontal, 16)
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: showResult)
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: showRationale)
+    }
+}
+
+// MARK: - Quiz Answer Option
+
+struct QuizAnswerOption: View {
+    let answer: String
+    let index: Int
+    let isSelected: Bool
+    let isCorrectAnswer: Bool
+    let showResult: Bool
+    let action: () -> Void
+
+    private let letters = ["A", "B", "C", "D", "E", "F"]
+
+    var backgroundColor: Color {
+        if showResult {
+            if isCorrectAnswer { return Color.green.opacity(0.15) }
+            if isSelected && !isCorrectAnswer { return Color.red.opacity(0.15) }
+        }
+        return isSelected ? Color.pastelPink.opacity(0.15) : Color.cardBackground
+    }
+
+    var borderColor: Color {
+        if showResult {
+            if isCorrectAnswer { return .green }
+            if isSelected && !isCorrectAnswer { return .red }
+        }
+        return isSelected ? .pastelPink : Color.gray.opacity(0.2)
+    }
+
+    var letterBackgroundColor: Color {
+        if showResult {
+            if isCorrectAnswer { return .green }
+            if isSelected && !isCorrectAnswer { return .red }
+        }
+        return isSelected ? .pastelPink : Color.gray.opacity(0.15)
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                // Letter badge
+                Text(index < letters.count ? letters[index] : "\(index + 1)")
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .foregroundColor(isSelected || (showResult && isCorrectAnswer) ? .white : .secondary)
+                    .frame(width: 32, height: 32)
+                    .background(letterBackgroundColor)
+                    .cornerRadius(10)
+
+                // Answer text
+                Text(answer)
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .foregroundColor(.primary)
+                    .multilineTextAlignment(.leading)
+
+                Spacer()
+
+                // Result icon
+                if showResult {
+                    if isCorrectAnswer {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 22))
+                            .foregroundColor(.green)
+                    } else if isSelected {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 22))
+                            .foregroundColor(.red)
+                    }
+                }
+            }
+            .padding(14)
+            .background(backgroundColor)
+            .cornerRadius(14)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(borderColor, lineWidth: isSelected || (showResult && isCorrectAnswer) ? 2 : 1)
+            )
+        }
+        .disabled(showResult)
+        .animation(.easeInOut(duration: 0.2), value: isSelected)
+        .animation(.easeInOut(duration: 0.2), value: showResult)
+    }
+}
+
+// MARK: - Result Banner
+
+struct ResultBanner: View {
+    let isCorrect: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: isCorrect ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .font(.system(size: 24))
+
+            Text(isCorrect ? "Correct!" : "Not quite!")
+                .font(.system(size: 18, weight: .bold, design: .rounded))
+
+            if isCorrect {
+                Text("+1")
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.white.opacity(0.3))
+                    .cornerRadius(8)
+            }
+        }
+        .foregroundColor(.white)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 16)
+        .background(
+            LinearGradient(
+                colors: isCorrect ? [.green, .mintGreen] : [.red.opacity(0.8), .coralPink],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
+    }
+}
+
+// MARK: - Quiz Progress Dots
+
+struct QuizProgressDots: View {
+    let current: Int
+    let total: Int
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(0..<total, id: \.self) { index in
+                Circle()
+                    .fill(index == current ? Color.pastelPink : Color.gray.opacity(0.3))
+                    .frame(width: index == current ? 10 : 8, height: index == current ? 10 : 8)
+                    .animation(.spring(response: 0.3), value: current)
+            }
+        }
+    }
+}
+
+// MARK: - Quiz Confetti Overlay
+
+struct QuizConfettiOverlay: View {
+    @State private var confettiPieces: [ConfettiPiece] = []
+
+    var body: some View {
+        ZStack {
+            ForEach(confettiPieces) { piece in
+                ConfettiPieceView(piece: piece)
+            }
+        }
+        .onAppear {
+            createConfetti()
+        }
+    }
+
+    func createConfetti() {
+        let colors: [Color] = [.pastelPink, .mintGreen, .softLavender, .peachOrange, .skyBlue, .yellow, .red, .orange, .green, .blue, .purple]
+        let shapes: [ConfettiShape] = [.rectangle, .circle, .triangle, .strip]
+
+        for i in 0..<50 {
+            let piece = ConfettiPiece(
+                id: i,
+                x: CGFloat.random(in: 0...UIScreen.main.bounds.width),
+                color: colors.randomElement() ?? .pastelPink,
+                shape: shapes.randomElement() ?? .rectangle,
+                size: CGFloat.random(in: 8...14),
+                delay: Double.random(in: 0...0.5),
+                horizontalMovement: CGFloat.random(in: -100...100),
+                rotationSpeed: Double.random(in: 180...720)
+            )
+            confettiPieces.append(piece)
+        }
+    }
+}
+
+enum ConfettiShape {
+    case rectangle, circle, triangle, strip
+}
+
+struct ConfettiPiece: Identifiable {
+    let id: Int
+    let x: CGFloat
+    let color: Color
+    let shape: ConfettiShape
+    let size: CGFloat
+    let delay: Double
+    let horizontalMovement: CGFloat
+    let rotationSpeed: Double
+}
+
+struct ConfettiPieceView: View {
+    let piece: ConfettiPiece
+    @State private var yOffset: CGFloat = -50
+    @State private var xOffset: CGFloat = 0
+    @State private var opacity: Double = 1
+    @State private var rotation: Double = 0
+    @State private var rotation3D: Double = 0
+
+    var body: some View {
+        confettiShape
+            .frame(width: piece.shape == .strip ? piece.size * 0.4 : piece.size,
+                   height: piece.shape == .strip ? piece.size * 2.5 : piece.size)
+            .foregroundColor(piece.color)
+            .position(x: piece.x + xOffset, y: yOffset)
+            .opacity(opacity)
+            .rotationEffect(.degrees(rotation))
+            .rotation3DEffect(.degrees(rotation3D), axis: (x: 1, y: 0, z: 0))
+            .onAppear {
+                withAnimation(.easeIn(duration: 2.5).delay(piece.delay)) {
+                    yOffset = UIScreen.main.bounds.height + 100
+                    xOffset = piece.horizontalMovement
+                    rotation = piece.rotationSpeed
+                    rotation3D = Double.random(in: 180...540)
+                }
+                withAnimation(.easeIn(duration: 2).delay(piece.delay + 0.5)) {
+                    opacity = 0
+                }
+            }
+    }
+
+    @ViewBuilder
+    var confettiShape: some View {
+        switch piece.shape {
+        case .rectangle:
+            Rectangle()
+        case .circle:
+            Circle()
+        case .triangle:
+            TriangleShape()
+        case .strip:
+            RoundedRectangle(cornerRadius: 2)
+        }
+    }
+}
+
+struct TriangleShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+// MARK: - Quiz Celebration View
+
+struct QuizCelebrationView: View {
+    let score: Int
+    let total: Int
+    let onPlayAgain: () -> Void
+    @State private var showContent = false
+
+    var percentage: Int { total > 0 ? Int(Double(score) / Double(total) * 100) : 0 }
+    var isPassing: Bool { percentage >= 70 }
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Spacer()
+
+            // Mascot
+            Image("NurseBear")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 120, height: 120)
+                .scaleEffect(showContent ? 1 : 0.5)
+                .opacity(showContent ? 1 : 0)
+
+            // Result text
+            VStack(spacing: 8) {
+                Text(isPassing ? "Amazing Job!" : "Keep Practicing!")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+
+                Text(isPassing ? "You're doing great!" : "You'll get there!")
+                    .font(.system(size: 16, design: .rounded))
+                    .foregroundColor(.secondary)
+            }
+            .scaleEffect(showContent ? 1 : 0.8)
+            .opacity(showContent ? 1 : 0)
+
+            // Score display
+            HStack(spacing: 40) {
+                VStack(spacing: 4) {
+                    Text("\(score)/\(total)")
+                        .font(.system(size: 36, weight: .bold, design: .rounded))
+                        .foregroundColor(.pastelPink)
+                    Text("Correct")
+                        .font(.system(size: 14, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+
+                VStack(spacing: 4) {
+                    Text("\(percentage)%")
+                        .font(.system(size: 36, weight: .bold, design: .rounded))
+                        .foregroundColor(isPassing ? .mintGreen : .peachOrange)
+                    Text("Score")
+                        .font(.system(size: 14, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding()
+            .background(Color.cardBackground)
+            .cornerRadius(20)
+            .shadow(color: .black.opacity(0.08), radius: 10)
+            .scaleEffect(showContent ? 1 : 0.8)
+            .opacity(showContent ? 1 : 0)
+
+            Spacer()
+
+            // Play again button
+            Button(action: onPlayAgain) {
+                HStack {
+                    Image(systemName: "arrow.counterclockwise")
+                    Text("Play Again")
+                }
+                .font(.system(size: 17, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+                .background(
+                    LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing)
+                )
+                .cornerRadius(16)
+            }
+            .padding(.horizontal, 40)
+            .scaleEffect(showContent ? 1 : 0.8)
+            .opacity(showContent ? 1 : 0)
+
+            Spacer()
+        }
+        .onAppear {
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.7).delay(0.1)) {
+                showContent = true
+            }
+
+            // Trigger review prompt for good quiz results
+            if isPassing {
+                ReviewManager.shared.recordPositiveExperience()
+            }
+        }
+    }
+}
+
+// MARK: - Legacy Question Card (for other views)
 
 struct QuestionCard: View {
     let card: Flashcard
@@ -7388,50 +10227,9 @@ struct QuestionCard: View {
             Text(card.question).font(.system(size: 18, weight: .semibold, design: .rounded)).multilineTextAlignment(.center)
         }
         .padding(20)
-        .background(Color.white)
+        .background(Color.cardBackground)
         .cornerRadius(18)
         .shadow(color: .black.opacity(0.08), radius: 6)
-    }
-}
-
-struct QuizAnswerButton: View {
-    let answer: String
-    let isSelected: Bool
-    let isCorrect: Bool
-    let showResult: Bool
-    let action: () -> Void
-
-    var bgColor: Color {
-        if showResult {
-            if isCorrect { return .green.opacity(0.3) }
-            else if isSelected { return .red.opacity(0.3) }
-        }
-        return isSelected ? Color.pastelPink.opacity(0.3) : Color.white
-    }
-
-    var borderColor: Color {
-        if showResult {
-            if isCorrect { return .green }
-            else if isSelected { return .red }
-        }
-        return isSelected ? Color.pastelPink : Color.gray.opacity(0.3)
-    }
-
-    var body: some View {
-        Button(action: action) {
-            HStack {
-                Text(answer).font(.system(size: 15, weight: .medium, design: .rounded)).foregroundColor(.primary)
-                    .multilineTextAlignment(.leading)
-                Spacer()
-                if showResult && isCorrect { Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
-                if showResult && isSelected && !isCorrect { Image(systemName: "xmark.circle.fill").foregroundColor(.red) }
-            }
-            .padding()
-            .background(bgColor)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(borderColor, lineWidth: 2))
-        }
-        .disabled(showResult)
     }
 }
 
@@ -7447,14 +10245,6 @@ struct RationaleBox: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.yellow.opacity(0.15))
         .cornerRadius(14)
-    }
-}
-
-struct ConfettiView: View {
-    var body: some View {
-        Text("🎉 Correct!").font(.system(size: 28, weight: .black, design: .rounded))
-            .foregroundColor(.green).padding()
-            .background(Color.white.opacity(0.9)).cornerRadius(14)
     }
 }
 
@@ -7532,6 +10322,21 @@ struct WriteModeView: View {
 
                                     if !card.rationale.isEmpty { RationaleBox(rationale: card.rationale) }
 
+                                    // Override button for when user had a typo but knew the answer
+                                    if !isCorrect {
+                                        Button(action: overrideAsCorrect) {
+                                            HStack {
+                                                Image(systemName: "checkmark.circle")
+                                                Text("I Got This Right")
+                                            }
+                                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                            .foregroundColor(.mintGreen).frame(maxWidth: .infinity).padding()
+                                            .background(Color.mintGreen.opacity(0.15))
+                                            .cornerRadius(12)
+                                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.mintGreen, lineWidth: 1))
+                                        }
+                                    }
+
                                     Button(action: nextCard) {
                                         Text("Next Question").font(.system(size: 16, weight: .bold, design: .rounded))
                                             .foregroundColor(.white).frame(maxWidth: .infinity).padding()
@@ -7559,6 +10364,16 @@ struct WriteModeView: View {
         statsManager.recordCategoryResult(category: card.contentCategory.rawValue, correct: isCorrect)
     }
 
+    func overrideAsCorrect() {
+        guard let card = currentCard else { return }
+        // Reverse the wrong answer recording and record as correct instead
+        score += 1
+        isCorrect = true
+        cardManager.recordCorrectAnswer(card)
+        // Update stats - we already recorded a wrong, so this is a net correction
+        statsManager.recordCategoryResult(category: card.contentCategory.rawValue, correct: true)
+    }
+
     func similarity(_ s1: String, _ s2: String) -> Double {
         let longer = s1.count > s2.count ? s1 : s2
         let shorter = s1.count > s2.count ? s2 : s1
@@ -7581,7 +10396,17 @@ struct WriteModeView: View {
     }
 }
 
-// MARK: - Test Mode View
+// MARK: - Practice Test View
+
+struct TestFormat: Identifiable {
+    let id = UUID()
+    let name: String
+    let questionCount: Int
+    let timeMinutes: Int
+
+    var timeSeconds: Int { timeMinutes * 60 }
+    var description: String { "\(questionCount) questions • \(timeMinutes) minutes" }
+}
 
 struct TestModeView: View {
     @EnvironmentObject var appManager: AppManager
@@ -7589,12 +10414,21 @@ struct TestModeView: View {
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
     @State private var testCards: [Flashcard] = []
+    @State private var shuffledAnswers: [UUID: [String]] = [:] // Pre-shuffled answers
     @State private var currentIndex = 0
     @State private var answers: [UUID: String] = [:]
     @State private var showResults = false
     @State private var startTime = Date()
-    @State private var timeRemaining = 1800 // 30 minutes
+    @State private var timeRemaining = 7200 // 2 hours default
     @State private var timer: Timer?
+    @State private var showExitConfirmation = false
+    @State private var selectedFormat: TestFormat? = nil
+
+    let testFormats = [
+        TestFormat(name: "Quick Quiz", questionCount: 25, timeMinutes: 30),
+        TestFormat(name: "Standard Test", questionCount: 50, timeMinutes: 60),
+        TestFormat(name: "Full Exam", questionCount: 100, timeMinutes: 120)
+    ]
 
     var availableCards: [Flashcard] { cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed) }
     var currentCard: Flashcard? { currentIndex < testCards.count ? testCards[currentIndex] : nil }
@@ -7605,11 +10439,16 @@ struct TestModeView: View {
             Color.creamyBackground.ignoresSafeArea()
             VStack(spacing: 16) {
                 HStack {
-                    BackButton { timer?.invalidate(); saveSession(); appManager.currentScreen = .menu }
+                    Button(action: { if testCards.isEmpty { appManager.currentScreen = .menu } else { showExitConfirmation = true } }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left").font(.system(size: 14, weight: .semibold))
+                            Text("Back").font(.system(size: 14, weight: .semibold, design: .rounded))
+                        }.foregroundColor(.pastelPink)
+                    }
                     Spacer()
                     Text("Practice Test 📝").font(.system(size: 18, weight: .bold, design: .rounded))
                     Spacer()
-                    if !showResults {
+                    if !showResults && !testCards.isEmpty {
                         Text(timeString).font(.system(size: 14, weight: .bold, design: .monospaced))
                             .foregroundColor(timeRemaining < 300 ? .red : .secondary)
                     }
@@ -7618,34 +10457,74 @@ struct TestModeView: View {
 
                 if testCards.isEmpty {
                     Spacer()
-                    VStack(spacing: 14) {
+                    VStack(spacing: 20) {
                         Text("📋").font(.system(size: 50))
-                        Text("Ready for your test?").font(.system(size: 18, weight: .semibold, design: .rounded))
-                        Text("25 questions • 30 minutes").font(.system(size: 13, design: .rounded)).foregroundColor(.secondary)
+                        Text("Choose Your Test Format").font(.system(size: 20, weight: .bold, design: .rounded))
+                        Text("Select how many questions and how much time you want").font(.system(size: 14, design: .rounded)).foregroundColor(.secondary).multilineTextAlignment(.center)
+
+                        VStack(spacing: 12) {
+                            ForEach(testFormats) { format in
+                                Button(action: { selectedFormat = format }) {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(format.name).font(.system(size: 16, weight: .semibold, design: .rounded))
+                                            Text(format.description).font(.system(size: 13, design: .rounded)).foregroundColor(.secondary)
+                                        }
+                                        Spacer()
+                                        if selectedFormat?.id == format.id {
+                                            Image(systemName: "checkmark.circle.fill").foregroundColor(.peachOrange).font(.system(size: 22))
+                                        } else {
+                                            Image(systemName: "circle").foregroundColor(.gray.opacity(0.4)).font(.system(size: 22))
+                                        }
+                                    }
+                                    .padding()
+                                    .background(selectedFormat?.id == format.id ? Color.peachOrange.opacity(0.15) : Color.white)
+                                    .cornerRadius(14)
+                                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(selectedFormat?.id == format.id ? Color.peachOrange : Color.gray.opacity(0.2), lineWidth: 2))
+                                }
+                                .foregroundColor(.primary)
+                            }
+                        }
+                        .padding(.horizontal)
+
                         Button(action: startTest) {
                             Text("Start Test").font(.system(size: 16, weight: .bold, design: .rounded))
-                                .foregroundColor(.white).padding(.horizontal, 30).padding(.vertical, 12)
-                                .background(Color.peachOrange).cornerRadius(22)
+                                .foregroundColor(.white).padding(.horizontal, 40).padding(.vertical, 14)
+                                .background(selectedFormat != nil ? Color.peachOrange : Color.gray)
+                                .cornerRadius(22)
                         }
+                        .disabled(selectedFormat == nil)
                     }
                     Spacer()
                 } else if showResults {
-                    TestResultsView(correct: correctCount, total: testCards.count) {
-                        testCards = []; showResults = false
-                    }
-                } else if let card = currentCard {
+                    TestResultsView(correct: correctCount, total: testCards.count, onRetry: {
+                        testCards = []; shuffledAnswers = [:]; showResults = false; selectedFormat = nil
+                    }, testAnswers: getTestAnswers())
+                } else if let card = currentCard, let cardAnswers = shuffledAnswers[card.id] {
                     ProgressBar(current: currentIndex + 1, total: testCards.count).padding(.horizontal)
                     ScrollView {
                         VStack(spacing: 16) {
                             QuestionCard(card: card)
-                            ForEach(card.allAnswers, id: \.self) { answer in
-                                Button(action: { answers[card.id] = answer }) {
+                            ForEach(cardAnswers, id: \.self) { answer in
+                                Button {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        answers[card.id] = answer
+                                    }
+                                } label: {
                                     HStack {
-                                        Text(answer).font(.system(size: 15, weight: .medium, design: .rounded))
-                                            .foregroundColor(.primary).multilineTextAlignment(.leading)
+                                        Text(answer)
+                                            .font(.system(size: 15, weight: .medium, design: .rounded))
+                                            .foregroundColor(.primary)
+                                            .multilineTextAlignment(.leading)
                                         Spacer()
                                         if answers[card.id] == answer {
-                                            Image(systemName: "checkmark.circle.fill").foregroundColor(.pastelPink)
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .foregroundColor(.pastelPink)
+                                                .font(.system(size: 20))
+                                        } else {
+                                            Image(systemName: "circle")
+                                                .foregroundColor(.gray.opacity(0.4))
+                                                .font(.system(size: 20))
                                         }
                                     }
                                     .padding()
@@ -7653,6 +10532,7 @@ struct TestModeView: View {
                                     .cornerRadius(12)
                                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(answers[card.id] == answer ? Color.pastelPink : Color.gray.opacity(0.3), lineWidth: 2))
                                 }
+                                .buttonStyle(.plain)
                             }
 
                             HStack {
@@ -7684,17 +10564,45 @@ struct TestModeView: View {
             }
         }
         .onDisappear { timer?.invalidate() }
+        .alert("Exit Test?", isPresented: $showExitConfirmation) {
+            Button("Continue Test", role: .cancel) { }
+            Button("Exit", role: .destructive) {
+                timer?.invalidate()
+                if testCards.count > 0 { saveSession() }
+                testCards = []
+                shuffledAnswers = [:]
+                appManager.currentScreen = .menu
+            }
+        } message: {
+            Text("Your progress will be saved but you'll need to start a new test.")
+        }
     }
 
     var timeString: String {
-        let mins = timeRemaining / 60
+        let hours = timeRemaining / 3600
+        let mins = (timeRemaining % 3600) / 60
         let secs = timeRemaining % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, mins, secs)
+        }
         return String(format: "%02d:%02d", mins, secs)
     }
 
     func startTest() {
-        testCards = Array(availableCards.shuffled().prefix(min(25, availableCards.count)))
-        currentIndex = 0; answers = [:]; startTime = Date(); timeRemaining = 1800
+        guard let format = selectedFormat else { return }
+        let questionCount = min(format.questionCount, availableCards.count)
+        testCards = Array(availableCards.shuffled().prefix(questionCount))
+
+        // Pre-shuffle answers for each card to prevent re-shuffling on re-render
+        shuffledAnswers = [:]
+        for card in testCards {
+            shuffledAnswers[card.id] = card.shuffledAnswers()
+        }
+
+        currentIndex = 0
+        answers = [:]
+        startTime = Date()
+        timeRemaining = format.timeSeconds
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
             if timeRemaining > 0 { timeRemaining -= 1 }
             else { submitTest() }
@@ -7703,12 +10611,40 @@ struct TestModeView: View {
 
     func submitTest() {
         timer?.invalidate()
+
+        var categoryBreakdown: [String: CategoryTestResult] = [:]
+        var testAnswers: [TestAnswer] = []
+
         for card in testCards {
-            let isCorrect = answers[card.id] == card.answer
+            let selectedAnswer = answers[card.id] ?? ""
+            let isCorrect = selectedAnswer == card.answer
+
             if isCorrect { cardManager.recordCorrectAnswer(card) }
             else { cardManager.recordWrongAnswer(card) }
             statsManager.recordCategoryResult(category: card.contentCategory.rawValue, correct: isCorrect)
+
+            // Track category breakdown
+            let category = card.contentCategory.rawValue
+            var catResult = categoryBreakdown[category] ?? CategoryTestResult()
+            catResult.total += 1
+            if isCorrect { catResult.correct += 1 }
+            categoryBreakdown[category] = catResult
+
+            // Track individual answers for review
+            testAnswers.append(TestAnswer(card: card, selectedAnswer: selectedAnswer, isCorrect: isCorrect))
         }
+
+        // Save test result
+        let timeSpent = Int(Date().timeIntervalSince(startTime))
+        let result = TestResult(
+            questionCount: testCards.count,
+            correctCount: correctCount,
+            timeSpentSeconds: timeSpent,
+            categoryBreakdown: categoryBreakdown,
+            answers: testAnswers
+        )
+        cardManager.saveTestResult(result)
+
         saveSession()
         showResults = true
     }
@@ -7717,12 +10653,21 @@ struct TestModeView: View {
         let timeSpent = Int(Date().timeIntervalSince(startTime))
         statsManager.recordSession(cardsStudied: testCards.count, correct: correctCount, timeSeconds: timeSpent, mode: "Test")
     }
+
+    func getTestAnswers() -> [TestAnswer] {
+        testCards.map { card in
+            let selectedAnswer = answers[card.id] ?? ""
+            return TestAnswer(card: card, selectedAnswer: selectedAnswer, isCorrect: selectedAnswer == card.answer)
+        }
+    }
 }
 
 struct TestResultsView: View {
     let correct: Int
     let total: Int
     let onRetry: () -> Void
+    var testAnswers: [TestAnswer] = []
+    @State private var showReview = false
 
     var percentage: Int { total > 0 ? Int(Double(correct) / Double(total) * 100) : 0 }
     var passed: Bool { percentage >= 70 }
@@ -7735,6 +10680,21 @@ struct TestResultsView: View {
             Text("\(correct)/\(total) correct (\(percentage)%)").font(.system(size: 18, weight: .semibold, design: .rounded)).foregroundColor(.secondary)
             Text(passed ? "Great job! You're on track." : "You need 70% to pass. Review and try again!")
                 .font(.system(size: 14, design: .rounded)).foregroundColor(.secondary).multilineTextAlignment(.center)
+
+            if !testAnswers.isEmpty {
+                Button(action: { showReview = true }) {
+                    HStack {
+                        Image(systemName: "doc.text.magnifyingglass")
+                        Text("Review Answers")
+                    }
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundColor(.pastelPink)
+                    .padding(.horizontal, 30).padding(.vertical, 14)
+                    .background(Color.pastelPink.opacity(0.15))
+                    .cornerRadius(22)
+                }
+            }
+
             Button(action: onRetry) {
                 Text("Take Another Test").font(.system(size: 16, weight: .bold, design: .rounded))
                     .foregroundColor(.white).padding(.horizontal, 30).padding(.vertical, 14)
@@ -7744,6 +10704,465 @@ struct TestResultsView: View {
             Spacer()
         }
         .padding()
+        .sheet(isPresented: $showReview) {
+            TestReviewView(answers: testAnswers)
+        }
+    }
+}
+
+// MARK: - Test Review View
+
+struct TestReviewView: View {
+    let answers: [TestAnswer]
+    @Environment(\.dismiss) var dismiss
+    @State private var showIncorrectOnly = false
+
+    var filteredAnswers: [TestAnswer] {
+        showIncorrectOnly ? answers.filter { !$0.isCorrect } : answers
+    }
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 0) {
+                // Filter toggle
+                Picker("Filter", selection: $showIncorrectOnly) {
+                    Text("All Questions").tag(false)
+                    Text("Incorrect Only").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .padding()
+
+                if filteredAnswers.isEmpty {
+                    Spacer()
+                    VStack(spacing: 12) {
+                        Text("🎉").font(.system(size: 50))
+                        Text("All Correct!").font(.system(size: 20, weight: .bold, design: .rounded))
+                        Text("You got every question right!").font(.system(size: 14, design: .rounded)).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 16) {
+                            ForEach(Array(filteredAnswers.enumerated()), id: \.element.id) { index, answer in
+                                TestReviewCard(answer: answer, questionNumber: answers.firstIndex(where: { $0.id == answer.id })! + 1)
+                            }
+                        }
+                        .padding()
+                    }
+                }
+            }
+            .background(Color.creamyBackground)
+            .navigationTitle("Review Answers")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+struct TestReviewCard: View {
+    let answer: TestAnswer
+    let questionNumber: Int
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: answer.isCorrect ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .foregroundColor(answer.isCorrect ? .mintGreen : .coralPink)
+                    .font(.system(size: 20))
+                Text("Question \(questionNumber)")
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                Spacer()
+                Text(answer.category)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.gray.opacity(0.1))
+                    .cornerRadius(8)
+            }
+
+            Text(answer.question)
+                .font(.system(size: 15, weight: .medium, design: .rounded))
+
+            if !answer.isCorrect {
+                HStack(alignment: .top, spacing: 8) {
+                    Text("Your answer:")
+                        .font(.system(size: 12, design: .rounded))
+                        .foregroundColor(.secondary)
+                    Text(answer.selectedAnswer.isEmpty ? "No answer" : answer.selectedAnswer)
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundColor(.coralPink)
+                }
+            }
+
+            HStack(alignment: .top, spacing: 8) {
+                Text("Correct answer:")
+                    .font(.system(size: 12, design: .rounded))
+                    .foregroundColor(.secondary)
+                Text(answer.correctAnswer)
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundColor(.mintGreen)
+            }
+
+            if isExpanded && !answer.rationale.isEmpty {
+                Divider()
+                Text("Rationale:")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundColor(.secondary)
+                Text(answer.rationale)
+                    .font(.system(size: 13, design: .rounded))
+                    .foregroundColor(.secondary)
+            }
+
+            if !answer.rationale.isEmpty {
+                Button(action: { withAnimation { isExpanded.toggle() } }) {
+                    HStack {
+                        Text(isExpanded ? "Hide Rationale" : "Show Rationale")
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 10))
+                    }
+                    .foregroundColor(.softLavender)
+                }
+            }
+        }
+        .padding()
+        .background(Color.cardBackground)
+        .cornerRadius(16)
+    }
+}
+
+// MARK: - Smart Review View (Spaced Repetition)
+
+struct SmartReviewView: View {
+    @EnvironmentObject var appManager: AppManager
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
+    @EnvironmentObject var cardManager: CardManager
+    @EnvironmentObject var statsManager: StatsManager
+    @State private var reviewCards: [Flashcard] = []
+    @State private var currentIndex = 0
+    @State private var showAnswer = false
+    @State private var score = 0
+    @State private var cardsReviewed = 0
+    @State private var startTime = Date()
+    @State private var showCelebration = false
+
+    var currentCard: Flashcard? {
+        currentIndex < reviewCards.count ? reviewCards[currentIndex] : nil
+    }
+
+    var dueCount: Int {
+        cardManager.getDueCardCount(isSubscribed: subscriptionManager.isSubscribed)
+    }
+
+    var body: some View {
+        ZStack {
+            Color.creamyBackground.ignoresSafeArea()
+
+            VStack(spacing: 16) {
+                // Header
+                HStack {
+                    BackButton { saveSession(); appManager.currentScreen = .menu }
+                    Spacer()
+                    Text("Smart Review 🧠").font(.system(size: 18, weight: .bold, design: .rounded))
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("\(score)/\(cardsReviewed)")
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                            .foregroundColor(.mintGreen)
+                        Text("\(dueCount) due")
+                            .font(.system(size: 11, design: .rounded))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(.horizontal)
+
+                if showCelebration {
+                    SmartReviewCelebration(cardsReviewed: cardsReviewed, score: score) {
+                        resetReview()
+                    }
+                } else if reviewCards.isEmpty {
+                    Spacer()
+                    NoCardsDueView {
+                        appManager.currentScreen = .menu
+                    }
+                    Spacer()
+                } else if let card = currentCard {
+                    // Progress bar
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.gray.opacity(0.2))
+                                .frame(height: 8)
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(LinearGradient(colors: [.mintGreen, .softLavender], startPoint: .leading, endPoint: .trailing))
+                                .frame(width: geo.size.width * CGFloat(currentIndex) / CGFloat(max(1, reviewCards.count)), height: 8)
+                        }
+                    }
+                    .frame(height: 8)
+                    .padding(.horizontal)
+
+                    // Spaced Rep Info
+                    if let srData = cardManager.getSpacedRepInfo(card: card) {
+                        HStack {
+                            Label("Interval: \(srData.interval) days", systemImage: "calendar")
+                            Spacer()
+                            Label("Reviews: \(srData.repetitions)", systemImage: "arrow.counterclockwise")
+                        }
+                        .font(.system(size: 11, design: .rounded))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal)
+                    }
+
+                    ScrollView {
+                        VStack(spacing: 20) {
+                            // Question Card
+                            VStack(spacing: 12) {
+                                HStack {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: card.contentCategory.icon)
+                                            .foregroundColor(card.contentCategory.color)
+                                        Text(card.contentCategory.rawValue)
+                                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Spacer()
+                                    Text(card.difficulty.rawValue)
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(card.difficulty.color)
+                                        .cornerRadius(8)
+                                }
+
+                                Text(card.question)
+                                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                                    .multilineTextAlignment(.center)
+                                    .padding(.vertical, 10)
+                            }
+                            .padding(20)
+                            .background(Color.white)
+                            .cornerRadius(18)
+                            .shadow(color: .black.opacity(0.08), radius: 6)
+
+                            if showAnswer {
+                                // Answer Card
+                                VStack(spacing: 12) {
+                                    Text("Answer")
+                                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                        .foregroundColor(.secondary)
+
+                                    Text(card.answer)
+                                        .font(.system(size: 17, weight: .medium, design: .rounded))
+                                        .multilineTextAlignment(.center)
+                                        .foregroundColor(.mintGreen)
+
+                                    if !card.rationale.isEmpty {
+                                        Divider().padding(.vertical, 8)
+                                        Text(card.rationale)
+                                            .font(.system(size: 14, design: .rounded))
+                                            .foregroundColor(.secondary)
+                                            .multilineTextAlignment(.leading)
+                                    }
+                                }
+                                .padding(20)
+                                .background(Color.mintGreen.opacity(0.1))
+                                .cornerRadius(18)
+
+                                // Rating Buttons
+                                VStack(spacing: 10) {
+                                    Text("How well did you know this?")
+                                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                                        .foregroundColor(.secondary)
+
+                                    HStack(spacing: 12) {
+                                        RatingButton(title: "Again", subtitle: "1 day", color: .coralPink) {
+                                            rateCard(quality: 1)
+                                        }
+                                        RatingButton(title: "Hard", subtitle: "3 days", color: .peachOrange) {
+                                            rateCard(quality: 3)
+                                        }
+                                        RatingButton(title: "Good", subtitle: "1 week", color: .mintGreen) {
+                                            rateCard(quality: 4)
+                                        }
+                                        RatingButton(title: "Easy", subtitle: "2 weeks", color: .skyBlue) {
+                                            rateCard(quality: 5)
+                                        }
+                                    }
+                                }
+                                .padding(.top, 10)
+                            } else {
+                                // Show Answer Button
+                                Button(action: { withAnimation { showAnswer = true } }) {
+                                    Text("Show Answer")
+                                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                                        .foregroundColor(.white)
+                                        .frame(maxWidth: .infinity)
+                                        .padding()
+                                        .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
+                                        .cornerRadius(14)
+                                }
+                            }
+                        }
+                        .padding()
+                    }
+                }
+            }
+        }
+        .onAppear { loadReviewCards() }
+    }
+
+    func loadReviewCards() {
+        reviewCards = cardManager.getCardsForSpacedReview(isSubscribed: subscriptionManager.isSubscribed).shuffled()
+        currentIndex = 0
+        showAnswer = false
+    }
+
+    func rateCard(quality: Int) {
+        guard let card = currentCard else { return }
+
+        cardsReviewed += 1
+        if quality >= 3 {
+            score += 1
+            cardManager.recordCorrectAnswer(card)
+        } else {
+            cardManager.recordWrongAnswer(card)
+        }
+
+        // Record spaced rep response
+        cardManager.recordSpacedRepResponse(card: card, quality: quality)
+        statsManager.recordCategoryResult(category: card.contentCategory.rawValue, correct: quality >= 3)
+
+        // Move to next card
+        if currentIndex + 1 >= reviewCards.count {
+            showCelebration = true
+        } else {
+            currentIndex += 1
+            showAnswer = false
+        }
+    }
+
+    func resetReview() {
+        saveSession()
+        score = 0
+        cardsReviewed = 0
+        currentIndex = 0
+        showCelebration = false
+        startTime = Date()
+        loadReviewCards()
+    }
+
+    func saveSession() {
+        let timeSpent = Int(Date().timeIntervalSince(startTime))
+        if cardsReviewed > 0 {
+            statsManager.recordSession(cardsStudied: cardsReviewed, correct: score, timeSeconds: timeSpent, mode: "Smart Review")
+        }
+    }
+}
+
+struct RatingButton: View {
+    let title: String
+    let subtitle: String
+    let color: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Text(title)
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                Text(subtitle)
+                    .font(.system(size: 10, design: .rounded))
+                    .foregroundColor(.white.opacity(0.8))
+            }
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(color)
+            .cornerRadius(12)
+        }
+    }
+}
+
+struct NoCardsDueView: View {
+    let action: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("🎉").font(.system(size: 60))
+            Text("All Caught Up!")
+                .font(.system(size: 24, weight: .bold, design: .rounded))
+            Text("No cards due for review.\nCome back later or try another study mode!")
+                .font(.system(size: 15, design: .rounded))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+            Button(action: action) {
+                Text("Back to Menu")
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 30)
+                    .padding(.vertical, 14)
+                    .background(LinearGradient(colors: [.mintGreen, .softLavender], startPoint: .leading, endPoint: .trailing))
+                    .cornerRadius(22)
+            }
+            .padding(.top, 10)
+        }
+        .padding()
+    }
+}
+
+struct SmartReviewCelebration: View {
+    let cardsReviewed: Int
+    let score: Int
+    let onContinue: () -> Void
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Spacer()
+            Text("🧠").font(.system(size: 70))
+            Text("Review Complete!")
+                .font(.system(size: 28, weight: .bold, design: .rounded))
+            Text("You reviewed \(cardsReviewed) cards")
+                .font(.system(size: 16, design: .rounded))
+                .foregroundColor(.secondary)
+
+            HStack(spacing: 30) {
+                VStack {
+                    Text("\(score)")
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .foregroundColor(.mintGreen)
+                    Text("Correct")
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+                VStack {
+                    Text("\(cardsReviewed > 0 ? Int(Double(score) / Double(cardsReviewed) * 100) : 0)%")
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .foregroundColor(.softLavender)
+                    Text("Accuracy")
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(.vertical)
+
+            Button(action: onContinue) {
+                Text("Continue Studying")
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 35)
+                    .padding(.vertical, 14)
+                    .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
+                    .cornerRadius(22)
+            }
+            Spacer()
+        }
     }
 }
 
@@ -7884,18 +11303,31 @@ struct MatchTileView: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 4) {
-                Text(tile.isQuestion ? "Q" : "A").font(.system(size: 11, weight: .bold, design: .rounded))
-                    .foregroundColor(tile.isQuestion ? .mintGreen : .pastelPink)
-                Text(tile.content).font(.system(size: 10, weight: .medium, design: .rounded))
-                    .foregroundColor(.primary).multilineTextAlignment(.center).lineLimit(4).minimumScaleFactor(0.7)
+            VStack(spacing: 6) {
+                // Badge showing Q or A
+                Text(tile.isQuestion ? "Q" : "A")
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(tile.isQuestion ? Color.mintGreen : Color.pastelPink)
+                    .cornerRadius(8)
+
+                // Content text - larger and more readable
+                Text(tile.content)
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundColor(.primary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(5)
+                    .minimumScaleFactor(0.6)
             }
-            .padding(8)
-            .frame(height: 90)
+            .padding(10)
+            .frame(height: 120)
             .frame(maxWidth: .infinity)
             .background(bgColor)
-            .cornerRadius(10)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(borderColor, lineWidth: 2))
+            .cornerRadius(12)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(borderColor, lineWidth: 2))
+            .shadow(color: isSelected ? borderColor.opacity(0.3) : .clear, radius: 4)
             .opacity(tile.isMatched ? 0 : 1)
             .scaleEffect(tile.isMatched ? 0.5 : 1)
         }
@@ -7920,6 +11352,103 @@ struct MatchWinView: View {
                     .cornerRadius(22)
             }
             Spacer()
+        }
+    }
+}
+
+// MARK: - Category Filter Sheet
+
+struct CategoryFilterSheet: View {
+    @EnvironmentObject var cardManager: CardManager
+    @Environment(\.dismiss) var dismiss
+
+    var selectedCount: Int {
+        cardManager.selectedCategories.count
+    }
+
+    var totalCount: Int {
+        ContentCategory.allCases.count
+    }
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 0) {
+                // Header with count
+                HStack {
+                    Text("\(selectedCount) of \(totalCount) selected")
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button(action: {
+                        if selectedCount == totalCount {
+                            cardManager.deselectAllCategories()
+                        } else {
+                            cardManager.selectAllCategories()
+                        }
+                    }) {
+                        Text(selectedCount == totalCount ? "Deselect All" : "Select All")
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .foregroundColor(.pastelPink)
+                    }
+                }
+                .padding()
+                .background(Color.creamyBackground)
+
+                // Category list
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(ContentCategory.allCases, id: \.self) { category in
+                            CategoryFilterRow(category: category, isSelected: cardManager.selectedCategories.contains(category)) {
+                                cardManager.toggleCategory(category)
+                            }
+                        }
+                    }
+                    .padding()
+                }
+            }
+            .background(Color.creamyBackground)
+            .navigationTitle("Filter Categories")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        .foregroundColor(.pastelPink)
+                }
+            }
+        }
+    }
+}
+
+struct CategoryFilterRow: View {
+    let category: ContentCategory
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                // Color indicator
+                Circle()
+                    .fill(category.color)
+                    .frame(width: 12, height: 12)
+
+                Text(category.rawValue)
+                    .font(.system(size: 16, weight: .medium, design: .rounded))
+                    .foregroundColor(.primary)
+
+                Spacer()
+
+                // Checkbox
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 22))
+                    .foregroundColor(isSelected ? .mintGreen : .gray.opacity(0.4))
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(Color.white)
+            .cornerRadius(12)
+            .shadow(color: .black.opacity(0.03), radius: 4)
         }
     }
 }
