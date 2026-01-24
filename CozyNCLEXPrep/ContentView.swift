@@ -11,6 +11,8 @@ import AVFoundation
 import StoreKit
 import Charts
 import UserNotifications
+import UIKit
+import AudioToolbox
 
 // MARK: - Persistence Manager
 
@@ -33,6 +35,18 @@ class PersistenceManager {
     private let flaggedCardsKey = "flaggedCardIDs"
     private let testHistoryKey = "testHistory"
     private let hasSeenOnboardingKey = "hasSeenOnboarding"
+    private let darkModeKey = "darkModeEnabled"
+    private let appearanceModeKey = "appearanceMode" // 0 = system, 1 = light, 2 = dark
+
+    // MARK: - Appearance
+
+    func getAppearanceMode() -> Int {
+        return defaults.integer(forKey: appearanceModeKey)
+    }
+
+    func setAppearanceMode(_ mode: Int) {
+        defaults.set(mode, forKey: appearanceModeKey)
+    }
 
     // MARK: - Onboarding
 
@@ -533,6 +547,601 @@ class AchievementManager: ObservableObject {
     }
 }
 
+// MARK: - Appearance Manager
+
+class AppearanceManager: ObservableObject {
+    static let shared = AppearanceManager()
+
+    enum Mode: Int, CaseIterable {
+        case system = 0
+        case light = 1
+        case dark = 2
+
+        var name: String {
+            switch self {
+            case .system: return "System"
+            case .light: return "Light"
+            case .dark: return "Dark"
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .system: return "iphone"
+            case .light: return "sun.max.fill"
+            case .dark: return "moon.fill"
+            }
+        }
+
+        var colorScheme: ColorScheme? {
+            switch self {
+            case .system: return nil
+            case .light: return .light
+            case .dark: return .dark
+            }
+        }
+    }
+
+    @Published var currentMode: Mode {
+        didSet {
+            PersistenceManager.shared.setAppearanceMode(currentMode.rawValue)
+        }
+    }
+
+    init() {
+        let savedMode = PersistenceManager.shared.getAppearanceMode()
+        self.currentMode = Mode(rawValue: savedMode) ?? .system
+    }
+}
+
+// MARK: - Haptic Feedback Manager
+
+class HapticManager {
+    static let shared = HapticManager()
+
+    private let lightImpact = UIImpactFeedbackGenerator(style: .light)
+    private let mediumImpact = UIImpactFeedbackGenerator(style: .medium)
+    private let heavyImpact = UIImpactFeedbackGenerator(style: .heavy)
+    private let softImpact = UIImpactFeedbackGenerator(style: .soft)
+    private let rigidImpact = UIImpactFeedbackGenerator(style: .rigid)
+    private let notificationFeedback = UINotificationFeedbackGenerator()
+    private let selectionFeedback = UISelectionFeedbackGenerator()
+
+    var isEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "hapticsEnabled") }
+        set { UserDefaults.standard.set(newValue, forKey: "hapticsEnabled") }
+    }
+
+    init() {
+        // Default to enabled if not set
+        if UserDefaults.standard.object(forKey: "hapticsEnabled") == nil {
+            UserDefaults.standard.set(true, forKey: "hapticsEnabled")
+        }
+        prepareAll()
+    }
+
+    private func prepareAll() {
+        lightImpact.prepare()
+        mediumImpact.prepare()
+        heavyImpact.prepare()
+        notificationFeedback.prepare()
+        selectionFeedback.prepare()
+    }
+
+    func light() {
+        guard isEnabled else { return }
+        lightImpact.impactOccurred()
+    }
+
+    func medium() {
+        guard isEnabled else { return }
+        mediumImpact.impactOccurred()
+    }
+
+    func heavy() {
+        guard isEnabled else { return }
+        heavyImpact.impactOccurred()
+    }
+
+    func soft() {
+        guard isEnabled else { return }
+        softImpact.impactOccurred()
+    }
+
+    func rigid() {
+        guard isEnabled else { return }
+        rigidImpact.impactOccurred()
+    }
+
+    func success() {
+        guard isEnabled else { return }
+        notificationFeedback.notificationOccurred(.success)
+    }
+
+    func warning() {
+        guard isEnabled else { return }
+        notificationFeedback.notificationOccurred(.warning)
+    }
+
+    func error() {
+        guard isEnabled else { return }
+        notificationFeedback.notificationOccurred(.error)
+    }
+
+    func selection() {
+        guard isEnabled else { return }
+        selectionFeedback.selectionChanged()
+    }
+
+    // Convenience methods for specific actions
+    func cardFlip() { soft() }
+    func correctAnswer() { success() }
+    func wrongAnswer() { error() }
+    func buttonTap() { light() }
+    func swipe() { medium() }
+    func achievement() {
+        guard isEnabled else { return }
+        // Double tap for achievements
+        heavyImpact.impactOccurred()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [self] in
+            heavyImpact.impactOccurred()
+        }
+    }
+    func levelUp() {
+        guard isEnabled else { return }
+        // Triple success for level up
+        notificationFeedback.notificationOccurred(.success)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [self] in
+            notificationFeedback.notificationOccurred(.success)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [self] in
+            notificationFeedback.notificationOccurred(.success)
+        }
+    }
+    func streak() { rigid() }
+}
+
+// MARK: - Sound Manager
+
+class SoundManager: ObservableObject {
+    static let shared = SoundManager()
+
+    private var audioPlayer: AVAudioPlayer?
+
+    @Published var isEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(isEnabled, forKey: "soundsEnabled")
+        }
+    }
+
+    init() {
+        // Default to enabled if not set
+        if UserDefaults.standard.object(forKey: "soundsEnabled") == nil {
+            UserDefaults.standard.set(true, forKey: "soundsEnabled")
+        }
+        isEnabled = UserDefaults.standard.bool(forKey: "soundsEnabled")
+
+        // Configure audio session
+        try? AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default, options: .mixWithOthers)
+        try? AVAudioSession.sharedInstance().setActive(true)
+    }
+
+    func playSystemSound(_ soundID: SystemSoundID) {
+        guard isEnabled else { return }
+        AudioServicesPlaySystemSound(soundID)
+    }
+
+    func cardFlip() {
+        playSystemSound(1104) // Tock sound
+    }
+
+    func correctAnswer() {
+        playSystemSound(1057) // Positive sound
+    }
+
+    func wrongAnswer() {
+        playSystemSound(1053) // Negative sound
+    }
+
+    func buttonTap() {
+        playSystemSound(1104) // Light tap
+    }
+
+    func achievement() {
+        playSystemSound(1025) // Fanfare-like
+    }
+
+    func levelUp() {
+        playSystemSound(1026) // Level up sound
+    }
+
+    func streak() {
+        playSystemSound(1016) // Tweet sound
+    }
+
+    func swipe() {
+        playSystemSound(1306) // Swoosh
+    }
+
+    func celebration() {
+        playSystemSound(1335) // Confetti/celebration
+    }
+}
+
+// MARK: - Daily Goals & XP System
+
+struct DailyGoal: Codable, Identifiable {
+    let id: UUID
+    let type: DailyGoalType
+    var target: Int
+    var progress: Int
+    let xpReward: Int
+    var isCompleted: Bool
+
+    init(type: DailyGoalType, target: Int, xpReward: Int) {
+        self.id = UUID()
+        self.type = type
+        self.target = target
+        self.progress = 0
+        self.xpReward = xpReward
+        self.isCompleted = false
+    }
+
+    var progressPercent: Double {
+        guard target > 0 else { return 0 }
+        return min(1.0, Double(progress) / Double(target))
+    }
+}
+
+enum DailyGoalType: String, Codable {
+    case studyCards = "Study Cards"
+    case correctAnswers = "Get Correct"
+    case studyMinutes = "Study Time"
+    case masterCards = "Master Cards"
+
+    var icon: String {
+        switch self {
+        case .studyCards: return "square.stack.fill"
+        case .correctAnswers: return "checkmark.circle.fill"
+        case .studyMinutes: return "clock.fill"
+        case .masterCards: return "star.fill"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .studyCards: return .softLavender
+        case .correctAnswers: return .mintGreen
+        case .studyMinutes: return .skyBlue
+        case .masterCards: return .pastelPink
+        }
+    }
+}
+
+class DailyGoalsManager: ObservableObject {
+    static let shared = DailyGoalsManager()
+
+    @Published var dailyGoals: [DailyGoal] = []
+    @Published var totalXP: Int = 0
+    @Published var currentLevel: Int = 1
+    @Published var xpForNextLevel: Int = 100
+    @Published var showLevelUpCelebration = false
+    @Published var lastGoalDate: Date?
+    @Published var cardOfTheDay: Flashcard?
+    @Published var hasCompletedCardOfTheDay = false
+
+    private let dailyGoalsKey = "dailyGoals"
+    private let totalXPKey = "totalXP"
+    private let lastGoalDateKey = "lastGoalDate"
+    private let cardOfTheDayIDKey = "cardOfTheDayID"
+    private let cardOfTheDayDateKey = "cardOfTheDayDate"
+    private let cardOfTheDayCompletedKey = "cardOfTheDayCompleted"
+
+    init() {
+        loadData()
+        checkAndResetDailyGoals()
+    }
+
+    func loadData() {
+        totalXP = UserDefaults.standard.integer(forKey: totalXPKey)
+        calculateLevel()
+
+        if let data = UserDefaults.standard.data(forKey: dailyGoalsKey),
+           let goals = try? JSONDecoder().decode([DailyGoal].self, from: data) {
+            dailyGoals = goals
+        }
+
+        if let date = UserDefaults.standard.object(forKey: lastGoalDateKey) as? Date {
+            lastGoalDate = date
+        }
+
+        hasCompletedCardOfTheDay = UserDefaults.standard.bool(forKey: cardOfTheDayCompletedKey)
+    }
+
+    func saveData() {
+        UserDefaults.standard.set(totalXP, forKey: totalXPKey)
+        if let data = try? JSONEncoder().encode(dailyGoals) {
+            UserDefaults.standard.set(data, forKey: dailyGoalsKey)
+        }
+        UserDefaults.standard.set(lastGoalDate, forKey: lastGoalDateKey)
+        UserDefaults.standard.set(hasCompletedCardOfTheDay, forKey: cardOfTheDayCompletedKey)
+    }
+
+    func calculateLevel() {
+        // XP needed: Level 1 = 100, Level 2 = 250, Level 3 = 450, etc.
+        // Formula: 100 + (level - 1) * 150
+        var level = 1
+        var xpNeeded = 100
+        var totalRequired = 0
+
+        while totalXP >= totalRequired + xpNeeded {
+            totalRequired += xpNeeded
+            level += 1
+            xpNeeded = 100 + (level - 1) * 150
+        }
+
+        currentLevel = level
+        xpForNextLevel = xpNeeded
+    }
+
+    var xpProgressInCurrentLevel: Int {
+        var level = 1
+        var xpNeeded = 100
+        var totalRequired = 0
+
+        while totalXP >= totalRequired + xpNeeded && level < currentLevel {
+            totalRequired += xpNeeded
+            level += 1
+            xpNeeded = 100 + (level - 1) * 150
+        }
+
+        return totalXP - totalRequired
+    }
+
+    var xpProgressPercent: Double {
+        guard xpForNextLevel > 0 else { return 0 }
+        return Double(xpProgressInCurrentLevel) / Double(xpForNextLevel)
+    }
+
+    func checkAndResetDailyGoals() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        if let lastDate = lastGoalDate {
+            let lastDay = calendar.startOfDay(for: lastDate)
+            if today > lastDay {
+                // New day - reset goals
+                generateDailyGoals()
+                hasCompletedCardOfTheDay = false
+            }
+        } else {
+            // First time - generate goals
+            generateDailyGoals()
+        }
+
+        lastGoalDate = today
+        saveData()
+    }
+
+    func generateDailyGoals() {
+        dailyGoals = [
+            DailyGoal(type: .studyCards, target: 20, xpReward: 50),
+            DailyGoal(type: .correctAnswers, target: 15, xpReward: 40),
+            DailyGoal(type: .studyMinutes, target: 10, xpReward: 30)
+        ]
+        saveData()
+    }
+
+    func updateGoal(_ type: DailyGoalType, progress: Int) {
+        if let index = dailyGoals.firstIndex(where: { $0.type == type }) {
+            dailyGoals[index].progress += progress
+
+            if dailyGoals[index].progress >= dailyGoals[index].target && !dailyGoals[index].isCompleted {
+                dailyGoals[index].isCompleted = true
+                addXP(dailyGoals[index].xpReward)
+                HapticManager.shared.achievement()
+                SoundManager.shared.achievement()
+            }
+            saveData()
+        }
+    }
+
+    func recordStudySession(cardsStudied: Int, correct: Int, timeSeconds: Int) {
+        updateGoal(.studyCards, progress: cardsStudied)
+        updateGoal(.correctAnswers, progress: correct)
+        updateGoal(.studyMinutes, progress: timeSeconds / 60)
+
+        // Bonus XP for studying
+        addXP(cardsStudied * 2 + correct * 3)
+    }
+
+    func recordMastery() {
+        updateGoal(.masterCards, progress: 1)
+        addXP(25) // Bonus for mastering
+    }
+
+    func addXP(_ amount: Int) {
+        let oldLevel = currentLevel
+        totalXP += amount
+        calculateLevel()
+
+        if currentLevel > oldLevel {
+            showLevelUpCelebration = true
+            HapticManager.shared.levelUp()
+            SoundManager.shared.levelUp()
+        }
+        saveData()
+    }
+
+    func selectCardOfTheDay(from cards: [Flashcard]) {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        // Check if we already have a card for today
+        if let savedDateInterval = UserDefaults.standard.object(forKey: cardOfTheDayDateKey) as? TimeInterval {
+            let savedDate = Date(timeIntervalSince1970: savedDateInterval)
+            if calendar.isDate(savedDate, inSameDayAs: today) {
+                // Load existing card of the day
+                if let savedID = UserDefaults.standard.string(forKey: cardOfTheDayIDKey),
+                   let uuid = UUID(uuidString: savedID),
+                   let card = cards.first(where: { $0.id == uuid }) {
+                    cardOfTheDay = card
+                    return
+                }
+            }
+        }
+
+        // Select new card of the day based on date seed for consistency
+        guard !cards.isEmpty else { return }
+        let daysSince1970 = Int(today.timeIntervalSince1970 / 86400)
+        let index = daysSince1970 % cards.count
+        cardOfTheDay = cards[index]
+
+        // Save for today
+        UserDefaults.standard.set(cardOfTheDay?.id.uuidString, forKey: cardOfTheDayIDKey)
+        UserDefaults.standard.set(today.timeIntervalSince1970, forKey: cardOfTheDayDateKey)
+        hasCompletedCardOfTheDay = false
+        saveData()
+    }
+
+    func completeCardOfTheDay() {
+        guard !hasCompletedCardOfTheDay else { return }
+        hasCompletedCardOfTheDay = true
+        addXP(20) // Bonus XP for card of the day
+        HapticManager.shared.success()
+        SoundManager.shared.correctAnswer()
+        saveData()
+    }
+
+    func resetAllProgress() {
+        totalXP = 0
+        currentLevel = 1
+        dailyGoals = []
+        lastGoalDate = nil
+        hasCompletedCardOfTheDay = false
+        cardOfTheDay = nil
+
+        UserDefaults.standard.removeObject(forKey: totalXPKey)
+        UserDefaults.standard.removeObject(forKey: dailyGoalsKey)
+        UserDefaults.standard.removeObject(forKey: lastGoalDateKey)
+        UserDefaults.standard.removeObject(forKey: cardOfTheDayIDKey)
+        UserDefaults.standard.removeObject(forKey: cardOfTheDayDateKey)
+        UserDefaults.standard.removeObject(forKey: cardOfTheDayCompletedKey)
+
+        generateDailyGoals()
+        calculateLevel()
+    }
+
+    var levelTitle: String {
+        switch currentLevel {
+        case 1: return "Nursing Newbie"
+        case 2: return "Student Nurse"
+        case 3: return "Aspiring Nurse"
+        case 4: return "Dedicated Learner"
+        case 5: return "NCLEX Warrior"
+        case 6: return "Knowledge Seeker"
+        case 7: return "Study Champion"
+        case 8: return "Expert in Training"
+        case 9: return "Nearly There"
+        case 10: return "NCLEX Master"
+        default: return "NCLEX Legend \(currentLevel - 9)"
+        }
+    }
+}
+
+// MARK: - Animated Button Style
+
+struct BounceButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.94 : 1.0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: configuration.isPressed)
+            .onChange(of: configuration.isPressed) { _, isPressed in
+                if isPressed {
+                    HapticManager.shared.buttonTap()
+                }
+            }
+    }
+}
+
+struct SoftBounceButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
+            .opacity(configuration.isPressed ? 0.9 : 1.0)
+            .animation(.easeInOut(duration: 0.15), value: configuration.isPressed)
+            .onChange(of: configuration.isPressed) { _, isPressed in
+                if isPressed {
+                    HapticManager.shared.light()
+                }
+            }
+    }
+}
+
+// MARK: - Shimmer Effect Modifier
+
+struct ShimmerModifier: ViewModifier {
+    @State private var phase: CGFloat = 0
+    let isActive: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(
+                GeometryReader { geo in
+                    if isActive {
+                        LinearGradient(
+                            colors: [.clear, .white.opacity(0.4), .clear],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                        .frame(width: geo.size.width * 2)
+                        .offset(x: -geo.size.width + (geo.size.width * 2 * phase))
+                    }
+                }
+                .mask(content)
+            )
+            .onAppear {
+                if isActive {
+                    withAnimation(.linear(duration: 1.5).repeatForever(autoreverses: false)) {
+                        phase = 1
+                    }
+                }
+            }
+    }
+}
+
+extension View {
+    func shimmer(_ isActive: Bool = true) -> some View {
+        modifier(ShimmerModifier(isActive: isActive))
+    }
+}
+
+// MARK: - Pulsing Glow Modifier
+
+struct PulsingGlowModifier: ViewModifier {
+    let color: Color
+    let isActive: Bool
+    @State private var isGlowing = false
+
+    func body(content: Content) -> some View {
+        content
+            .shadow(color: isActive ? color.opacity(isGlowing ? 0.6 : 0.2) : .clear, radius: isGlowing ? 12 : 6)
+            .onAppear {
+                if isActive {
+                    withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
+                        isGlowing = true
+                    }
+                }
+            }
+    }
+}
+
+extension View {
+    func pulsingGlow(_ color: Color, isActive: Bool = true) -> some View {
+        modifier(PulsingGlowModifier(color: color, isActive: isActive))
+    }
+}
+
 // MARK: - Color Theme (Dark Mode Adaptive)
 
 extension Color {
@@ -550,6 +1159,32 @@ extension Color {
             traitCollection.userInterfaceStyle == .dark
                 ? UIColor(red: 44/255, green: 44/255, blue: 46/255, alpha: 1)
                 : UIColor.white
+        })
+    }
+
+    // Adaptive white - uses dark gray in dark mode
+    static var adaptiveWhite: Color {
+        Color(UIColor { traitCollection in
+            traitCollection.userInterfaceStyle == .dark
+                ? UIColor(red: 58/255, green: 58/255, blue: 60/255, alpha: 1)
+                : UIColor.white
+        })
+    }
+
+    // Adaptive text colors
+    static var primaryText: Color {
+        Color(UIColor { traitCollection in
+            traitCollection.userInterfaceStyle == .dark
+                ? UIColor.white
+                : UIColor.black
+        })
+    }
+
+    static var secondaryText: Color {
+        Color(UIColor { traitCollection in
+            traitCollection.userInterfaceStyle == .dark
+                ? UIColor.lightGray
+                : UIColor.darkGray
         })
     }
 
@@ -746,7 +1381,31 @@ struct Flashcard: Identifiable, Equatable, Codable {
     }
 
     func shuffledAnswers() -> [String] {
-        (wrongAnswers + [answer]).shuffled()
+        var options = wrongAnswers
+
+        // Ensure we have at least 3 wrong answers for 4 total options
+        if options.count < 3 {
+            // Get other answers from cards in the same category to use as distractors
+            let sameCategory = Flashcard.allCards.filter { $0.contentCategory == self.contentCategory && $0.id != self.id }
+            let otherAnswers = sameCategory.map { $0.answer }.filter { $0 != self.answer && !options.contains($0) }
+
+            // Add random distractors until we have 3 wrong answers
+            for distractor in otherAnswers.shuffled() {
+                if options.count >= 3 { break }
+                options.append(distractor)
+            }
+
+            // If still not enough, use answers from any category
+            if options.count < 3 {
+                let allOtherAnswers = Flashcard.allCards.map { $0.answer }.filter { $0 != self.answer && !options.contains($0) }
+                for distractor in allOtherAnswers.shuffled() {
+                    if options.count >= 3 { break }
+                    options.append(distractor)
+                }
+            }
+        }
+
+        return (options + [answer]).shuffled()
     }
 
     static func == (lhs: Flashcard, rhs: Flashcard) -> Bool {
@@ -6696,10 +7355,12 @@ class AppManager: ObservableObject {
 class SubscriptionManager: ObservableObject {
     @Published var isSubscribed: Bool = false
     @Published var products: [Product] = []
+    @Published var lifetimeProduct: Product?
     @Published var purchaseError: String?
     @Published var isLoading: Bool = false
 
-    private let productIDs = ["com.cozynclex.weekly", "com.cozynclex.monthly", "com.cozynclex.yearly"]
+    private let subscriptionIDs = ["com.cozynclex.premium.weekly", "com.cozynclex.premium.monthly", "com.cozynclex.premium.yearly"]
+    private let lifetimeProductID = "com.cozynclex.lifetime"
     private var updateListenerTask: Task<Void, Error>?
 
     init() {
@@ -6723,8 +7384,13 @@ class SubscriptionManager: ObservableObject {
     @MainActor
     func loadProducts() async {
         do {
-            products = try await Product.products(for: productIDs)
+            // Load subscription products
+            products = try await Product.products(for: subscriptionIDs)
             products.sort { $0.price < $1.price }
+
+            // Load lifetime product separately
+            let lifetimeProducts = try await Product.products(for: [lifetimeProductID])
+            lifetimeProduct = lifetimeProducts.first
         } catch {
             print("Failed to load products: \(error)")
         }
@@ -6784,13 +7450,14 @@ class SubscriptionManager: ObservableObject {
 
     @MainActor
     func checkSubscriptionStatus() async {
-        var hasActiveSubscription = false
+        var hasAccess = false
 
         for await result in Transaction.currentEntitlements {
             do {
                 let transaction = try checkVerified(result)
-                if transaction.productType == .autoRenewable {
-                    hasActiveSubscription = true
+                // Check for active subscription OR lifetime purchase
+                if transaction.productType == .autoRenewable || transaction.productType == .nonConsumable {
+                    hasAccess = true
                     break
                 }
             } catch {
@@ -6798,8 +7465,8 @@ class SubscriptionManager: ObservableObject {
             }
         }
 
-        isSubscribed = hasActiveSubscription
-        PersistenceManager.shared.saveSubscriptionStatus(hasActiveSubscription)
+        isSubscribed = hasAccess
+        PersistenceManager.shared.saveSubscriptionStatus(hasAccess)
     }
 
     @MainActor
@@ -6819,17 +7486,14 @@ class SubscriptionManager: ObservableObject {
         isLoading = false
     }
 
-    // Legacy methods for compatibility / testing
+    // Legacy method - now requires actual product
     func subscribe() {
         if let product = products.first {
             Task {
                 await purchase(product)
             }
-        } else {
-            // No products available (testing mode) - unlock directly
-            isSubscribed = true
-            PersistenceManager.shared.saveSubscriptionStatus(true)
         }
+        // Do nothing if no products - user must wait for products to load
     }
 }
 
@@ -6957,9 +7621,13 @@ class CardManager: ObservableObject {
         case .all:
             return available
         case .mastered:
-            return available.filter { masteredCardIDs.contains($0.id) }
+            // Show ALL mastered cards regardless of subscription or category filters
+            let allCards = Flashcard.allCards + userCreatedCards
+            return allCards.filter { masteredCardIDs.contains($0.id) }
         case .saved:
-            return available.filter { savedCardIDs.contains($0.id) }
+            // Show ALL saved cards regardless of subscription or category filters
+            let allCards = Flashcard.allCards + userCreatedCards
+            return allCards.filter { savedCardIDs.contains($0.id) }
         case .userCreated:
             return userCreatedCards.filter { selectedCategories.contains($0.contentCategory) }
         }
@@ -6971,7 +7639,34 @@ class CardManager: ObservableObject {
         if selectedCategories.count < ContentCategory.allCases.count {
             cards = cards.filter { selectedCategories.contains($0.contentCategory) }
         }
-        return cards
+
+        // Sort by weakness (prioritize cards with lower consecutive correct - i.e., cards user struggles with)
+        // Cards with 0 correct streak come first, then 1, then 2
+        cards.sort { card1, card2 in
+            let streak1 = consecutiveCorrect[card1.id] ?? 0
+            let streak2 = consecutiveCorrect[card2.id] ?? 0
+            return streak1 < streak2
+        }
+
+        // Shuffle within weakness tiers to add variety
+        // Group by streak and shuffle each group
+        var weakCards: [Flashcard] = []    // streak 0
+        var mediumCards: [Flashcard] = []  // streak 1
+        var strongCards: [Flashcard] = []  // streak 2
+
+        for card in cards {
+            let streak = consecutiveCorrect[card.id] ?? 0
+            if streak == 0 {
+                weakCards.append(card)
+            } else if streak == 1 {
+                mediumCards.append(card)
+            } else {
+                strongCards.append(card)
+            }
+        }
+
+        // Shuffle each tier and combine (weak first, then medium, then strong)
+        return weakCards.shuffled() + mediumCards.shuffled() + strongCards.shuffled()
     }
 
     // MARK: - Spaced Repetition
@@ -7056,8 +7751,9 @@ class CardManager: ObservableObject {
 
     func recordCorrectAnswer(_ card: Flashcard) {
         let current = consecutiveCorrect[card.id] ?? 0
-        consecutiveCorrect[card.id] = current + 1
-        if consecutiveCorrect[card.id]! >= masteryThreshold {
+        let newCount = current + 1
+        consecutiveCorrect[card.id] = newCount
+        if newCount >= masteryThreshold {
             masteredCardIDs.insert(card.id)
             persistence.saveMasteredCards(masteredCardIDs)
         }
@@ -7095,6 +7791,20 @@ class CardManager: ObservableObject {
     func isSaved(_ card: Flashcard) -> Bool { savedCardIDs.contains(card.id) }
     func isMastered(_ card: Flashcard) -> Bool { masteredCardIDs.contains(card.id) }
     func progressTowardsMastery(_ card: Flashcard) -> Int { consecutiveCorrect[card.id] ?? 0 }
+
+    // Count of mastered cards that actually exist in the database
+    var validMasteredCount: Int {
+        let allCards = Flashcard.allCards + userCreatedCards
+        let allCardIDs = Set(allCards.map { $0.id })
+        return masteredCardIDs.filter { allCardIDs.contains($0) }.count
+    }
+
+    // Count of saved cards that actually exist in the database
+    var validSavedCount: Int {
+        let allCards = Flashcard.allCards + userCreatedCards
+        let allCardIDs = Set(allCards.map { $0.id })
+        return savedCardIDs.filter { allCardIDs.contains($0) }.count
+    }
 
     // MARK: - User Cards
 
@@ -7213,9 +7923,9 @@ class StatsManager: ObservableObject {
     }
 
     func getWeakCategories() -> [String] {
-        // Return categories with accuracy below 70%
+        // Return categories with accuracy below 70% (minimum 1 question answered)
         return stats.categoryAccuracy
-            .filter { $0.value.total >= 5 && $0.value.accuracy < 70 }
+            .filter { $0.value.total >= 1 && $0.value.accuracy < 70 }
             .sorted { $0.value.accuracy < $1.value.accuracy }
             .map { $0.key }
     }
@@ -7329,6 +8039,7 @@ struct ContentView: View {
     @StateObject private var cardManager = CardManager()
     @StateObject private var statsManager = StatsManager()
     @StateObject private var speechManager = SpeechManager()
+    @StateObject private var appearanceManager = AppearanceManager.shared
 
     var body: some View {
         ZStack {
@@ -7355,6 +8066,7 @@ struct ContentView: View {
         .environmentObject(cardManager)
         .environmentObject(statsManager)
         .environmentObject(speechManager)
+        .preferredColorScheme(appearanceManager.currentMode.colorScheme)
     }
 }
 
@@ -7391,13 +8103,14 @@ struct OnboardingView: View {
             .animation(.easeInOut(duration: 0.5), value: currentPage)
 
             VStack(spacing: 0) {
-                Spacer()
+                // Fixed top spacing for consistent bear position
+                Spacer().frame(height: 60)
 
-                // Mascot
+                // Mascot - fixed position
                 Image("NurseBear")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 180, height: 180)
+                    .frame(width: 160, height: 160)
                     .shadow(color: .black.opacity(0.1), radius: 10, y: 5)
                     .offset(y: mascotOffset)
                     .opacity(mascotOpacity)
@@ -7408,18 +8121,18 @@ struct OnboardingView: View {
                         }
                     }
 
-                Spacer().frame(height: 30)
+                Spacer().frame(height: 24)
 
-                // Page content
-                VStack(spacing: 16) {
+                // Page content - fixed height container for consistency
+                VStack(spacing: 12) {
                     // Icon
                     ZStack {
                         Circle()
                             .fill(pages[currentPage].color.opacity(0.2))
-                            .frame(width: 80, height: 80)
+                            .frame(width: 70, height: 70)
 
                         Image(systemName: pages[currentPage].icon)
-                            .font(.system(size: 36))
+                            .font(.system(size: 32))
                             .foregroundColor(pages[currentPage].color)
                     }
                     .scaleEffect(showContent ? 1 : 0.5)
@@ -7427,34 +8140,38 @@ struct OnboardingView: View {
 
                     // Title
                     Text(pages[currentPage].title)
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .font(.system(size: 26, weight: .bold, design: .rounded))
                         .multilineTextAlignment(.center)
                         .offset(y: showContent ? 0 : 20)
                         .opacity(showContent ? 1 : 0)
 
                     // Subtitle
                     Text(pages[currentPage].subtitle)
-                        .font(.system(size: 16, design: .rounded))
+                        .font(.system(size: 15, design: .rounded))
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 40)
                         .offset(y: showContent ? 0 : 20)
                         .opacity(showContent ? 1 : 0)
 
-                    // Sources list for credentials page
+                    // Sources list for credentials page - scrollable if needed
                     if pages[currentPage].isSourcesPage {
-                        VStack(spacing: 12) {
-                            SourceBadge(name: "Kaplan", color: .blue)
-                            SourceBadge(name: "Archer Review", color: .green)
-                            SourceBadge(name: "UWorld", color: .orange)
-                            SourceBadge(name: "NCSBN", color: .purple)
-                            SourceBadge(name: "CAT Methodology", color: .pink)
+                        ScrollView {
+                            VStack(spacing: 10) {
+                                SourceBadge(name: "Kaplan", color: .blue)
+                                SourceBadge(name: "Archer Review", color: .green)
+                                SourceBadge(name: "UWorld", color: .orange)
+                                SourceBadge(name: "NCSBN", color: .purple)
+                                SourceBadge(name: "CAT Methodology", color: .pink)
+                            }
+                            .padding(.horizontal)
                         }
-                        .padding(.top, 10)
+                        .frame(maxHeight: 200)
                         .offset(y: showContent ? 0 : 30)
                         .opacity(showContent ? 1 : 0)
                     }
                 }
+                .frame(maxHeight: .infinity)
                 .animation(.spring(response: 0.5, dampingFraction: 0.8), value: showContent)
                 .onChange(of: currentPage) { _, _ in
                     showContent = false
@@ -7463,7 +8180,7 @@ struct OnboardingView: View {
                     }
                 }
 
-                Spacer()
+                Spacer(minLength: 20)
 
                 // Page indicators
                 HStack(spacing: 8) {
@@ -7582,30 +8299,702 @@ struct MainMenuView: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
+    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
     @State private var showSubscriptionSheet = false
     @State private var showCategoryFilter = false
+    @State private var showCardOfTheDay = false
+    @State private var cardOfTheDayFlipped = false
+    @State private var selectedTab = 0 // 0 = Study, 1 = Progress
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 20) {
-                HeaderSection(showCategoryFilter: $showCategoryFilter)
-                CategoryFilterBadge(showCategoryFilter: $showCategoryFilter)
-                StreakBanner()
-                QuickStatsSection()
-                QuickActionsSection()
-                GameModesSection(showSubscriptionSheet: $showSubscriptionSheet)
-                if !subscriptionManager.isSubscribed {
-                    SubscribeButton(showSheet: $showSubscriptionSheet)
-                }
+        VStack(spacing: 0) {
+            // Header with compact stats
+            CompactHeaderView(showCategoryFilter: $showCategoryFilter)
+                .padding(.horizontal)
+                .padding(.top, 8)
+
+            // Tab Picker
+            Picker("", selection: $selectedTab) {
+                Text("Study").tag(0)
+                Text("Progress").tag(1)
             }
-            .padding()
+            .pickerStyle(.segmented)
+            .padding(.horizontal)
+            .padding(.vertical, 12)
+            .onChange(of: selectedTab) { _, _ in
+                HapticManager.shared.selection()
+            }
+
+            // Tab Content
+            TabView(selection: $selectedTab) {
+                // STUDY TAB
+                ScrollView {
+                    VStack(spacing: 16) {
+                        CategoryFilterBadge(showCategoryFilter: $showCategoryFilter)
+                        GameModesGridSection(showSubscriptionSheet: $showSubscriptionSheet)
+                        QuickActionsSection()
+                        if !subscriptionManager.isSubscribed {
+                            SubscribeButton(showSheet: $showSubscriptionSheet)
+                        }
+                    }
+                    .padding()
+                }
+                .tag(0)
+
+                // PROGRESS TAB
+                ScrollView {
+                    VStack(spacing: 16) {
+                        LevelProgressSection()
+                        StreakBanner()
+                        DailyGoalsSection()
+                        CardOfTheDaySection(showCard: $showCardOfTheDay, isFlipped: $cardOfTheDayFlipped)
+                        QuickStatsSection()
+                    }
+                    .padding()
+                }
+                .tag(1)
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
         }
+        .background(Color.creamyBackground)
         .sheet(isPresented: $showSubscriptionSheet) {
             SubscriptionSheet()
         }
         .sheet(isPresented: $showCategoryFilter) {
             CategoryFilterSheet()
         }
+        .sheet(isPresented: $dailyGoalsManager.showLevelUpCelebration) {
+            LevelUpCelebrationView()
+        }
+        .onAppear {
+            let cards = cardManager.getAvailableCards(isSubscribed: subscriptionManager.isSubscribed)
+            dailyGoalsManager.selectCardOfTheDay(from: cards)
+            dailyGoalsManager.checkAndResetDailyGoals()
+        }
+    }
+}
+
+// MARK: - Compact Header View
+
+struct CompactHeaderView: View {
+    @EnvironmentObject var appManager: AppManager
+    @EnvironmentObject var cardManager: CardManager
+    @EnvironmentObject var statsManager: StatsManager
+    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @Binding var showCategoryFilter: Bool
+
+    var isFiltered: Bool {
+        cardManager.selectedCategories.count < ContentCategory.allCases.count
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            // Bear + Title
+            Image("NurseBear")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 44, height: 44)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("CozyNCLEX")
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                HStack(spacing: 8) {
+                    // Level badge
+                    HStack(spacing: 3) {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.pastelPink)
+                        Text("Lv.\(dailyGoalsManager.currentLevel)")
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundColor(.secondary)
+                    }
+                    // Streak
+                    if statsManager.stats.currentStreak > 0 {
+                        HStack(spacing: 3) {
+                            Image(systemName: "flame.fill")
+                                .font(.system(size: 10))
+                                .foregroundColor(.orange)
+                            Text("\(statsManager.stats.currentStreak)")
+                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    // XP
+                    Text("\(dailyGoalsManager.totalXP) XP")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundColor(.softLavender)
+                }
+            }
+
+            Spacer()
+
+            // Filter button
+            Button(action: {
+                HapticManager.shared.buttonTap()
+                showCategoryFilter = true
+            }) {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                        .font(.system(size: 20))
+                        .foregroundColor(.primary)
+                        .padding(8)
+                        .background(Color.cardBackground)
+                        .clipShape(Circle())
+                        .shadow(color: .black.opacity(0.08), radius: 3)
+
+                    if isFiltered {
+                        Circle()
+                            .fill(Color.pastelPink)
+                            .frame(width: 10, height: 10)
+                            .offset(x: 2, y: -2)
+                    }
+                }
+            }
+
+            // Stats button
+            Button(action: {
+                HapticManager.shared.buttonTap()
+                appManager.currentScreen = .stats
+            }) {
+                Image(systemName: "chart.bar.fill")
+                    .font(.system(size: 18))
+                    .foregroundColor(.primary)
+                    .padding(10)
+                    .background(Color.cardBackground)
+                    .clipShape(Circle())
+                    .shadow(color: .black.opacity(0.08), radius: 3)
+            }
+        }
+    }
+}
+
+// MARK: - Game Modes Grid Section (More Prominent)
+
+struct GameModesGridSection: View {
+    @EnvironmentObject var appManager: AppManager
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
+    @Binding var showSubscriptionSheet: Bool
+
+    let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Study Modes")
+                .font(.system(size: 18, weight: .bold, design: .rounded))
+
+            LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(GameMode.allCases, id: \.self) { mode in
+                    GameModeGridCard(mode: mode, showSubscriptionSheet: $showSubscriptionSheet)
+                }
+            }
+        }
+    }
+}
+
+struct GameModeGridCard: View {
+    @EnvironmentObject var appManager: AppManager
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
+    let mode: GameMode
+    @Binding var showSubscriptionSheet: Bool
+
+    var isLocked: Bool {
+        mode.isPaid && !subscriptionManager.isSubscribed
+    }
+
+    var cardColor: Color {
+        switch mode {
+        case .swipe: return .mintGreen
+        case .quiz: return .pastelPink
+        case .smartReview: return .softLavender
+        case .match: return .peachOrange
+        case .write: return .skyBlue
+        case .test: return .coralPink
+        }
+    }
+
+    var body: some View {
+        Button(action: {
+            HapticManager.shared.buttonTap()
+            SoundManager.shared.buttonTap()
+            if isLocked {
+                showSubscriptionSheet = true
+            } else {
+                switch mode {
+                case .swipe: appManager.currentScreen = .swipeGame
+                case .quiz: appManager.currentScreen = .quizGame
+                case .smartReview: appManager.currentScreen = .smartReview
+                case .match: appManager.currentScreen = .matchGame
+                case .write: appManager.currentScreen = .writeMode
+                case .test: appManager.currentScreen = .testMode
+                }
+            }
+        }) {
+            VStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(cardColor.opacity(0.2))
+                        .frame(width: 56, height: 56)
+                    Image(systemName: mode.icon)
+                        .font(.system(size: 24))
+                        .foregroundColor(cardColor)
+
+                    if isLocked {
+                        Circle()
+                            .fill(Color.black.opacity(0.4))
+                            .frame(width: 56, height: 56)
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 18))
+                            .foregroundColor(.white)
+                    }
+                }
+
+                VStack(spacing: 2) {
+                    Text(mode.rawValue)
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .foregroundColor(.primary)
+                    Text(mode.subtitle)
+                        .font(.system(size: 11, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+
+                if isLocked {
+                    Text("PRO")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
+                        .cornerRadius(6)
+                } else if !mode.isPaid {
+                    Text("FREE")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundColor(.mintGreen)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Color.mintGreen.opacity(0.15))
+                        .cornerRadius(6)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .background(Color.cardBackground)
+            .cornerRadius(16)
+            .shadow(color: .black.opacity(0.05), radius: 6)
+        }
+        .buttonStyle(SoftBounceButtonStyle())
+    }
+}
+
+// MARK: - Level Progress Section
+
+struct LevelProgressSection: View {
+    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack {
+                // Level badge
+                ZStack {
+                    Circle()
+                        .fill(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 50, height: 50)
+                    Text("\(dailyGoalsManager.currentLevel)")
+                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                }
+                .pulsingGlow(.pastelPink, isActive: true)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(dailyGoalsManager.levelTitle)
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                    Text("\(dailyGoalsManager.totalXP) XP total")
+                        .font(.system(size: 12, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("\(dailyGoalsManager.xpProgressInCurrentLevel)/\(dailyGoalsManager.xpForNextLevel)")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundColor(.secondary)
+                    Text("to next level")
+                        .font(.system(size: 10, design: .rounded))
+                        .foregroundColor(.secondary.opacity(0.7))
+                }
+            }
+
+            // XP Progress bar
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.gray.opacity(0.2))
+                        .frame(height: 8)
+
+                    Capsule()
+                        .fill(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
+                        .frame(width: geo.size.width * dailyGoalsManager.xpProgressPercent, height: 8)
+                        .animation(.spring(response: 0.5), value: dailyGoalsManager.xpProgressPercent)
+                }
+            }
+            .frame(height: 8)
+        }
+        .padding()
+        .background(Color.cardBackground)
+        .cornerRadius(16)
+        .shadow(color: .black.opacity(0.05), radius: 8)
+    }
+}
+
+// MARK: - Daily Goals Section
+
+struct DailyGoalsSection: View {
+    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+
+    var completedCount: Int {
+        dailyGoalsManager.dailyGoals.filter { $0.isCompleted }.count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "target")
+                    .font(.system(size: 16))
+                    .foregroundColor(.mintGreen)
+                Text("Daily Goals")
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                Spacer()
+                Text("\(completedCount)/\(dailyGoalsManager.dailyGoals.count)")
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .foregroundColor(.secondary)
+            }
+
+            ForEach(dailyGoalsManager.dailyGoals) { goal in
+                DailyGoalRow(goal: goal)
+            }
+        }
+        .padding()
+        .background(Color.cardBackground)
+        .cornerRadius(16)
+        .shadow(color: .black.opacity(0.05), radius: 8)
+    }
+}
+
+struct DailyGoalRow: View {
+    let goal: DailyGoal
+
+    var body: some View {
+        HStack(spacing: 12) {
+            // Icon
+            ZStack {
+                Circle()
+                    .fill(goal.isCompleted ? Color.mintGreen.opacity(0.2) : goal.type.color.opacity(0.2))
+                    .frame(width: 36, height: 36)
+                Image(systemName: goal.isCompleted ? "checkmark" : goal.type.icon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(goal.isCompleted ? .mintGreen : goal.type.color)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(goal.type.rawValue)
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .strikethrough(goal.isCompleted, color: .secondary)
+                    .foregroundColor(goal.isCompleted ? .secondary : .primary)
+                Text("\(goal.progress)/\(goal.target)")
+                    .font(.system(size: 11, design: .rounded))
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+
+            // Progress ring
+            ZStack {
+                Circle()
+                    .stroke(Color.gray.opacity(0.2), lineWidth: 3)
+                    .frame(width: 32, height: 32)
+                Circle()
+                    .trim(from: 0, to: goal.progressPercent)
+                    .stroke(goal.isCompleted ? Color.mintGreen : goal.type.color, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .frame(width: 32, height: 32)
+                    .rotationEffect(.degrees(-90))
+                    .animation(.spring(response: 0.5), value: goal.progressPercent)
+
+                if goal.isCompleted {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.mintGreen)
+                }
+            }
+
+            // XP reward
+            Text("+\(goal.xpReward) XP")
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundColor(goal.isCompleted ? .mintGreen : .secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(goal.isCompleted ? Color.mintGreen.opacity(0.15) : Color.gray.opacity(0.1))
+                .cornerRadius(8)
+        }
+    }
+}
+
+// MARK: - Watch Ad for Premium Section
+
+// MARK: - Card of the Day Section
+
+struct CardOfTheDaySection: View {
+    @EnvironmentObject var cardManager: CardManager
+    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @Binding var showCard: Bool
+    @Binding var isFlipped: Bool
+
+    var body: some View {
+        if let card = dailyGoalsManager.cardOfTheDay {
+            VStack(spacing: 12) {
+                HStack {
+                    HStack(spacing: 6) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 14))
+                            .foregroundColor(.peachOrange)
+                        Text("Card of the Day")
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    }
+                    Spacer()
+                    if dailyGoalsManager.hasCompletedCardOfTheDay {
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 12))
+                            Text("Completed")
+                                .font(.system(size: 11, weight: .medium, design: .rounded))
+                        }
+                        .foregroundColor(.mintGreen)
+                    } else {
+                        Text("+20 XP")
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .foregroundColor(.peachOrange)
+                            .shimmer(true)
+                    }
+                }
+
+                Button(action: {
+                    HapticManager.shared.cardFlip()
+                    SoundManager.shared.cardFlip()
+                    withAnimation(.spring(response: 0.5)) {
+                        isFlipped.toggle()
+                    }
+                    if !dailyGoalsManager.hasCompletedCardOfTheDay && isFlipped {
+                        // Mark as completed when they flip to see answer
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            dailyGoalsManager.completeCardOfTheDay()
+                        }
+                    }
+                }) {
+                    ZStack {
+                        // Back (Answer)
+                        VStack(spacing: 8) {
+                            Text("A")
+                                .font(.system(size: 10, weight: .bold, design: .rounded))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2)
+                                .background(Color.pastelPink)
+                                .cornerRadius(6)
+                            Text(card.answer)
+                                .font(.system(size: 14, weight: .medium, design: .rounded))
+                                .foregroundColor(.primary)
+                                .multilineTextAlignment(.center)
+                                .lineLimit(4)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 120)
+                        .background(Color.pastelPink.opacity(0.15))
+                        .cornerRadius(12)
+                        .rotation3DEffect(.degrees(isFlipped ? 0 : 180), axis: (x: 0, y: 1, z: 0))
+                        .opacity(isFlipped ? 1 : 0)
+
+                        // Front (Question)
+                        VStack(spacing: 8) {
+                            Text("Q")
+                                .font(.system(size: 10, weight: .bold, design: .rounded))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2)
+                                .background(Color.mintGreen)
+                                .cornerRadius(6)
+                            Text(card.question)
+                                .font(.system(size: 14, weight: .medium, design: .rounded))
+                                .foregroundColor(.primary)
+                                .multilineTextAlignment(.center)
+                                .lineLimit(4)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 120)
+                        .background(Color.mintGreen.opacity(0.15))
+                        .cornerRadius(12)
+                        .rotation3DEffect(.degrees(isFlipped ? -180 : 0), axis: (x: 0, y: 1, z: 0))
+                        .opacity(isFlipped ? 0 : 1)
+                    }
+                }
+                .buttonStyle(SoftBounceButtonStyle())
+
+                Text("Tap to flip")
+                    .font(.system(size: 11, design: .rounded))
+                    .foregroundColor(.secondary)
+            }
+            .padding()
+            .background(Color.cardBackground)
+            .cornerRadius(16)
+            .shadow(color: .black.opacity(0.05), radius: 8)
+        }
+    }
+}
+
+// MARK: - Level Up Celebration View
+
+struct LevelUpCelebrationView: View {
+    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @Environment(\.dismiss) var dismiss
+    @State private var showContent = false
+    @State private var showConfetti = false
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.4).ignoresSafeArea()
+
+            // Confetti behind everything
+            if showConfetti {
+                LevelUpConfettiView()
+                    .ignoresSafeArea()
+            }
+
+            // Centered content
+            VStack(spacing: 20) {
+                Text("LEVEL UP!")
+                    .font(.system(size: 36, weight: .black, design: .rounded))
+                    .foregroundColor(.white)
+                    .shadow(color: .black.opacity(0.3), radius: 10)
+                    .scaleEffect(showContent ? 1 : 0.5)
+                    .opacity(showContent ? 1 : 0)
+
+                ZStack {
+                    Circle()
+                        .fill(LinearGradient(colors: [.pastelPink, .softLavender, .mintGreen], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 140, height: 140)
+                        .shadow(color: .pastelPink.opacity(0.6), radius: 25)
+                    Text("\(dailyGoalsManager.currentLevel)")
+                        .font(.system(size: 64, weight: .black, design: .rounded))
+                        .foregroundColor(.white)
+                }
+                .scaleEffect(showContent ? 1 : 0)
+
+                Text(dailyGoalsManager.levelTitle)
+                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                    .shadow(color: .black.opacity(0.2), radius: 5)
+                    .opacity(showContent ? 1 : 0)
+
+                Text("Keep studying to level up!")
+                    .font(.system(size: 16, design: .rounded))
+                    .foregroundColor(.white.opacity(0.9))
+                    .opacity(showContent ? 1 : 0)
+                    .padding(.top, 4)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            // Continue button at bottom
+            VStack {
+                Spacer()
+                Button(action: {
+                    HapticManager.shared.buttonTap()
+                    dismiss()
+                }) {
+                    Text("Continue")
+                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(LinearGradient(colors: [.mintGreen, .softLavender], startPoint: .leading, endPoint: .trailing))
+                        .cornerRadius(16)
+                }
+                .buttonStyle(BounceButtonStyle())
+                .padding(.horizontal, 40)
+                .padding(.bottom, 50)
+                .opacity(showContent ? 1 : 0)
+            }
+        }
+        .onAppear {
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.7)) {
+                showContent = true
+            }
+            withAnimation(.easeOut.delay(0.3)) {
+                showConfetti = true
+            }
+        }
+    }
+}
+
+// MARK: - Level Up Confetti View
+
+struct LevelUpConfettiView: View {
+    @State private var confettiPieces: [LevelUpConfettiPiece] = []
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                ForEach(confettiPieces) { piece in
+                    LevelUpConfettiPieceAnimatedView(piece: piece, screenHeight: geo.size.height)
+                }
+            }
+        }
+        .onAppear {
+            generateConfetti()
+        }
+    }
+
+    func generateConfetti() {
+        let colors: [Color] = [.pastelPink, .mintGreen, .softLavender, .peachOrange, .skyBlue, .yellow]
+        confettiPieces = (0..<60).map { _ in
+            LevelUpConfettiPiece(
+                color: colors.randomElement() ?? .pastelPink,
+                x: CGFloat.random(in: 0...UIScreen.main.bounds.width),
+                delay: Double.random(in: 0...0.5)
+            )
+        }
+    }
+}
+
+struct LevelUpConfettiPiece: Identifiable {
+    let id = UUID()
+    let color: Color
+    let x: CGFloat
+    let delay: Double
+}
+
+struct LevelUpConfettiPieceAnimatedView: View {
+    let piece: LevelUpConfettiPiece
+    let screenHeight: CGFloat
+    @State private var yOffset: CGFloat = -50
+    @State private var rotation: Double = 0
+    @State private var opacity: Double = 1
+
+    var body: some View {
+        Rectangle()
+            .fill(piece.color)
+            .frame(width: CGFloat.random(in: 8...14), height: CGFloat.random(in: 8...14))
+            .rotationEffect(.degrees(rotation))
+            .position(x: piece.x, y: yOffset)
+            .opacity(opacity)
+            .onAppear {
+                withAnimation(.easeIn(duration: 3).delay(piece.delay)) {
+                    yOffset = screenHeight + 100
+                    rotation = Double.random(in: 360...720)
+                }
+                withAnimation(.easeIn(duration: 2.5).delay(piece.delay + 0.5)) {
+                    opacity = 0
+                }
+            }
     }
 }
 
@@ -7670,7 +9059,7 @@ struct HeaderSection: View {
                         .font(.system(size: 20))
                         .foregroundColor(.primary)
                         .padding(10)
-                        .background(Color.white)
+                        .background(Color.adaptiveWhite)
                         .clipShape(Circle())
                         .shadow(color: .black.opacity(0.1), radius: 4)
 
@@ -7687,7 +9076,7 @@ struct HeaderSection: View {
                     .font(.system(size: 20))
                     .foregroundColor(.primary)
                     .padding(10)
-                    .background(Color.white)
+                    .background(Color.adaptiveWhite)
                     .clipShape(Circle())
                     .shadow(color: .black.opacity(0.1), radius: 4)
             }
@@ -7732,11 +9121,11 @@ struct QuickStatsSection: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            TappableStatCard(icon: "checkmark.circle.fill", value: "\(cardManager.masteredCardIDs.count)", label: "Mastered", color: .mintGreen) {
+            TappableStatCard(icon: "checkmark.circle.fill", value: "\(cardManager.validMasteredCount)", label: "Mastered", color: .mintGreen) {
                 cardManager.currentFilter = .mastered
                 appManager.currentScreen = .cardBrowser
             }
-            TappableStatCard(icon: "heart.fill", value: "\(cardManager.savedCardIDs.count)", label: "Saved", color: .pastelPink) {
+            TappableStatCard(icon: "heart.fill", value: "\(cardManager.validSavedCount)", label: "Saved", color: .pastelPink) {
                 cardManager.currentFilter = .saved
                 appManager.currentScreen = .cardBrowser
             }
@@ -7764,7 +9153,7 @@ struct TappableStatCard: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
-            .background(Color.white)
+            .background(Color.adaptiveWhite)
             .cornerRadius(16)
             .shadow(color: .black.opacity(0.05), radius: 6)
         }
@@ -7803,7 +9192,7 @@ struct QuickActionButton: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
-            .background(Color.white)
+            .background(Color.adaptiveWhite)
             .cornerRadius(12)
             .shadow(color: .black.opacity(0.05), radius: 4)
         }
@@ -7898,7 +9287,7 @@ struct CompactModeCard: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
-            .background(Color.white.opacity(0.7))
+            .background(Color.adaptiveWhite.opacity(0.7))
             .cornerRadius(12)
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.15), lineWidth: 1))
         }
@@ -7938,7 +9327,7 @@ struct GameModeCard: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 16)
-            .background(Color.white)
+            .background(Color.adaptiveWhite)
             .cornerRadius(16)
             .shadow(color: .black.opacity(0.05), radius: 6)
             .opacity(isLocked ? 0.6 : 1.0)
@@ -7991,36 +9380,39 @@ struct SubscriptionSheet: View {
                 FeatureRow(icon: "doc.text.fill", text: "Practice Tests")
             }
             .padding()
-            .background(Color.white)
+            .background(Color.adaptiveWhite)
             .cornerRadius(16)
 
             // Product options
-            if subscriptionManager.products.isEmpty {
-                // Fallback UI when products not loaded
-                Text("$4.99/week • Cancel anytime")
-                    .font(.system(size: 14, design: .rounded))
-                    .foregroundColor(.secondary)
-
-                Button(action: {
-                    subscriptionManager.subscribe()
-                    dismiss()
-                }) {
-                    Text("Start Free Trial")
-                        .font(.system(size: 17, weight: .bold, design: .rounded))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
-                        .cornerRadius(14)
+            if subscriptionManager.products.isEmpty && subscriptionManager.lifetimeProduct == nil {
+                // Loading state when products not yet loaded
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .scaleEffect(1.2)
+                    Text("Loading subscription options...")
+                        .font(.system(size: 14, design: .rounded))
+                        .foregroundColor(.secondary)
                 }
+                .padding()
             } else {
-                // Real StoreKit products
+                // Subscription products
                 VStack(spacing: 10) {
                     ForEach(subscriptionManager.products, id: \.id) { product in
                         SubscriptionProductRow(
                             product: product,
                             isSelected: selectedProduct?.id == product.id,
+                            isLifetime: false,
                             action: { selectedProduct = product }
+                        )
+                    }
+
+                    // Lifetime option
+                    if let lifetime = subscriptionManager.lifetimeProduct {
+                        SubscriptionProductRow(
+                            product: lifetime,
+                            isSelected: selectedProduct?.id == lifetime.id,
+                            isLifetime: true,
+                            action: { selectedProduct = lifetime }
                         )
                     }
                 }
@@ -8039,7 +9431,8 @@ struct SubscriptionSheet: View {
                                 ProgressView()
                                     .progressViewStyle(CircularProgressViewStyle(tint: .white))
                             } else {
-                                Text("Subscribe - \(product.displayPrice)")
+                                let isLifetime = product.type == .nonConsumable
+                                Text(isLifetime ? "Buy Lifetime - \(product.displayPrice)" : "Subscribe - \(product.displayPrice)")
                             }
                         }
                         .font(.system(size: 17, weight: .bold, design: .rounded))
@@ -8092,25 +9485,48 @@ struct SubscriptionSheet: View {
 struct SubscriptionProductRow: View {
     let product: Product
     let isSelected: Bool
+    let isLifetime: Bool
     let action: () -> Void
 
     var periodText: String {
-        switch product.subscription?.subscriptionPeriod.unit {
-        case .week: return "week"
-        case .month: return "month"
-        case .year: return "year"
-        default: return ""
+        // Use product ID to determine period (most reliable)
+        let id = product.id.lowercased()
+        if id.contains("weekly") { return "week" }
+        if id.contains("monthly") { return "month" }
+        if id.contains("yearly") { return "year" }
+
+        // Fallback to StoreKit subscription period
+        if let unit = product.subscription?.subscriptionPeriod.unit {
+            switch unit {
+            case .day: return "day"
+            case .week: return "week"
+            case .month: return "month"
+            case .year: return "year"
+            @unknown default: break
+            }
         }
+        return ""
     }
 
     var body: some View {
         Button(action: action) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(product.displayName)
-                        .font(.system(size: 15, weight: .semibold, design: .rounded))
-                        .foregroundColor(.primary)
-                    Text("\(product.displayPrice)/\(periodText)")
+                    HStack(spacing: 6) {
+                        Text(product.displayName)
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .foregroundColor(.primary)
+                        if isLifetime {
+                            Text("BEST VALUE")
+                                .font(.system(size: 9, weight: .bold, design: .rounded))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(LinearGradient(colors: [.orange, .pink], startPoint: .leading, endPoint: .trailing))
+                                .cornerRadius(4)
+                        }
+                    }
+                    Text(isLifetime ? "\(product.displayPrice) one-time" : "\(product.displayPrice)/\(periodText)")
                         .font(.system(size: 13, design: .rounded))
                         .foregroundColor(.secondary)
                 }
@@ -8120,11 +9536,11 @@ struct SubscriptionProductRow: View {
                     .foregroundColor(isSelected ? .mintGreen : .gray.opacity(0.4))
             }
             .padding()
-            .background(isSelected ? Color.mintGreen.opacity(0.1) : Color.white)
+            .background(isSelected ? Color.mintGreen.opacity(0.1) : (isLifetime ? Color.orange.opacity(0.05) : Color.adaptiveWhite))
             .cornerRadius(12)
             .overlay(
                 RoundedRectangle(cornerRadius: 12)
-                    .stroke(isSelected ? Color.mintGreen : Color.gray.opacity(0.2), lineWidth: isSelected ? 2 : 1)
+                    .stroke(isSelected ? Color.mintGreen : (isLifetime ? Color.orange.opacity(0.3) : Color.gray.opacity(0.2)), lineWidth: isSelected ? 2 : 1)
             )
         }
     }
@@ -8193,7 +9609,7 @@ struct CardBrowserView: View {
                         Text(filter.rawValue).font(.system(size: 12, weight: .semibold, design: .rounded))
                             .foregroundColor(cardManager.currentFilter == filter ? .white : .primary)
                             .padding(.horizontal, 12).padding(.vertical, 8)
-                            .background(cardManager.currentFilter == filter ? Color.pastelPink : Color.white)
+                            .background(cardManager.currentFilter == filter ? Color.pastelPink : Color.adaptiveWhite)
                             .cornerRadius(16)
                     }
                 }
@@ -8280,7 +9696,7 @@ struct CardListItem: View {
                 Image(systemName: "chevron.right").font(.system(size: 12)).foregroundColor(.gray)
             }
             .padding(12)
-            .background(Color.white)
+            .background(Color.adaptiveWhite)
             .cornerRadius(12)
             .shadow(color: .black.opacity(0.04), radius: 3)
         }
@@ -8348,7 +9764,7 @@ struct CardDetailSheet: View {
                 }
                 .padding(24)
                 .frame(maxWidth: .infinity)
-                .background(Color.white)
+                .background(Color.adaptiveWhite)
                 .cornerRadius(20)
                 .shadow(color: .black.opacity(0.08), radius: 8)
                 .padding(.horizontal)
@@ -8390,7 +9806,7 @@ struct CardDetailSheet: View {
                         .font(.system(size: 14, weight: .semibold, design: .rounded))
                         .foregroundColor(cardManager.isSaved(card) ? .white : .pastelPink)
                         .padding(.horizontal, 20).padding(.vertical, 12)
-                        .background(cardManager.isSaved(card) ? Color.pastelPink : Color.white)
+                        .background(cardManager.isSaved(card) ? Color.pastelPink : Color.adaptiveWhite)
                         .cornerRadius(20)
                         .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.pastelPink, lineWidth: cardManager.isSaved(card) ? 0 : 2))
                     }
@@ -8403,7 +9819,7 @@ struct CardDetailSheet: View {
                         .font(.system(size: 14, weight: .semibold, design: .rounded))
                         .foregroundColor(cardManager.isMastered(card) ? .white : .mintGreen)
                         .padding(.horizontal, 20).padding(.vertical, 12)
-                        .background(cardManager.isMastered(card) ? Color.mintGreen : Color.white)
+                        .background(cardManager.isMastered(card) ? Color.mintGreen : Color.adaptiveWhite)
                         .cornerRadius(20)
                         .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.mintGreen, lineWidth: cardManager.isMastered(card) ? 0 : 2))
                     }
@@ -8557,7 +9973,7 @@ struct CreateCardView: View {
                                     Text(category.rawValue).font(.system(size: 12, weight: .medium, design: .rounded))
                                         .foregroundColor(selectedCategory == category ? .white : .primary)
                                         .padding(.horizontal, 12).padding(.vertical, 8)
-                                        .background(selectedCategory == category ? category.color : Color.white)
+                                        .background(selectedCategory == category ? category.color : Color.adaptiveWhite)
                                         .cornerRadius(16)
                                 }
                             }
@@ -8574,7 +9990,7 @@ struct CreateCardView: View {
                                 Text(difficulty.rawValue).font(.system(size: 13, weight: .medium, design: .rounded))
                                     .foregroundColor(selectedDifficulty == difficulty ? .white : .primary)
                                     .padding(.horizontal, 16).padding(.vertical, 10)
-                                    .background(selectedDifficulty == difficulty ? difficulty.color : Color.white)
+                                    .background(selectedDifficulty == difficulty ? difficulty.color : Color.adaptiveWhite)
                                     .cornerRadius(20)
                             }
                         }
@@ -8626,7 +10042,7 @@ struct RoundedTextFieldStyle: TextFieldStyle {
     func _body(configuration: TextField<Self._Label>) -> some View {
         configuration
             .padding(12)
-            .background(Color.white)
+            .background(Color.adaptiveWhite)
             .cornerRadius(12)
             .shadow(color: .black.opacity(0.05), radius: 3)
     }
@@ -8726,7 +10142,7 @@ struct StatsView: View {
 
                 HStack(spacing: 12) {
                     StatBox(title: "Current Streak", value: "\(statsManager.stats.currentStreak) days", icon: "flame.fill", color: .orange)
-                    StatBox(title: "Cards Mastered", value: "\(cardManager.masteredCardIDs.count)", icon: "checkmark.seal.fill", color: .pastelPink)
+                    StatBox(title: "Cards Mastered", value: "\(cardManager.validMasteredCount)", icon: "checkmark.seal.fill", color: .pastelPink)
                 }
                 .padding(.horizontal)
 
@@ -8895,7 +10311,7 @@ struct StatsView: View {
         .onAppear {
             achievementManager.checkAchievements(
                 stats: statsManager.stats,
-                masteredCount: cardManager.masteredCardIDs.count,
+                masteredCount: cardManager.validMasteredCount,
                 categoriesStudied: Set(statsManager.stats.categoryAccuracy.keys)
             )
         }
@@ -8970,11 +10386,18 @@ struct AchievementCard: View {
 struct SettingsView: View {
     @Environment(\.dismiss) var dismiss
     @EnvironmentObject var subscriptionManager: SubscriptionManager
+    @EnvironmentObject var cardManager: CardManager
+    @EnvironmentObject var statsManager: StatsManager
     @StateObject private var notificationManager = NotificationManager.shared
+    @StateObject private var soundManager = SoundManager.shared
+    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @StateObject private var appearanceManager = AppearanceManager.shared
     @State private var remindersEnabled = false
     @State private var selectedTime = Date()
     @State private var showRestoreAlert = false
     @State private var restoreMessage = ""
+    @State private var hapticsEnabled = HapticManager.shared.isEnabled
+    @State private var showResetConfirmation = false
 
     private let privacyPolicyURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/privacy.html"
     private let termsOfServiceURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/terms.html"
@@ -8982,6 +10405,24 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             Form {
+                Section("Appearance") {
+                    Picker(selection: $appearanceManager.currentMode, label:
+                        HStack {
+                            Image(systemName: "circle.lefthalf.filled")
+                                .foregroundColor(.softLavender)
+                            Text("Theme")
+                        }
+                    ) {
+                        ForEach(AppearanceManager.Mode.allCases, id: \.self) { mode in
+                            HStack {
+                                Image(systemName: mode.icon)
+                                Text(mode.name)
+                            }
+                            .tag(mode)
+                        }
+                    }
+                }
+
                 Section("Study Reminders") {
                     Toggle("Daily Reminder", isOn: $remindersEnabled)
                         .onChange(of: remindersEnabled) { _, newValue in
@@ -9001,6 +10442,35 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("Feedback") {
+                    Toggle(isOn: $hapticsEnabled) {
+                        HStack {
+                            Image(systemName: "iphone.radiowaves.left.and.right")
+                                .foregroundColor(.softLavender)
+                            Text("Haptic Feedback")
+                        }
+                    }
+                    .onChange(of: hapticsEnabled) { _, newValue in
+                        HapticManager.shared.isEnabled = newValue
+                        if newValue {
+                            HapticManager.shared.light()
+                        }
+                    }
+
+                    Toggle(isOn: $soundManager.isEnabled) {
+                        HStack {
+                            Image(systemName: "speaker.wave.2.fill")
+                                .foregroundColor(.mintGreen)
+                            Text("Sound Effects")
+                        }
+                    }
+                    .onChange(of: soundManager.isEnabled) { _, newValue in
+                        if newValue {
+                            SoundManager.shared.buttonTap()
+                        }
+                    }
+                }
+
                 Section("Subscription") {
                     HStack {
                         Text("Status")
@@ -9011,6 +10481,7 @@ struct SettingsView: View {
                     }
 
                     Button(action: {
+                        HapticManager.shared.buttonTap()
                         Task {
                             await subscriptionManager.restore()
                             restoreMessage = subscriptionManager.isSubscribed ? "Subscription restored successfully!" : "No active subscription found."
@@ -9026,6 +10497,7 @@ struct SettingsView: View {
 
                 Section("Legal") {
                     Button(action: {
+                        HapticManager.shared.buttonTap()
                         if let url = URL(string: privacyPolicyURL) {
                             UIApplication.shared.open(url)
                         }
@@ -9043,6 +10515,7 @@ struct SettingsView: View {
                     }
 
                     Button(action: {
+                        HapticManager.shared.buttonTap()
                         if let url = URL(string: termsOfServiceURL) {
                             UIApplication.shared.open(url)
                         }
@@ -9071,6 +10544,42 @@ struct SettingsView: View {
                     .padding(.vertical, 4)
                 }
 
+                Section("Support") {
+                    Button(action: {
+                        HapticManager.shared.buttonTap()
+                        if let url = URL(string: "mailto:longxethan@gmail.com?subject=CozyNCLEX%20Prep%20Support") {
+                            UIApplication.shared.open(url)
+                        }
+                    }) {
+                        HStack {
+                            Image(systemName: "envelope.fill")
+                                .foregroundColor(.mintGreen)
+                            Text("Contact Support")
+                                .foregroundColor(.primary)
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    Button(action: {
+                        HapticManager.shared.buttonTap()
+                        requestReview()
+                    }) {
+                        HStack {
+                            Image(systemName: "star.fill")
+                                .foregroundColor(.yellow)
+                            Text("Rate This App")
+                                .foregroundColor(.primary)
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
                 Section("About") {
                     HStack {
                         Text("Version")
@@ -9080,11 +10589,24 @@ struct SettingsView: View {
                     }
 
                     HStack {
-                        Text("Content Sources")
+                        Text("Developer")
                         Spacer()
-                        Text("Kaplan, Archer, UWorld, NCSBN")
-                            .font(.system(size: 12))
+                        Text("Ethan Long")
                             .foregroundColor(.secondary)
+                    }
+                }
+
+                Section("Data") {
+                    Button(action: {
+                        HapticManager.shared.warning()
+                        showResetConfirmation = true
+                    }) {
+                        HStack {
+                            Image(systemName: "trash.fill")
+                                .foregroundColor(.red)
+                            Text("Reset All Progress")
+                                .foregroundColor(.red)
+                        }
                     }
                 }
             }
@@ -9092,18 +10614,66 @@ struct SettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done") {
+                        HapticManager.shared.buttonTap()
+                        dismiss()
+                    }
                 }
             }
             .onAppear {
                 remindersEnabled = notificationManager.isAuthorized
                 selectedTime = notificationManager.reminderTime
+                hapticsEnabled = HapticManager.shared.isEnabled
             }
             .alert("Restore Purchases", isPresented: $showRestoreAlert) {
                 Button("OK", role: .cancel) { }
             } message: {
                 Text(restoreMessage)
             }
+            .alert("Reset All Progress?", isPresented: $showResetConfirmation) {
+                Button("Cancel", role: .cancel) { }
+                Button("Reset", role: .destructive) {
+                    resetAllProgress()
+                }
+            } message: {
+                Text("This will delete all your study progress, mastered cards, saved cards, stats, XP, and achievements. This cannot be undone.")
+            }
+        }
+    }
+
+    private func resetAllProgress() {
+        // Reset CardManager
+        cardManager.savedCardIDs.removeAll()
+        cardManager.masteredCardIDs.removeAll()
+        cardManager.consecutiveCorrect.removeAll()
+        cardManager.userCreatedCards.removeAll()
+        cardManager.studySets.removeAll()
+        cardManager.spacedRepData.removeAll()
+        cardManager.cardNotes.removeAll()
+        cardManager.flaggedCardIDs.removeAll()
+        cardManager.testHistory.removeAll()
+        cardManager.saveAll()
+
+        // Reset StatsManager
+        statsManager.stats = UserStats()
+        statsManager.save()
+
+        // Reset DailyGoalsManager
+        dailyGoalsManager.resetAllProgress()
+
+        // Reset achievements
+        UserDefaults.standard.removeObject(forKey: "unlockedAchievements")
+
+        // Reset onboarding (optional - commented out)
+        // UserDefaults.standard.removeObject(forKey: "hasSeenOnboarding")
+
+        HapticManager.shared.success()
+        SoundManager.shared.buttonTap()
+    }
+
+    private func requestReview() {
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+            SKStoreReviewController.requestReview(in: windowScene)
         }
     }
 }
@@ -9122,7 +10692,7 @@ struct StatBox: View {
         }
         .frame(maxWidth: .infinity)
         .padding()
-        .background(Color.white)
+        .background(Color.adaptiveWhite)
         .cornerRadius(16)
     }
 }
@@ -9165,7 +10735,7 @@ struct StudySetsView: View {
                                 Image(systemName: "chevron.right").foregroundColor(.gray)
                             }
                             .padding()
-                            .background(Color.white)
+                            .background(Color.adaptiveWhite)
                             .cornerRadius(12)
                         }
                     }
@@ -9183,15 +10753,19 @@ struct BackButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        Button(action: {
+            HapticManager.shared.buttonTap()
+            action()
+        }) {
             Image(systemName: "chevron.left")
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundColor(.primary)
                 .padding(10)
-                .background(Color.white)
+                .background(Color.adaptiveWhite)
                 .clipShape(Circle())
                 .shadow(color: .black.opacity(0.1), radius: 3)
         }
+        .buttonStyle(SoftBounceButtonStyle())
     }
 }
 
@@ -9202,6 +10776,7 @@ struct SwipeGameView: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
+    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
     @State private var currentIndex = 0
     @State private var offset: CGSize = .zero
     @State private var isFlipped = false
@@ -9209,57 +10784,77 @@ struct SwipeGameView: View {
     @State private var showCelebration = false
     @State private var correctCount = 0
     @State private var startTime = Date()
-
-    var availableCards: [Flashcard] {
-        cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed)
-    }
+    @State private var swipeCards: [Flashcard] = []
+    @State private var isDragging = false
 
     var body: some View {
         ZStack {
             Color.creamyBackground.ignoresSafeArea()
             VStack(spacing: 16) {
                 HStack {
-                    BackButton { saveSession(); appManager.currentScreen = .menu }
+                    BackButton {
+                        HapticManager.shared.buttonTap()
+                        saveSession()
+                        appManager.currentScreen = .menu
+                    }
                     Spacer()
                     Text("Cozy Swipe").font(.system(size: 18, weight: .bold, design: .rounded))
                     Spacer()
-                    Text("\(currentIndex + 1)/\(availableCards.count)")
+                    Text("\(currentIndex + 1)/\(swipeCards.count)")
                         .font(.system(size: 14, weight: .medium, design: .rounded)).foregroundColor(.secondary)
                 }
                 .padding(.horizontal)
 
-                ProgressBar(current: currentIndex + 1, total: availableCards.count)
+                ProgressBar(current: currentIndex + 1, total: swipeCards.count)
                     .padding(.horizontal)
 
                 Spacer()
 
                 if showCelebration {
-                    CelebrationView(score: correctCount, total: availableCards.count) {
-                        saveSession(); currentIndex = 0; correctCount = 0; showCelebration = false; startTime = Date()
+                    CelebrationView(score: correctCount, total: swipeCards.count) {
+                        HapticManager.shared.buttonTap()
+                        saveSession()
+                        setupSwipeCards()
                     }
-                } else if availableCards.isEmpty {
-                    AllMasteredView { appManager.currentScreen = .cardBrowser; cardManager.currentFilter = .mastered }
-                } else if currentIndex < availableCards.count {
+                } else if swipeCards.isEmpty {
+                    AllMasteredView {
+                        HapticManager.shared.buttonTap()
+                        appManager.currentScreen = .cardBrowser
+                        cardManager.currentFilter = .mastered
+                    }
+                } else if currentIndex < swipeCards.count {
                     ZStack {
-                        FlashcardView(card: availableCards[currentIndex], isFlipped: $isFlipped,
-                                     isSaved: cardManager.isSaved(availableCards[currentIndex])) {
-                            cardManager.toggleSaved(availableCards[currentIndex])
+                        FlashcardView(card: swipeCards[currentIndex], isFlipped: $isFlipped,
+                                     isSaved: cardManager.isSaved(swipeCards[currentIndex])) {
+                            HapticManager.shared.light()
+                            cardManager.toggleSaved(swipeCards[currentIndex])
                         }
                         .offset(offset)
                         .rotationEffect(.degrees(Double(offset.width / 20)))
                         .gesture(
-                            DragGesture()
+                            DragGesture(minimumDistance: 10)
                                 .onChanged { g in
+                                    isDragging = true
                                     offset = g.translation
-                                    showStamp = g.translation.width > 50 ? "GOT IT!" : (g.translation.width < -50 ? "STUDY MORE" : nil)
+                                    let newStamp = g.translation.width > 50 ? "GOT IT!" : (g.translation.width < -50 ? "STUDY MORE" : nil)
+                                    if newStamp != showStamp && newStamp != nil {
+                                        HapticManager.shared.selection()
+                                    }
+                                    showStamp = newStamp
                                 }
                                 .onEnded { g in
+                                    isDragging = false
                                     if g.translation.width > 100 { swipeRight() }
                                     else if g.translation.width < -100 { swipeLeft() }
                                     else { withAnimation(.spring()) { offset = .zero; showStamp = nil } }
                                 }
                         )
-                        .onTapGesture { withAnimation(.spring(response: 0.5)) { isFlipped.toggle() } }
+                        .onTapGesture {
+                            guard !isDragging else { return }
+                            HapticManager.shared.cardFlip()
+                            SoundManager.shared.cardFlip()
+                            withAnimation(.spring(response: 0.5)) { isFlipped.toggle() }
+                        }
 
                         if let stamp = showStamp {
                             StampOverlay(text: stamp, isPositive: stamp == "GOT IT!")
@@ -9268,29 +10863,50 @@ struct SwipeGameView: View {
                 }
                 Spacer()
 
-                if !showCelebration && !availableCards.isEmpty && currentIndex < availableCards.count {
+                if !showCelebration && !swipeCards.isEmpty && currentIndex < swipeCards.count {
                     SwipeInstructions()
                 }
             }
         }
+        .onAppear { setupSwipeCards() }
+    }
+
+    func setupSwipeCards() {
+        swipeCards = cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed)
+        currentIndex = 0
+        correctCount = 0
+        showCelebration = false
+        startTime = Date()
     }
 
     func swipeRight() {
-        cardManager.recordCorrectAnswer(availableCards[currentIndex])
+        guard currentIndex < swipeCards.count else { return }
+        HapticManager.shared.correctAnswer()
+        SoundManager.shared.correctAnswer()
+        cardManager.recordCorrectAnswer(swipeCards[currentIndex])
         correctCount += 1
         nextCard(positive: true)
     }
 
     func swipeLeft() {
-        cardManager.recordWrongAnswer(availableCards[currentIndex])
+        guard currentIndex < swipeCards.count else { return }
+        HapticManager.shared.wrongAnswer()
+        SoundManager.shared.wrongAnswer()
+        cardManager.recordWrongAnswer(swipeCards[currentIndex])
         nextCard(positive: false)
     }
 
     func nextCard(positive: Bool) {
+        HapticManager.shared.swipe()
+        SoundManager.shared.swipe()
         withAnimation(.easeOut(duration: 0.3)) { offset = CGSize(width: positive ? 500 : -500, height: 0) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             offset = .zero; showStamp = nil; isFlipped = false
-            if currentIndex + 1 >= availableCards.count { showCelebration = true }
+            if currentIndex + 1 >= swipeCards.count {
+                showCelebration = true
+                HapticManager.shared.achievement()
+                SoundManager.shared.celebration()
+            }
             else { currentIndex += 1 }
         }
     }
@@ -9299,6 +10915,7 @@ struct SwipeGameView: View {
         let timeSpent = Int(Date().timeIntervalSince(startTime))
         if currentIndex > 0 {
             statsManager.recordSession(cardsStudied: currentIndex, correct: correctCount, timeSeconds: timeSpent, mode: "Swipe")
+            dailyGoalsManager.recordStudySession(cardsStudied: currentIndex, correct: correctCount, timeSeconds: timeSpent)
         }
     }
 }
@@ -9365,7 +10982,7 @@ struct CardFace: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(RoundedRectangle(cornerRadius: 22).fill(Color.white).shadow(color: .black.opacity(0.1), radius: 8))
+        .background(RoundedRectangle(cornerRadius: 22).fill(Color.adaptiveWhite).shadow(color: .black.opacity(0.1), radius: 8))
         .overlay(RoundedRectangle(cornerRadius: 22).stroke(category.color.opacity(0.3), lineWidth: 2))
     }
 }
@@ -9451,6 +11068,7 @@ struct BearQuizView: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
+    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
     @State private var currentIndex = 0
     @State private var shuffledAnswers: [String] = []
     @State private var selectedAnswer: String? = nil
@@ -9464,9 +11082,11 @@ struct BearQuizView: View {
     @State private var cardOpacity: Double = 1.0
     @State private var showConfetti = false
     @State private var streakCount = 0
+    @State private var quizCards: [Flashcard] = []
 
-    var availableCards: [Flashcard] { cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed) }
-    var currentCard: Flashcard? { currentIndex < availableCards.count ? availableCards[currentIndex] : nil }
+    private let maxQuestions = 10
+
+    var currentCard: Flashcard? { currentIndex < quizCards.count ? quizCards[currentIndex] : nil }
 
     var body: some View {
         ZStack {
@@ -9483,16 +11103,27 @@ struct BearQuizView: View {
                 QuizHeader(
                     score: score,
                     currentIndex: currentIndex,
-                    total: availableCards.count,
+                    total: quizCards.count,
                     streakCount: streakCount,
-                    onBack: { saveSession(); appManager.currentScreen = .menu }
+                    onBack: {
+                        HapticManager.shared.buttonTap()
+                        saveSession()
+                        appManager.currentScreen = .menu
+                    }
                 )
 
                 if showCelebration {
-                    QuizCelebrationView(score: score, total: availableCards.count, onPlayAgain: resetQuiz)
-                } else if availableCards.isEmpty {
+                    QuizCelebrationView(score: score, total: quizCards.count, onPlayAgain: {
+                        HapticManager.shared.buttonTap()
+                        resetQuiz()
+                    })
+                } else if quizCards.isEmpty {
                     Spacer()
-                    AllMasteredView { appManager.currentScreen = .cardBrowser; cardManager.currentFilter = .mastered }
+                    AllMasteredView {
+                        HapticManager.shared.buttonTap()
+                        appManager.currentScreen = .cardBrowser
+                        cardManager.currentFilter = .mastered
+                    }
                     Spacer()
                 } else if let card = currentCard {
                     Spacer()
@@ -9508,7 +11139,10 @@ struct BearQuizView: View {
                         onSelectAnswer: { answer in
                             selectAnswer(answer, correctAnswer: card.answer)
                         },
-                        onNext: nextQuestion
+                        onNext: {
+                            HapticManager.shared.buttonTap()
+                            nextQuestion()
+                        }
                     )
                     .scaleEffect(cardScale)
                     .opacity(cardOpacity)
@@ -9516,7 +11150,7 @@ struct BearQuizView: View {
                     Spacer()
 
                     // Progress dots
-                    QuizProgressDots(current: currentIndex, total: min(availableCards.count, 10))
+                    QuizProgressDots(current: currentIndex, total: quizCards.count)
                         .padding(.bottom, 20)
                 }
             }
@@ -9527,7 +11161,17 @@ struct BearQuizView: View {
                     .allowsHitTesting(false)
             }
         }
-        .onAppear { loadQuestion() }
+        .onAppear { setupQuiz() }
+    }
+
+    func setupQuiz() {
+        let allCards = cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed)
+        quizCards = Array(allCards.prefix(maxQuestions))
+        currentIndex = 0
+        score = 0
+        streakCount = 0
+        startTime = Date()
+        loadQuestion()
     }
 
     func loadQuestion() {
@@ -9554,8 +11198,7 @@ struct BearQuizView: View {
         guard !showResult, let card = currentCard else { return }
 
         // Haptic feedback
-        let generator = UIImpactFeedbackGenerator(style: .medium)
-        generator.impactOccurred()
+        HapticManager.shared.medium()
 
         selectedAnswer = answer
         isCorrect = answer == correctAnswer
@@ -9574,16 +11217,16 @@ struct BearQuizView: View {
                 showConfetti = true
             }
 
-            // Success haptic
-            let successGenerator = UINotificationFeedbackGenerator()
-            successGenerator.notificationOccurred(.success)
+            // Success feedback
+            HapticManager.shared.correctAnswer()
+            SoundManager.shared.correctAnswer()
         } else {
             streakCount = 0
             cardManager.recordWrongAnswer(card)
 
-            // Error haptic
-            let errorGenerator = UINotificationFeedbackGenerator()
-            errorGenerator.notificationOccurred(.error)
+            // Error feedback
+            HapticManager.shared.wrongAnswer()
+            SoundManager.shared.wrongAnswer()
 
             // Shake animation
             withAnimation(.default) {
@@ -9613,8 +11256,10 @@ struct BearQuizView: View {
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            if currentIndex + 1 >= availableCards.count {
+            if currentIndex + 1 >= quizCards.count {
                 showCelebration = true
+                HapticManager.shared.achievement()
+                SoundManager.shared.celebration()
             } else {
                 currentIndex += 1
                 loadQuestion()
@@ -9624,18 +11269,15 @@ struct BearQuizView: View {
 
     func resetQuiz() {
         saveSession()
-        currentIndex = 0
-        score = 0
-        streakCount = 0
         showCelebration = false
-        startTime = Date()
-        loadQuestion()
+        setupQuiz()
     }
 
     func saveSession() {
         let timeSpent = Int(Date().timeIntervalSince(startTime))
         if currentIndex > 0 {
             statsManager.recordSession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent, mode: "Quiz")
+            dailyGoalsManager.recordStudySession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent)
         }
     }
 }
@@ -9967,7 +11609,7 @@ struct ResultBanner: View {
                     .font(.system(size: 14, weight: .bold, design: .rounded))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(Color.white.opacity(0.3))
+                    .background(Color.adaptiveWhite.opacity(0.3))
                     .cornerRadius(8)
             }
         }
@@ -10262,9 +11904,9 @@ struct WriteModeView: View {
     @State private var score = 0
     @State private var showCelebration = false
     @State private var startTime = Date()
+    @State private var writeCards: [Flashcard] = []
 
-    var availableCards: [Flashcard] { cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed) }
-    var currentCard: Flashcard? { currentIndex < availableCards.count ? availableCards[currentIndex] : nil }
+    var currentCard: Flashcard? { currentIndex < writeCards.count ? writeCards[currentIndex] : nil }
 
     var body: some View {
         ZStack {
@@ -10280,8 +11922,8 @@ struct WriteModeView: View {
                 .padding(.horizontal)
 
                 if showCelebration {
-                    CelebrationView(score: score, total: availableCards.count) { resetMode() }
-                } else if availableCards.isEmpty {
+                    CelebrationView(score: score, total: writeCards.count) { resetMode() }
+                } else if writeCards.isEmpty {
                     Spacer()
                     AllMasteredView { appManager.currentScreen = .cardBrowser; cardManager.currentFilter = .mastered }
                     Spacer()
@@ -10350,22 +11992,47 @@ struct WriteModeView: View {
                 }
             }
         }
+        .onAppear { setupWriteMode() }
+    }
+
+    func setupWriteMode() {
+        writeCards = cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed)
+        currentIndex = 0
+        score = 0
+        userAnswer = ""
+        showResult = false
+        isCorrect = false
+        showCelebration = false
+        startTime = Date()
     }
 
     func checkAnswer() {
         guard let card = currentCard else { return }
+        HapticManager.shared.buttonTap()
+
         let normalizedUser = userAnswer.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedCorrect = card.answer.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         isCorrect = normalizedUser.contains(normalizedCorrect) || normalizedCorrect.contains(normalizedUser) ||
                    similarity(normalizedUser, normalizedCorrect) > 0.7
         showResult = true
-        if isCorrect { score += 1; cardManager.recordCorrectAnswer(card) }
-        else { cardManager.recordWrongAnswer(card) }
+
+        if isCorrect {
+            score += 1
+            cardManager.recordCorrectAnswer(card)
+            HapticManager.shared.correctAnswer()
+            SoundManager.shared.correctAnswer()
+        } else {
+            cardManager.recordWrongAnswer(card)
+            HapticManager.shared.wrongAnswer()
+            SoundManager.shared.wrongAnswer()
+        }
         statsManager.recordCategoryResult(category: card.contentCategory.rawValue, correct: isCorrect)
     }
 
     func overrideAsCorrect() {
         guard let card = currentCard else { return }
+        HapticManager.shared.success()
+        SoundManager.shared.correctAnswer()
         // Reverse the wrong answer recording and record as correct instead
         score += 1
         isCorrect = true
@@ -10383,16 +12050,28 @@ struct WriteModeView: View {
     }
 
     func nextCard() {
+        HapticManager.shared.buttonTap()
         userAnswer = ""; showResult = false; isCorrect = false
-        if currentIndex + 1 >= availableCards.count { showCelebration = true }
+        if currentIndex + 1 >= writeCards.count {
+            showCelebration = true
+            HapticManager.shared.achievement()
+            SoundManager.shared.celebration()
+        }
         else { currentIndex += 1 }
     }
 
-    func resetMode() { saveSession(); currentIndex = 0; score = 0; showCelebration = false; userAnswer = ""; startTime = Date() }
+    func resetMode() {
+        HapticManager.shared.buttonTap()
+        saveSession()
+        setupWriteMode()
+    }
 
     func saveSession() {
         let timeSpent = Int(Date().timeIntervalSince(startTime))
-        if currentIndex > 0 { statsManager.recordSession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent, mode: "Write") }
+        if currentIndex > 0 {
+            statsManager.recordSession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent, mode: "Write")
+            DailyGoalsManager.shared.recordStudySession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent)
+        }
     }
 }
 
@@ -10424,15 +12103,94 @@ struct TestModeView: View {
     @State private var showExitConfirmation = false
     @State private var selectedFormat: TestFormat? = nil
 
+    // CAT (Computer Adaptive Testing) State
+    @State private var isCATMode = true
+    @State private var currentDifficulty: Difficulty = .medium
+    @State private var competencyScore: Double = 0.0 // Running logit estimate
+    @State private var usedCardIDs: Set<UUID> = []
+    @State private var consecutiveCorrect = 0
+    @State private var consecutiveWrong = 0
+    @State private var catTerminated = false
+    @State private var catPassed: Bool? = nil
+
     let testFormats = [
         TestFormat(name: "Quick Quiz", questionCount: 25, timeMinutes: 30),
         TestFormat(name: "Standard Test", questionCount: 50, timeMinutes: 60),
-        TestFormat(name: "Full Exam", questionCount: 100, timeMinutes: 120)
+        TestFormat(name: "CAT Simulation", questionCount: 75, timeMinutes: 90)  // Variable length like real NCLEX
     ]
 
     var availableCards: [Flashcard] { cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed) }
     var currentCard: Flashcard? { currentIndex < testCards.count ? testCards[currentIndex] : nil }
     var correctCount: Int { testCards.filter { answers[$0.id] == $0.answer }.count }
+
+    // Get cards by difficulty
+    func getCardsByDifficulty(_ difficulty: Difficulty) -> [Flashcard] {
+        availableCards.filter { $0.difficulty == difficulty && !usedCardIDs.contains($0.id) }
+    }
+
+    // Select next card based on CAT algorithm
+    func selectNextCATCard(wasCorrect: Bool) -> Flashcard? {
+        // Adjust competency score (simplified IRT model)
+        if wasCorrect {
+            competencyScore += 0.5
+            consecutiveCorrect += 1
+            consecutiveWrong = 0
+        } else {
+            competencyScore -= 0.5
+            consecutiveWrong += 1
+            consecutiveCorrect = 0
+        }
+
+        // Adjust difficulty based on performance
+        if wasCorrect {
+            switch currentDifficulty {
+            case .easy: currentDifficulty = .medium
+            case .medium: currentDifficulty = .hard
+            case .hard: currentDifficulty = .hard
+            }
+        } else {
+            switch currentDifficulty {
+            case .easy: currentDifficulty = .easy
+            case .medium: currentDifficulty = .easy
+            case .hard: currentDifficulty = .medium
+            }
+        }
+
+        // Check for early termination (95% confidence rule simulation)
+        // If consistently above/below passing after minimum questions
+        let minQuestions = 15
+        if testCards.count >= minQuestions {
+            // Passed: 3 consecutive correct at hard level with positive competency
+            if consecutiveCorrect >= 3 && currentDifficulty == .hard && competencyScore > 1.0 {
+                catTerminated = true
+                catPassed = true
+                return nil
+            }
+            // Failed: 3 consecutive wrong at easy level with negative competency
+            if consecutiveWrong >= 3 && currentDifficulty == .easy && competencyScore < -1.0 {
+                catTerminated = true
+                catPassed = false
+                return nil
+            }
+        }
+
+        // Get cards at current difficulty, fall back to adjacent difficulties
+        var candidates = getCardsByDifficulty(currentDifficulty)
+        if candidates.isEmpty {
+            // Try adjacent difficulties
+            switch currentDifficulty {
+            case .easy: candidates = getCardsByDifficulty(.medium)
+            case .medium: candidates = getCardsByDifficulty(.easy) + getCardsByDifficulty(.hard)
+            case .hard: candidates = getCardsByDifficulty(.medium)
+            }
+        }
+        if candidates.isEmpty {
+            // Use any remaining card
+            candidates = availableCards.filter { !usedCardIDs.contains($0.id) }
+        }
+
+        return candidates.randomElement()
+    }
 
     var body: some View {
         ZStack {
@@ -10478,7 +12236,7 @@ struct TestModeView: View {
                                         }
                                     }
                                     .padding()
-                                    .background(selectedFormat?.id == format.id ? Color.peachOrange.opacity(0.15) : Color.white)
+                                    .background(selectedFormat?.id == format.id ? Color.peachOrange.opacity(0.15) : Color.adaptiveWhite)
                                     .cornerRadius(14)
                                     .overlay(RoundedRectangle(cornerRadius: 14).stroke(selectedFormat?.id == format.id ? Color.peachOrange : Color.gray.opacity(0.2), lineWidth: 2))
                                 }
@@ -10528,7 +12286,7 @@ struct TestModeView: View {
                                         }
                                     }
                                     .padding()
-                                    .background(answers[card.id] == answer ? Color.pastelPink.opacity(0.2) : Color.white)
+                                    .background(answers[card.id] == answer ? Color.pastelPink.opacity(0.2) : Color.adaptiveWhite)
                                     .cornerRadius(12)
                                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(answers[card.id] == answer ? Color.pastelPink : Color.gray.opacity(0.3), lineWidth: 2))
                                 }
@@ -10536,15 +12294,25 @@ struct TestModeView: View {
                             }
 
                             HStack {
-                                if currentIndex > 0 {
+                                // In CAT mode, no going back (like real NCLEX)
+                                if currentIndex > 0 && !isCATMode {
                                     Button(action: { currentIndex -= 1 }) {
                                         HStack { Image(systemName: "chevron.left"); Text("Previous") }
                                             .font(.system(size: 14, weight: .semibold, design: .rounded))
-                                            .foregroundColor(.primary).padding().background(Color.white).cornerRadius(12)
+                                            .foregroundColor(.primary).padding().background(Color.adaptiveWhite).cornerRadius(12)
                                     }
                                 }
                                 Spacer()
-                                if currentIndex < testCards.count - 1 {
+
+                                if isCATMode {
+                                    // CAT mode: Next adds a new adaptive question
+                                    Button(action: nextCATQuestion) {
+                                        HStack { Text("Next"); Image(systemName: "chevron.right") }
+                                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                            .foregroundColor(.white).padding().background(Color.pastelPink).cornerRadius(12)
+                                    }
+                                    .disabled(answers[card.id] == nil) // Must answer before proceeding
+                                } else if currentIndex < testCards.count - 1 {
                                     Button(action: { currentIndex += 1 }) {
                                         HStack { Text("Next"); Image(systemName: "chevron.right") }
                                             .font(.system(size: 14, weight: .semibold, design: .rounded))
@@ -10556,6 +12324,23 @@ struct TestModeView: View {
                                             .foregroundColor(.white).padding().background(Color.mintGreen).cornerRadius(12)
                                     }
                                 }
+                            }
+
+                            // CAT Mode indicator
+                            if isCATMode {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "brain.head.profile")
+                                        .foregroundColor(.softLavender)
+                                    Text("Adaptive Mode")
+                                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                                        .foregroundColor(.secondary)
+                                    Text("•")
+                                        .foregroundColor(.secondary)
+                                    Text("Difficulty: \(currentDifficulty.rawValue.capitalized)")
+                                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                                        .foregroundColor(difficultyColor)
+                                }
+                                .padding(.top, 8)
                             }
                         }
                         .padding()
@@ -10590,13 +12375,35 @@ struct TestModeView: View {
 
     func startTest() {
         guard let format = selectedFormat else { return }
-        let questionCount = min(format.questionCount, availableCards.count)
-        testCards = Array(availableCards.shuffled().prefix(questionCount))
+        HapticManager.shared.buttonTap()
+        SoundManager.shared.buttonTap()
 
-        // Pre-shuffle answers for each card to prevent re-shuffling on re-render
-        shuffledAnswers = [:]
-        for card in testCards {
-            shuffledAnswers[card.id] = card.shuffledAnswers()
+        // Reset CAT state
+        isCATMode = format.name == "CAT Simulation"
+        currentDifficulty = .medium
+        competencyScore = 0.0
+        usedCardIDs = []
+        consecutiveCorrect = 0
+        consecutiveWrong = 0
+        catTerminated = false
+        catPassed = nil
+
+        if isCATMode {
+            // CAT mode: Start with one medium difficulty card
+            testCards = []
+            if let firstCard = getCardsByDifficulty(.medium).randomElement() ?? availableCards.randomElement() {
+                testCards.append(firstCard)
+                usedCardIDs.insert(firstCard.id)
+                shuffledAnswers[firstCard.id] = firstCard.shuffledAnswers()
+            }
+        } else {
+            // Standard mode: Load all questions at once
+            let questionCount = min(format.questionCount, availableCards.count)
+            testCards = Array(availableCards.shuffled().prefix(questionCount))
+            shuffledAnswers = [:]
+            for card in testCards {
+                shuffledAnswers[card.id] = card.shuffledAnswers()
+            }
         }
 
         currentIndex = 0
@@ -10611,6 +12418,8 @@ struct TestModeView: View {
 
     func submitTest() {
         timer?.invalidate()
+        HapticManager.shared.success()
+        SoundManager.shared.celebration()
 
         var categoryBreakdown: [String: CategoryTestResult] = [:]
         var testAnswers: [TestAnswer] = []
@@ -10652,12 +12461,49 @@ struct TestModeView: View {
     func saveSession() {
         let timeSpent = Int(Date().timeIntervalSince(startTime))
         statsManager.recordSession(cardsStudied: testCards.count, correct: correctCount, timeSeconds: timeSpent, mode: "Test")
+        DailyGoalsManager.shared.recordStudySession(cardsStudied: testCards.count, correct: correctCount, timeSeconds: timeSpent)
     }
 
     func getTestAnswers() -> [TestAnswer] {
         testCards.map { card in
             let selectedAnswer = answers[card.id] ?? ""
             return TestAnswer(card: card, selectedAnswer: selectedAnswer, isCorrect: selectedAnswer == card.answer)
+        }
+    }
+
+    // CAT helper functions
+    var difficultyColor: Color {
+        switch currentDifficulty {
+        case .easy: return .mintGreen
+        case .medium: return .peachOrange
+        case .hard: return .coralPink
+        }
+    }
+
+    func nextCATQuestion() {
+        guard let card = currentCard, let selectedAnswer = answers[card.id] else { return }
+
+        let wasCorrect = selectedAnswer == card.answer
+
+        // Check if we've reached max questions
+        guard let format = selectedFormat else { return }
+        if testCards.count >= format.questionCount {
+            submitTest()
+            return
+        }
+
+        // Select next card based on CAT algorithm
+        if let nextCard = selectNextCATCard(wasCorrect: wasCorrect) {
+            testCards.append(nextCard)
+            usedCardIDs.insert(nextCard.id)
+            shuffledAnswers[nextCard.id] = nextCard.shuffledAnswers()
+            currentIndex += 1
+        } else if catTerminated {
+            // CAT algorithm determined pass/fail
+            submitTest()
+        } else {
+            // No more cards available
+            submitTest()
         }
     }
 }
@@ -10744,7 +12590,7 @@ struct TestReviewView: View {
                     ScrollView {
                         LazyVStack(spacing: 16) {
                             ForEach(Array(filteredAnswers.enumerated()), id: \.element.id) { index, answer in
-                                TestReviewCard(answer: answer, questionNumber: answers.firstIndex(where: { $0.id == answer.id })! + 1)
+                                TestReviewCard(answer: answer, questionNumber: (answers.firstIndex(where: { $0.id == answer.id }) ?? index) + 1)
                             }
                         }
                         .padding()
@@ -10947,7 +12793,7 @@ struct SmartReviewView: View {
                                     .padding(.vertical, 10)
                             }
                             .padding(20)
-                            .background(Color.white)
+                            .background(Color.adaptiveWhite)
                             .cornerRadius(18)
                             .shadow(color: .black.opacity(0.08), radius: 6)
 
@@ -11027,6 +12873,17 @@ struct SmartReviewView: View {
     func rateCard(quality: Int) {
         guard let card = currentCard else { return }
 
+        // Haptic feedback based on rating
+        if quality >= 4 {
+            HapticManager.shared.correctAnswer()
+            SoundManager.shared.correctAnswer()
+        } else if quality >= 3 {
+            HapticManager.shared.light()
+        } else {
+            HapticManager.shared.wrongAnswer()
+            SoundManager.shared.wrongAnswer()
+        }
+
         cardsReviewed += 1
         if quality >= 3 {
             score += 1
@@ -11042,6 +12899,8 @@ struct SmartReviewView: View {
         // Move to next card
         if currentIndex + 1 >= reviewCards.count {
             showCelebration = true
+            HapticManager.shared.achievement()
+            SoundManager.shared.celebration()
         } else {
             currentIndex += 1
             showAnswer = false
@@ -11049,6 +12908,7 @@ struct SmartReviewView: View {
     }
 
     func resetReview() {
+        HapticManager.shared.buttonTap()
         saveSession()
         score = 0
         cardsReviewed = 0
@@ -11062,6 +12922,7 @@ struct SmartReviewView: View {
         let timeSpent = Int(Date().timeIntervalSince(startTime))
         if cardsReviewed > 0 {
             statsManager.recordSession(cardsStudied: cardsReviewed, correct: score, timeSeconds: timeSpent, mode: "Smart Review")
+            DailyGoalsManager.shared.recordStudySession(cardsStudied: cardsReviewed, correct: score, timeSeconds: timeSpent)
         }
     }
 }
@@ -11253,17 +13114,31 @@ struct CozyMatchView: View {
             return
         }
 
+        HapticManager.shared.selection()
+
         if let selected = selectedTile {
             isProcessing = true; moves += 1
             if selected.cardId == tile.cardId && selected.isQuestion != tile.isQuestion {
+                // Match found!
+                HapticManager.shared.correctAnswer()
+                SoundManager.shared.correctAnswer()
                 if let card = gameCards.first(where: { $0.id == tile.cardId }) { cardManager.recordCorrectAnswer(card) }
                 withAnimation(.spring()) {
                     if let idx1 = tiles.firstIndex(where: { $0.id == selected.id }) { tiles[idx1].isMatched = true }
                     if let idx2 = tiles.firstIndex(where: { $0.id == tile.id }) { tiles[idx2].isMatched = true }
                 }
                 matchedPairs += 1; selectedTile = nil; isProcessing = false
-                if matchedPairs == 6 { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { showWin = true } }
+                if matchedPairs == 6 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        showWin = true
+                        HapticManager.shared.achievement()
+                        SoundManager.shared.celebration()
+                    }
+                }
             } else {
+                // No match
+                HapticManager.shared.wrongAnswer()
+                SoundManager.shared.wrongAnswer()
                 if let idx1 = tiles.firstIndex(where: { $0.id == selected.id }) { tiles[idx1].showError = true }
                 if let idx2 = tiles.firstIndex(where: { $0.id == tile.id }) { tiles[idx2].showError = true }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -11274,11 +13149,18 @@ struct CozyMatchView: View {
         } else { selectedTile = tile }
     }
 
-    func resetGame() { saveSession(); setupGame() }
+    func resetGame() {
+        HapticManager.shared.buttonTap()
+        saveSession()
+        setupGame()
+    }
 
     func saveSession() {
         let timeSpent = Int(Date().timeIntervalSince(startTime))
-        if matchedPairs > 0 { statsManager.recordSession(cardsStudied: matchedPairs * 2, correct: matchedPairs, timeSeconds: timeSpent, mode: "Match") }
+        if matchedPairs > 0 {
+            statsManager.recordSession(cardsStudied: matchedPairs * 2, correct: matchedPairs, timeSeconds: timeSpent, mode: "Match")
+            DailyGoalsManager.shared.recordStudySession(cardsStudied: matchedPairs * 2, correct: matchedPairs, timeSeconds: timeSpent)
+        }
     }
 }
 
@@ -11446,7 +13328,7 @@ struct CategoryFilterRow: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
-            .background(Color.white)
+            .background(Color.adaptiveWhite)
             .cornerRadius(12)
             .shadow(color: .black.opacity(0.03), radius: 4)
         }
