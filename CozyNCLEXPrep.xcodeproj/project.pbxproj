@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		516C4C042F27EA3E00AB69D1 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 516C4BB92F27EA0100AB69D1 /* GoogleSignIn */; };
+		516C4C052F27EA3E00AB69D1 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 516C4BBA2F27EA0600AB69D1 /* Supabase */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		516C457F2F218F3500AB69D1 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +57,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				516C4C052F27EA3E00AB69D1 /* Supabase in Frameworks */,
+				516C4C042F27EA3E00AB69D1 /* GoogleSignIn in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +119,8 @@
 			);
 			name = CozyNCLEXPrep;
 			packageProductDependencies = (
+				516C4BB92F27EA0100AB69D1 /* GoogleSignIn */,
+				516C4BBA2F27EA0600AB69D1 /* Supabase */,
 			);
 			productName = CozyNCLEXPrep;
 			productReference = 516C45712F218F3400AB69D1 /* CozyNCLEXPrep.app */;
@@ -195,6 +204,10 @@
 			);
 			mainGroup = 516C45682F218F3400AB69D1;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				516C4BB72F27E9F700AB69D1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
+				516C4BB82F27E9FC00AB69D1 /* XCRemoteSwiftPackageReference "supabase-swift" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 516C45722F218F3400AB69D1 /* Products */;
 			projectDirPath = "";
@@ -613,6 +626,38 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		516C4BB72F27E9F700AB69D1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 8.0.0;
+			};
+		};
+		516C4BB82F27E9FC00AB69D1 /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/supabase/supabase-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.5.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		516C4BB92F27EA0100AB69D1 /* GoogleSignIn */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 516C4BB72F27E9F700AB69D1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignIn;
+		};
+		516C4BBA2F27EA0600AB69D1 /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 516C4BB82F27E9FC00AB69D1 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 516C45692F218F3400AB69D1 /* Project object */;
 }

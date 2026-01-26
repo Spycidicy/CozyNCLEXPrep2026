@@ -205,6 +205,143 @@ class PersistenceManager {
               let history = try? JSONDecoder().decode([TestResult].self, from: data) else { return [] }
         return history
     }
+
+    // MARK: - Clear User Data (for logout)
+
+    // MARK: - User Change Detection
+
+    private let lastUserIdKey = "lastSignedInUserId"
+
+    /// Checks if a different user has signed in and clears data if so
+    /// Returns true if data was cleared (user changed), false otherwise
+    func handleUserChange(newUserId: String) -> Bool {
+        let lastUserId = defaults.string(forKey: lastUserIdKey)
+
+        if lastUserId != newUserId {
+            print("🔄 User changed from \(lastUserId ?? "none") to \(newUserId) - clearing local data")
+            clearAllUserData()
+            defaults.set(newUserId, forKey: lastUserIdKey)
+            return true
+        }
+        return false
+    }
+
+    /// Clears all user-specific data when logging out
+    /// This ensures the next user doesn't see previous user's data
+    func clearAllUserData() {
+        // User progress data
+        defaults.removeObject(forKey: savedCardsKey)
+        defaults.removeObject(forKey: masteredCardsKey)
+        defaults.removeObject(forKey: consecutiveCorrectKey)
+        defaults.removeObject(forKey: userCardsKey)
+        defaults.removeObject(forKey: studySetsKey)
+        defaults.removeObject(forKey: userStatsKey)
+        defaults.removeObject(forKey: spacedRepDataKey)
+        defaults.removeObject(forKey: cardNotesKey)
+        defaults.removeObject(forKey: flaggedCardsKey)
+        defaults.removeObject(forKey: testHistoryKey)
+
+        // Daily goals and XP data
+        defaults.removeObject(forKey: "totalXP")
+        defaults.removeObject(forKey: "dailyGoals")
+        defaults.removeObject(forKey: "lastGoalDate")
+        defaults.removeObject(forKey: "cardOfTheDayID")
+        defaults.removeObject(forKey: "cardOfTheDayDate")
+        defaults.removeObject(forKey: "cardOfTheDayCompleted")
+        defaults.removeObject(forKey: "currentStreak")
+        defaults.removeObject(forKey: "longestStreak")
+        defaults.removeObject(forKey: "lastStudyDate")
+        defaults.removeObject(forKey: "dailyContractDate")
+        defaults.removeObject(forKey: "dailyCommitment")
+        defaults.removeObject(forKey: "celebratedMilestones")
+
+        // Achievements
+        defaults.removeObject(forKey: "achievements")
+
+        // Session progress
+        for mode in GameMode.allCases {
+            defaults.removeObject(forKey: "sessionProgress_\(mode.rawValue)")
+        }
+
+        // Sync metadata
+        defaults.removeObject(forKey: "lastSyncDate")
+        defaults.removeObject(forKey: "pendingChanges")
+
+        // Clear last user ID so next sign-in starts fresh
+        defaults.removeObject(forKey: lastUserIdKey)
+
+        defaults.synchronize()
+
+        print("🗑️ All user data cleared from local storage")
+    }
+}
+
+// MARK: - Session Progress Manager
+
+struct SessionProgress: Codable {
+    let gameMode: String
+    let cardIDs: [String]
+    let currentIndex: Int
+    let score: Int
+    let cardsReviewed: Int // For SmartReview
+    let streakCount: Int // For BearQuiz
+    let savedAt: Date
+
+    var isValid: Bool {
+        // Progress is valid for 24 hours
+        Date().timeIntervalSince(savedAt) < 86400
+    }
+}
+
+class SessionProgressManager {
+    static let shared = SessionProgressManager()
+    private let defaults = UserDefaults.standard
+    private let progressKeyPrefix = "sessionProgress_"
+
+    private init() {}
+
+    func saveProgress(
+        gameMode: GameMode,
+        cardIDs: [UUID],
+        currentIndex: Int,
+        score: Int,
+        cardsReviewed: Int = 0,
+        streakCount: Int = 0
+    ) {
+        // Don't save if we've completed the session or barely started
+        guard currentIndex > 0 && currentIndex < cardIDs.count else { return }
+
+        let progress = SessionProgress(
+            gameMode: gameMode.rawValue,
+            cardIDs: cardIDs.map { $0.uuidString },
+            currentIndex: currentIndex,
+            score: score,
+            cardsReviewed: cardsReviewed,
+            streakCount: streakCount,
+            savedAt: Date()
+        )
+
+        if let encoded = try? JSONEncoder().encode(progress) {
+            defaults.set(encoded, forKey: progressKeyPrefix + gameMode.rawValue)
+        }
+    }
+
+    func loadProgress(for gameMode: GameMode) -> SessionProgress? {
+        guard let data = defaults.data(forKey: progressKeyPrefix + gameMode.rawValue),
+              let progress = try? JSONDecoder().decode(SessionProgress.self, from: data),
+              progress.isValid else {
+            return nil
+        }
+        return progress
+    }
+
+    func clearProgress(for gameMode: GameMode) {
+        defaults.removeObject(forKey: progressKeyPrefix + gameMode.rawValue)
+    }
+
+    func hasProgress(for gameMode: GameMode) -> Bool {
+        return loadProgress(for: gameMode) != nil
+    }
 }
 
 // MARK: - Test Result Model
@@ -456,10 +593,24 @@ class NotificationManager: ObservableObject {
     func scheduleStudyReminder() {
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
 
+        // Create multiple notification variations for variety
+        let messages: [(title: String, body: String)] = [
+            ("Time to Study!", "Your NCLEX prep is waiting. Keep your streak going!"),
+            ("Ready to Learn?", "A few minutes of study today = confidence on exam day!"),
+            ("Your Bear Misses You!", "Come back and master some flashcards!"),
+            ("Quick Study Session?", "Even 10 minutes helps. You've got this!"),
+            ("Don't Break Your Streak!", "Keep the momentum going with a quick review."),
+            ("Future Nurse Alert!", "Your patients are counting on you. Time to study!"),
+            ("Knowledge Check!", "New questions are waiting for you to conquer them."),
+        ]
+
+        let randomMessage = messages.randomElement() ?? messages[0]
+
         let content = UNMutableNotificationContent()
-        content.title = "Time to Study! 📚"
-        content.body = "Your NCLEX prep is waiting. Keep your streak going!"
+        content.title = randomMessage.title
+        content.body = randomMessage.body
         content.sound = .default
+        content.badge = 1
 
         let calendar = Calendar.current
         let components = calendar.dateComponents([.hour, .minute], from: reminderTime)
@@ -469,6 +620,37 @@ class NotificationManager: ObservableObject {
 
         UNUserNotificationCenter.current().add(request)
         saveSettings()
+    }
+
+    /// Schedule a streak warning notification if user hasn't studied
+    func scheduleStreakWarning(currentStreak: Int) {
+        guard currentStreak > 0 else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = "Streak at Risk! 🔥"
+        content.body = "Your \(currentStreak)-day streak will end at midnight! Study now to keep it alive."
+        content.sound = .default
+        content.interruptionLevel = .timeSensitive
+
+        // Schedule for 9 PM if they haven't studied
+        var components = DateComponents()
+        components.hour = 21
+        components.minute = 0
+
+        let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+        let request = UNNotificationRequest(identifier: "streakWarning", content: content, trigger: trigger)
+
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    /// Cancel streak warning (call when user studies)
+    func cancelStreakWarning() {
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["streakWarning"])
+    }
+
+    /// Clear badge count
+    func clearBadge() {
+        UNUserNotificationCenter.current().setBadgeCount(0)
     }
 
     func cancelReminders() {
@@ -770,6 +952,20 @@ class SoundManager: ObservableObject {
 
 // MARK: - Daily Goals & XP System
 
+/// Random number generator with a seed for consistent daily goals
+struct SeededRandomGenerator: RandomNumberGenerator {
+    var state: UInt64
+
+    init(seed: UInt64) {
+        self.state = seed
+    }
+
+    mutating func next() -> UInt64 {
+        state = state &* 6364136223846793005 &+ 1442695040888963407
+        return state
+    }
+}
+
 struct DailyGoal: Codable, Identifiable {
     let id: UUID
     let type: DailyGoalType
@@ -793,11 +989,15 @@ struct DailyGoal: Codable, Identifiable {
     }
 }
 
-enum DailyGoalType: String, Codable {
+enum DailyGoalType: String, Codable, CaseIterable {
     case studyCards = "Study Cards"
     case correctAnswers = "Get Correct"
     case studyMinutes = "Study Time"
     case masterCards = "Master Cards"
+    case perfectQuiz = "Perfect Quiz"
+    case studyCategories = "Study Categories"
+    case correctStreak = "Correct Streak"
+    case reviewCards = "Review Cards"
 
     var icon: String {
         switch self {
@@ -805,6 +1005,10 @@ enum DailyGoalType: String, Codable {
         case .correctAnswers: return "checkmark.circle.fill"
         case .studyMinutes: return "clock.fill"
         case .masterCards: return "star.fill"
+        case .perfectQuiz: return "rosette"
+        case .studyCategories: return "folder.fill"
+        case .correctStreak: return "flame.fill"
+        case .reviewCards: return "arrow.counterclockwise"
         }
     }
 
@@ -814,6 +1018,39 @@ enum DailyGoalType: String, Codable {
         case .correctAnswers: return .mintGreen
         case .studyMinutes: return .skyBlue
         case .masterCards: return .pastelPink
+        case .perfectQuiz: return .yellow
+        case .studyCategories: return .blue
+        case .correctStreak: return .orange
+        case .reviewCards: return .purple
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .studyCards: return "Study Cards"
+        case .correctAnswers: return "Get Correct"
+        case .studyMinutes: return "Study Time"
+        case .masterCards: return "Master Cards"
+        case .perfectQuiz: return "Perfect Quiz"
+        case .studyCategories: return "Categories"
+        case .correctStreak: return "Streak"
+        case .reviewCards: return "Review"
+        }
+    }
+}
+
+// MARK: - Daily Commitment (Legacy - kept for backward compatibility)
+
+enum DailyCommitment: String, CaseIterable {
+    case light = "Light Study"
+    case moderate = "Moderate Study"
+    case intense = "Intense Study"
+
+    var bonusXP: Int {
+        switch self {
+        case .light: return 5
+        case .moderate: return 10
+        case .intense: return 20
         }
     }
 }
@@ -829,6 +1066,12 @@ class DailyGoalsManager: ObservableObject {
     @Published var lastGoalDate: Date?
     @Published var cardOfTheDay: Flashcard?
     @Published var hasCompletedCardOfTheDay = false
+    @Published var currentStreak: Int = 0
+    @Published var longestStreak: Int = 0
+    @Published var hasSignedDailyContract = false
+    @Published var dailyCommitment: DailyCommitment?
+    @Published var showMilestoneCelebration = false
+    @Published var milestoneCelebrationValue: Int = 0
 
     private let dailyGoalsKey = "dailyGoals"
     private let totalXPKey = "totalXP"
@@ -836,6 +1079,13 @@ class DailyGoalsManager: ObservableObject {
     private let cardOfTheDayIDKey = "cardOfTheDayID"
     private let cardOfTheDayDateKey = "cardOfTheDayDate"
     private let cardOfTheDayCompletedKey = "cardOfTheDayCompleted"
+    private let currentStreakKey = "currentStreak"
+    private let longestStreakKey = "longestStreak"
+    private let lastStudyDateKey = "lastStudyDate"
+    private let dailyContractDateKey = "dailyContractDate"
+    private let dailyCommitmentKey = "dailyCommitment"
+    private let celebratedMilestonesKey = "celebratedMilestones"
+    private let syncManager = SyncManager.shared
 
     init() {
         loadData()
@@ -856,6 +1106,29 @@ class DailyGoalsManager: ObservableObject {
         }
 
         hasCompletedCardOfTheDay = UserDefaults.standard.bool(forKey: cardOfTheDayCompletedKey)
+        currentStreak = UserDefaults.standard.integer(forKey: currentStreakKey)
+        longestStreak = UserDefaults.standard.integer(forKey: longestStreakKey)
+
+        // Check if daily contract was signed today
+        checkDailyContract()
+    }
+
+    private func checkDailyContract() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        if let contractDate = UserDefaults.standard.object(forKey: dailyContractDateKey) as? Date {
+            let contractDay = calendar.startOfDay(for: contractDate)
+            hasSignedDailyContract = calendar.isDate(contractDay, inSameDayAs: today)
+        } else {
+            hasSignedDailyContract = false
+        }
+
+        if hasSignedDailyContract, let commitmentRaw = UserDefaults.standard.string(forKey: dailyCommitmentKey) {
+            dailyCommitment = DailyCommitment(rawValue: commitmentRaw)
+        } else {
+            dailyCommitment = nil
+        }
     }
 
     func saveData() {
@@ -865,6 +1138,99 @@ class DailyGoalsManager: ObservableObject {
         }
         UserDefaults.standard.set(lastGoalDate, forKey: lastGoalDateKey)
         UserDefaults.standard.set(hasCompletedCardOfTheDay, forKey: cardOfTheDayCompletedKey)
+        UserDefaults.standard.set(currentStreak, forKey: currentStreakKey)
+        UserDefaults.standard.set(longestStreak, forKey: longestStreakKey)
+
+        // Mark XP data for sync
+        syncManager.markChanged(CloudKitConfig.RecordType.userXP, id: "main")
+    }
+
+    /// Resets all in-memory state for a new user (called on logout)
+    func resetForNewUser() {
+        dailyGoals = []
+        totalXP = 0
+        currentLevel = 1
+        xpForNextLevel = 100
+        showLevelUpCelebration = false
+        lastGoalDate = nil
+        cardOfTheDay = nil
+        hasCompletedCardOfTheDay = false
+        currentStreak = 0
+        longestStreak = 0
+        hasSignedDailyContract = false
+        dailyCommitment = nil
+        showMilestoneCelebration = false
+        milestoneCelebrationValue = 0
+    }
+
+    func signDailyContract(_ commitment: DailyCommitment) {
+        hasSignedDailyContract = true
+        dailyCommitment = commitment
+        UserDefaults.standard.set(Date(), forKey: dailyContractDateKey)
+        UserDefaults.standard.set(commitment.rawValue, forKey: dailyCommitmentKey)
+
+        // Award bonus XP for signing contract
+        addXP(commitment.bonusXP)
+    }
+
+    func recordStudyActivity() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        if let lastStudy = UserDefaults.standard.object(forKey: lastStudyDateKey) as? Date {
+            let lastStudyDay = calendar.startOfDay(for: lastStudy)
+            let daysDiff = calendar.dateComponents([.day], from: lastStudyDay, to: today).day ?? 0
+
+            if daysDiff == 1 {
+                // Consecutive day - increase streak
+                currentStreak += 1
+                if currentStreak > longestStreak {
+                    longestStreak = currentStreak
+                }
+                // Trigger review prompt for streak milestones
+                ReviewManager.shared.recordStreakMilestone()
+            } else if daysDiff > 1 {
+                // Missed days - reset streak
+                currentStreak = 1
+            }
+            // daysDiff == 0 means same day, don't change streak
+        } else {
+            // First study ever
+            currentStreak = 1
+        }
+
+        UserDefaults.standard.set(today, forKey: lastStudyDateKey)
+        saveData()
+    }
+
+    func checkMilestone(masteredCount: Int) {
+        let milestones = [100, 500, 1000]
+        let celebrated = UserDefaults.standard.array(forKey: celebratedMilestonesKey) as? [Int] ?? []
+
+        for milestone in milestones {
+            if masteredCount >= milestone && !celebrated.contains(milestone) {
+                // Celebrate this milestone
+                milestoneCelebrationValue = milestone
+                showMilestoneCelebration = true
+
+                // Mark as celebrated
+                var newCelebrated = celebrated
+                newCelebrated.append(milestone)
+                UserDefaults.standard.set(newCelebrated, forKey: celebratedMilestonesKey)
+
+                // Award milestone XP
+                let bonusXP: Int
+                switch milestone {
+                case 100: bonusXP = 200
+                case 500: bonusXP = 500
+                case 1000: bonusXP = 1000
+                default: bonusXP = 100
+                }
+                addXP(bonusXP)
+
+                break // Only celebrate one milestone at a time
+            }
+        }
     }
 
     func calculateLevel() {
@@ -924,11 +1290,62 @@ class DailyGoalsManager: ObservableObject {
     }
 
     func generateDailyGoals() {
-        dailyGoals = [
-            DailyGoal(type: .studyCards, target: 20, xpReward: 50),
-            DailyGoal(type: .correctAnswers, target: 15, xpReward: 40),
-            DailyGoal(type: .studyMinutes, target: 10, xpReward: 30)
+        // Pool of possible goals with varying difficulty
+        let goalPool: [(type: DailyGoalType, target: Int, xpReward: Int)] = [
+            // Easy goals
+            (.studyCards, 15, 40),
+            (.correctAnswers, 10, 35),
+            (.studyMinutes, 5, 25),
+            (.reviewCards, 10, 30),
+            // Medium goals
+            (.studyCards, 25, 55),
+            (.correctAnswers, 20, 50),
+            (.studyMinutes, 15, 45),
+            (.masterCards, 3, 60),
+            (.studyCategories, 3, 45),
+            (.reviewCards, 20, 50),
+            // Hard goals
+            (.studyCards, 40, 75),
+            (.correctAnswers, 30, 65),
+            (.studyMinutes, 25, 60),
+            (.masterCards, 5, 80),
+            (.perfectQuiz, 1, 70),
+            (.correctStreak, 10, 75),
         ]
+
+        // Use today's date as seed for consistent daily goals
+        let calendar = Calendar.current
+        let dayOfYear = calendar.ordinality(of: .day, in: .year, for: Date()) ?? 1
+
+        // Shuffle based on day to get different goals each day
+        var seededRandom = SeededRandomGenerator(seed: UInt64(dayOfYear))
+        var shuffledPool = goalPool.shuffled(using: &seededRandom)
+
+        // Select 3 unique goal types
+        var selectedGoals: [DailyGoal] = []
+        var selectedTypes: Set<DailyGoalType> = []
+
+        for goal in shuffledPool {
+            if !selectedTypes.contains(goal.type) {
+                selectedGoals.append(DailyGoal(type: goal.type, target: goal.target, xpReward: goal.xpReward))
+                selectedTypes.insert(goal.type)
+
+                if selectedGoals.count == 3 {
+                    break
+                }
+            }
+        }
+
+        // Fallback if something goes wrong
+        if selectedGoals.count < 3 {
+            selectedGoals = [
+                DailyGoal(type: .studyCards, target: 20, xpReward: 50),
+                DailyGoal(type: .correctAnswers, target: 15, xpReward: 40),
+                DailyGoal(type: .studyMinutes, target: 10, xpReward: 30)
+            ]
+        }
+
+        dailyGoals = selectedGoals
         saveData()
     }
 
@@ -971,6 +1388,34 @@ class DailyGoalsManager: ObservableObject {
             SoundManager.shared.levelUp()
         }
         saveData()
+
+        // Sync XP to cloud
+        Task {
+            await CloudSyncManager.shared.syncXPToCloud(totalXP: totalXP)
+        }
+    }
+
+    // MARK: - Cloud Sync Methods
+
+    /// Set XP from cloud sync (doesn't trigger celebration)
+    func setXPFromSync(_ xp: Int) {
+        guard xp > totalXP else { return }
+        totalXP = xp
+        calculateLevel()
+        UserDefaults.standard.set(totalXP, forKey: totalXPKey)
+        print("☁️ Updated local XP from cloud: \(xp)")
+    }
+
+    /// Set streak from cloud sync
+    func setStreakFromSync(current: Int, longest: Int) {
+        if current > currentStreak {
+            currentStreak = current
+            UserDefaults.standard.set(currentStreak, forKey: currentStreakKey)
+        }
+        if longest > longestStreak {
+            longestStreak = longest
+            UserDefaults.standard.set(longestStreak, forKey: longestStreakKey)
+        }
     }
 
     func selectCardOfTheDay(from cards: [Flashcard]) {
@@ -1216,7 +1661,8 @@ enum Screen {
     case search
 }
 
-enum GameMode: String, CaseIterable {
+enum GameMode: String, CaseIterable, Identifiable {
+    var id: String { rawValue }
     case swipe = "Cozy Swipe"
     case quiz = "Bear Quiz"
     case smartReview = "Smart Review"
@@ -1307,7 +1753,8 @@ enum NCLEXCategory: String, Codable, CaseIterable {
     }
 }
 
-enum ContentCategory: String, Codable, CaseIterable {
+enum ContentCategory: String, Codable, CaseIterable, Identifiable {
+    var id: String { rawValue }
     case fundamentals = "Fundamentals"
     case medSurg = "Med-Surg"
     case pharmacology = "Pharmacology"
@@ -7353,7 +7800,13 @@ class AppManager: ObservableObject {
 }
 
 class SubscriptionManager: ObservableObject {
-    @Published var isSubscribed: Bool = false
+    @Published var isSubscribed: Bool = false {
+        didSet { updatePremiumAccess() }
+    }
+    @Published var hasSupabasePremium: Bool = false {
+        didSet { updatePremiumAccess() }
+    }
+    @Published var hasPremiumAccess: Bool = false
     @Published var products: [Product] = []
     @Published var lifetimeProduct: Product?
     @Published var purchaseError: String?
@@ -7362,13 +7815,41 @@ class SubscriptionManager: ObservableObject {
     private let subscriptionIDs = ["com.cozynclex.premium.weekly", "com.cozynclex.premium.monthly", "com.cozynclex.premium.yearly"]
     private let lifetimeProductID = "com.cozynclex.lifetime"
     private var updateListenerTask: Task<Void, Error>?
+    private var cancellables = Set<AnyCancellable>()
+
+    // MARK: - Debug Flag (set to true for testing premium features)
+    #if DEBUG
+    private let forceDebugPremium = false  // Set to true to test premium features
+    #else
+    private let forceDebugPremium = false
+    #endif
+
+    private func updatePremiumAccess() {
+        hasPremiumAccess = isSubscribed || hasSupabasePremium
+    }
 
     init() {
         // Load cached subscription status
         isSubscribed = PersistenceManager.shared.loadSubscriptionStatus()
 
+        // Debug override for testing
+        if forceDebugPremium {
+            isSubscribed = true
+        }
+
+        // Update premium access based on initial values
+        updatePremiumAccess()
+
         // Start listening for transactions
         updateListenerTask = listenForTransactions()
+
+        // Observe AuthManager's userProfile changes for Supabase premium
+        AuthManager.shared.$userProfile
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] profile in
+                self?.hasSupabasePremium = profile?.isPremium ?? false
+            }
+            .store(in: &cancellables)
 
         // Load products and check subscription status
         Task {
@@ -7450,14 +7931,20 @@ class SubscriptionManager: ObservableObject {
 
     @MainActor
     func checkSubscriptionStatus() async {
-        var hasAccess = false
+        // Debug override - skip StoreKit check
+        if forceDebugPremium {
+            isSubscribed = true
+            return
+        }
+
+        var hasStoreKitAccess = false
 
         for await result in Transaction.currentEntitlements {
             do {
                 let transaction = try checkVerified(result)
                 // Check for active subscription OR lifetime purchase
                 if transaction.productType == .autoRenewable || transaction.productType == .nonConsumable {
-                    hasAccess = true
+                    hasStoreKitAccess = true
                     break
                 }
             } catch {
@@ -7465,8 +7952,8 @@ class SubscriptionManager: ObservableObject {
             }
         }
 
-        isSubscribed = hasAccess
-        PersistenceManager.shared.saveSubscriptionStatus(hasAccess)
+        isSubscribed = hasStoreKitAccess
+        PersistenceManager.shared.saveSubscriptionStatus(hasStoreKitAccess)
     }
 
     @MainActor
@@ -7502,6 +7989,8 @@ enum StoreError: Error {
 }
 
 class CardManager: ObservableObject {
+    static let shared = CardManager()
+
     @Published var savedCardIDs: Set<UUID> = []
     @Published var masteredCardIDs: Set<UUID> = []
     @Published var consecutiveCorrect: [UUID: Int] = [:]
@@ -7513,12 +8002,42 @@ class CardManager: ObservableObject {
     @Published var cardNotes: [UUID: CardNote] = [:]
     @Published var flaggedCardIDs: Set<UUID> = []
     @Published var testHistory: [TestResult] = []
+    @Published var sessionCards: [Flashcard] = [] // Cards selected for current game session
+    @Published var resumeProgress: SessionProgress? // Progress to restore when resuming a session
+    @Published var remoteCardsCount: Int = 0 // Triggers view updates when remote cards change
 
     let masteryThreshold = 3
     private let persistence = PersistenceManager.shared
+    private let syncManager = SyncManager.shared
+    private var cancellables = Set<AnyCancellable>()
 
-    init() {
+    private init() {
         loadData()
+
+        // Observe changes to remote cards and trigger view updates
+        SupabaseContentProvider.shared.$remoteCards
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] cards in
+                self?.remoteCardsCount = cards.count
+            }
+            .store(in: &cancellables)
+    }
+
+    // MARK: - Remote Cards (from Supabase)
+
+    /// Get cards from remote content provider (Supabase)
+    var remoteCards: [Flashcard] {
+        SupabaseContentProvider.shared.allRemoteCards
+    }
+
+    /// Get free remote cards
+    var freeRemoteCards: [Flashcard] {
+        SupabaseContentProvider.shared.freeRemoteCards
+    }
+
+    /// Get premium remote cards
+    var premiumRemoteCards: [Flashcard] {
+        SupabaseContentProvider.shared.premiumRemoteCards
     }
 
     // MARK: - Persistence
@@ -7547,6 +8066,26 @@ class CardManager: ObservableObject {
         persistence.saveCardNotes(cardNotes)
         persistence.saveFlaggedCards(flaggedCardIDs)
         persistence.saveTestHistory(testHistory)
+
+        // Mark user progress for sync
+        syncManager.markChanged(CloudKitConfig.RecordType.userProgress, id: "main")
+    }
+
+    /// Resets all in-memory state for a new user (called on logout)
+    func resetForNewUser() {
+        savedCardIDs = []
+        masteredCardIDs = []
+        consecutiveCorrect = [:]
+        currentFilter = .all
+        userCreatedCards = []
+        studySets = []
+        selectedCategories = Set(ContentCategory.allCases)
+        spacedRepData = [:]
+        cardNotes = [:]
+        flaggedCardIDs = []
+        testHistory = []
+        sessionCards = []
+        resumeProgress = nil
     }
 
     // MARK: - Notes
@@ -7568,6 +8107,7 @@ class CardManager: ObservableObject {
             }
         }
         persistence.saveCardNotes(cardNotes)
+        syncManager.markChanged(CloudKitConfig.RecordType.cardNote, id: cardID.uuidString)
     }
 
     // MARK: - Flagging
@@ -7598,13 +8138,32 @@ class CardManager: ObservableObject {
             testHistory = Array(testHistory.prefix(50))
         }
         persistence.saveTestHistory(testHistory)
+        syncManager.markChanged(CloudKitConfig.RecordType.testResult, id: result.id.uuidString)
     }
 
     var allCards: [Flashcard] {
-        Flashcard.freeCards + (SubscriptionManager().isSubscribed ? Flashcard.premiumCards : []) + userCreatedCards
+        // Prefer remote cards if available, otherwise use bundled
+        if !remoteCards.isEmpty {
+            return remoteCards + userCreatedCards
+        }
+        return Flashcard.freeCards + (SubscriptionManager().isSubscribed ? Flashcard.premiumCards : []) + userCreatedCards
     }
 
+    /// Maximum free cards for non-subscribers
+    private let maxFreeCards = 50
+
     func getAvailableCards(isSubscribed: Bool) -> [Flashcard] {
+        // If remote cards are available, use those
+        if !remoteCards.isEmpty {
+            if isSubscribed {
+                return remoteCards + userCreatedCards
+            } else {
+                // For free users: only non-premium cards, limited to maxFreeCards
+                let freeCards = Array(freeRemoteCards.prefix(maxFreeCards))
+                return freeCards + userCreatedCards
+            }
+        }
+        // Fall back to bundled cards
         let baseCards = isSubscribed ? Flashcard.allCards : Flashcard.freeCards
         return baseCards + userCreatedCards
     }
@@ -7741,23 +8300,48 @@ class CardManager: ObservableObject {
     // MARK: - Card Actions
 
     func toggleSaved(_ card: Flashcard) {
+        let isSaved: Bool
         if savedCardIDs.contains(card.id) {
             savedCardIDs.remove(card.id)
+            isSaved = false
         } else {
             savedCardIDs.insert(card.id)
+            isSaved = true
         }
         persistence.saveSavedCards(savedCardIDs)
+
+        // Sync to cloud
+        Task {
+            await CloudSyncManager.shared.updateCardProgress(cardId: card.id, isSaved: isSaved)
+        }
     }
 
     func recordCorrectAnswer(_ card: Flashcard) {
         let current = consecutiveCorrect[card.id] ?? 0
         let newCount = current + 1
         consecutiveCorrect[card.id] = newCount
+        var wasMastered = false
         if newCount >= masteryThreshold {
+            let wasNewlyMastered = !masteredCardIDs.contains(card.id)
             masteredCardIDs.insert(card.id)
             persistence.saveMasteredCards(masteredCardIDs)
+            wasMastered = true
+
+            // Trigger review prompt at mastery milestones
+            if wasNewlyMastered {
+                ReviewManager.shared.recordMasteryMilestone(totalMastered: masteredCardIDs.count)
+            }
         }
         persistence.saveConsecutiveCorrect(consecutiveCorrect)
+
+        // Sync to cloud
+        Task {
+            await CloudSyncManager.shared.updateCardProgress(
+                cardId: card.id,
+                isMastered: wasMastered ? true : nil,
+                consecutiveCorrect: newCount
+            )
+        }
 
         // Also update spaced repetition (quality 4 = correct with hesitation)
         recordSpacedRepResponse(card: card, quality: 4)
@@ -7766,6 +8350,11 @@ class CardManager: ObservableObject {
     func recordWrongAnswer(_ card: Flashcard) {
         consecutiveCorrect[card.id] = 0
         persistence.saveConsecutiveCorrect(consecutiveCorrect)
+
+        // Sync to cloud
+        Task {
+            await CloudSyncManager.shared.updateCardProgress(cardId: card.id, consecutiveCorrect: 0)
+        }
 
         // Also update spaced repetition (quality 1 = wrong)
         recordSpacedRepResponse(card: card, quality: 1)
@@ -7778,14 +8367,26 @@ class CardManager: ObservableObject {
     }
 
     func toggleMastered(_ card: Flashcard) {
+        let isMastered: Bool
         if masteredCardIDs.contains(card.id) {
             masteredCardIDs.remove(card.id)
             consecutiveCorrect[card.id] = 0
+            isMastered = false
         } else {
             masteredCardIDs.insert(card.id)
+            isMastered = true
         }
         persistence.saveMasteredCards(masteredCardIDs)
         persistence.saveConsecutiveCorrect(consecutiveCorrect)
+
+        // Sync to cloud
+        Task {
+            await CloudSyncManager.shared.updateCardProgress(
+                cardId: card.id,
+                isMastered: isMastered,
+                consecutiveCorrect: isMastered ? masteryThreshold : 0
+            )
+        }
     }
 
     func isSaved(_ card: Flashcard) -> Bool { savedCardIDs.contains(card.id) }
@@ -7811,11 +8412,14 @@ class CardManager: ObservableObject {
     func addUserCard(_ card: Flashcard) {
         userCreatedCards.append(card)
         persistence.saveUserCards(userCreatedCards)
+        syncManager.markChanged(CloudKitConfig.RecordType.userCard, id: card.id.uuidString)
     }
 
     func deleteUserCard(_ card: Flashcard) {
         userCreatedCards.removeAll { $0.id == card.id }
         persistence.saveUserCards(userCreatedCards)
+        // Mark for deletion sync
+        syncManager.markChanged(CloudKitConfig.RecordType.userCard, id: card.id.uuidString)
     }
 
     // MARK: - Study Sets
@@ -7823,18 +8427,21 @@ class CardManager: ObservableObject {
     func addStudySet(_ set: StudySet) {
         studySets.append(set)
         persistence.saveStudySets(studySets)
+        syncManager.markChanged(CloudKitConfig.RecordType.studySet, id: set.id.uuidString)
     }
 
     func updateStudySet(_ set: StudySet) {
         if let index = studySets.firstIndex(where: { $0.id == set.id }) {
             studySets[index] = set
             persistence.saveStudySets(studySets)
+            syncManager.markChanged(CloudKitConfig.RecordType.studySet, id: set.id.uuidString)
         }
     }
 
     func deleteStudySet(_ set: StudySet) {
         studySets.removeAll { $0.id == set.id }
         persistence.saveStudySets(studySets)
+        syncManager.markChanged(CloudKitConfig.RecordType.studySet, id: set.id.uuidString)
     }
 
     // MARK: - Search
@@ -7851,11 +8458,19 @@ class CardManager: ObservableObject {
 }
 
 class StatsManager: ObservableObject {
+    static let shared = StatsManager()
+
     @Published var stats: UserStats = UserStats()
 
     private let persistence = PersistenceManager.shared
+    private let syncManager = SyncManager.shared
 
-    init() {
+    private init() {
+        stats = persistence.loadUserStats()
+        checkStreakReset()
+    }
+
+    func loadData() {
         stats = persistence.loadUserStats()
         checkStreakReset()
     }
@@ -7940,6 +8555,12 @@ class StatsManager: ObservableObject {
 
     func save() {
         persistence.saveUserStats(stats)
+        syncManager.markChanged(CloudKitConfig.RecordType.userStats, id: "main")
+    }
+
+    /// Resets all in-memory state for a new user (called on logout)
+    func resetForNewUser() {
+        stats = UserStats()
     }
 }
 
@@ -7985,6 +8606,15 @@ class ReviewManager {
     func recordStreakMilestone() {
         reviewRequestCount += 3 // Streaks count triple
         checkAndRequestReview()
+    }
+
+    /// Call this when user masters a card at certain milestones
+    func recordMasteryMilestone(totalMastered: Int) {
+        let milestones = [10, 25, 50, 100, 200, 500]
+        if milestones.contains(totalMastered) {
+            reviewRequestCount += 2 // Mastery milestones count double
+            checkAndRequestReview()
+        }
     }
 
     private func checkAndRequestReview() {
@@ -8036,8 +8666,8 @@ class SpeechManager: ObservableObject {
 struct ContentView: View {
     @StateObject private var appManager = AppManager()
     @StateObject private var subscriptionManager = SubscriptionManager()
-    @StateObject private var cardManager = CardManager()
-    @StateObject private var statsManager = StatsManager()
+    @StateObject private var cardManager = CardManager.shared
+    @StateObject private var statsManager = StatsManager.shared
     @StateObject private var speechManager = SpeechManager()
     @StateObject private var appearanceManager = AppearanceManager.shared
 
@@ -8060,6 +8690,11 @@ struct ContentView: View {
             case .stats: StatsView()
             case .search: SearchView()
             }
+
+            // DEBUG: Show Supabase status overlay
+            #if DEBUG
+            SupabaseDebugOverlay()
+            #endif
         }
         .environmentObject(appManager)
         .environmentObject(subscriptionManager)
@@ -8070,6 +8705,105 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Debug Overlay
+
+#if DEBUG
+struct SupabaseDebugOverlay: View {
+    @State private var isExpanded = false
+    @State private var isRefreshing = false
+    @ObservedObject private var contentProvider = SupabaseContentProvider.shared
+
+    var body: some View {
+        VStack {
+            HStack {
+                Spacer()
+
+                if isExpanded {
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Text("Supabase Debug")
+                            .font(.caption.bold())
+
+                        Text("Configured: \(SupabaseConfig.isConfigured ? "YES" : "NO")")
+                            .font(.caption2)
+
+                        Text("Loading: \(contentProvider.isLoading ? "YES" : "NO")")
+                            .font(.caption2)
+
+                        Text("Remote Cards: \(contentProvider.remoteCards.count)")
+                            .font(.caption2)
+                            .foregroundColor(contentProvider.remoteCards.count > 0 ? .green : .red)
+
+                        Text("Version: \(contentProvider.currentVersion ?? "none")")
+                            .font(.caption2)
+
+                        if let error = contentProvider.error {
+                            Text("Error: \(error.localizedDescription)")
+                                .font(.caption2)
+                                .foregroundColor(.red)
+                                .lineLimit(5)
+                                .frame(maxWidth: 200)
+                        }
+
+                        Text("Last Sync: \(formatDate(contentProvider.lastSyncDate))")
+                            .font(.caption2)
+
+                        Button(action: {
+                            isRefreshing = true
+                            Task {
+                                await contentProvider.forceRefresh()
+                                isRefreshing = false
+                            }
+                        }) {
+                            HStack {
+                                if isRefreshing {
+                                    ProgressView()
+                                        .scaleEffect(0.6)
+                                } else {
+                                    Image(systemName: "arrow.clockwise")
+                                }
+                                Text("Refresh")
+                            }
+                            .font(.caption2)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.blue)
+                            .foregroundColor(.white)
+                            .cornerRadius(4)
+                        }
+                        .disabled(isRefreshing)
+                        .padding(.top, 4)
+                    }
+                    .padding(8)
+                    .background(Color.black.opacity(0.8))
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+                }
+
+                Button(action: { isExpanded.toggle() }) {
+                    Image(systemName: isExpanded ? "xmark.circle.fill" : "ladybug.fill")
+                        .font(.title2)
+                        .foregroundColor(.orange)
+                        .padding(8)
+                        .background(Color.black.opacity(0.6))
+                        .clipShape(Circle())
+                }
+            }
+            .padding(.trailing, 16)
+            .padding(.top, 60)
+
+            Spacer()
+        }
+    }
+
+    private func formatDate(_ date: Date?) -> String {
+        guard let date = date else { return "Never" }
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+}
+#endif
+
 // MARK: - Onboarding View
 
 struct OnboardingView: View {
@@ -8078,14 +8812,31 @@ struct OnboardingView: View {
     @State private var showContent = false
     @State private var mascotOffset: CGFloat = 50
     @State private var mascotOpacity: Double = 0
+    @State private var categoryAnimationProgress: [Bool] = [false, false, false, false]
 
-    private let pages: [(title: String, subtitle: String, icon: String, color: Color, isSourcesPage: Bool)] = [
-        ("Welcome to CozyNCLEX!", "Your cozy companion for NCLEX success", "heart.fill", .pastelPink, false),
-        ("Trusted Sources", "Content compiled from leading NCLEX prep resources", "checkmark.seal.fill", .mintGreen, true),
-        ("Study Your Way", "Multiple study modes to fit your learning style", "books.vertical.fill", .skyBlue, false),
-        ("Track Progress", "Watch yourself grow with detailed stats", "chart.line.uptrend.xyaxis", .peachOrange, false),
-        ("Let's Get Started!", "Your nursing journey begins now", "star.fill", .softLavender, false)
+    enum PageType {
+        case standard
+        case sources
+        case categories
+    }
+
+    private let pages: [(title: String, subtitle: String, icon: String, color: Color, pageType: PageType)] = [
+        ("Welcome to CozyNCLEX!", "Your cozy companion for NCLEX success", "heart.fill", .pastelPink, .standard),
+        ("Master the NCLEX", "Master all 4 Client Needs categories to pass", "target", .mintGreen, .categories),
+        ("Trusted Sources", "Content compiled from leading NCLEX prep resources", "checkmark.seal.fill", .skyBlue, .sources),
+        ("Track Progress", "Watch yourself grow with detailed stats", "chart.line.uptrend.xyaxis", .softLavender, .standard),
+        ("Let's Get Started!", "Your nursing journey begins now", "star.fill", .mintGreen, .standard)
     ]
+
+    // NCLEX Categories data
+    private var nclexCategories: [(icon: String, name: String, description: String, color: Color)] {
+        [
+            ("shield.checkered", "Safe & Effective Care", "Infection control, safety, legal & ethical", .skyBlue),
+            ("heart.circle", "Health Promotion", "Wellness, prevention & screening", .mintGreen),
+            ("brain.head.profile", "Psychosocial Integrity", "Mental health & coping", .softLavender),
+            ("waveform.path.ecg", "Physiological Integrity", "Body systems & pharmacology", .pastelPink)
+        ]
+    }
 
     var body: some View {
         ZStack {
@@ -8154,8 +8905,47 @@ struct OnboardingView: View {
                         .offset(y: showContent ? 0 : 20)
                         .opacity(showContent ? 1 : 0)
 
+                    // Categories page - NCLEX mastery explanation
+                    if pages[currentPage].pageType == .categories {
+                        VStack(spacing: 16) {
+                            // Category cards
+                            VStack(spacing: 10) {
+                                ForEach(Array(nclexCategories.enumerated()), id: \.offset) { index, category in
+                                    OnboardingCategoryCardInline(
+                                        icon: category.icon,
+                                        name: category.name,
+                                        description: category.description,
+                                        color: category.color,
+                                        isAnimated: categoryAnimationProgress[index]
+                                    )
+                                }
+                            }
+                            .padding(.horizontal)
+
+                            // Bottom message
+                            HStack(spacing: 8) {
+                                Image(systemName: "checkmark.seal.fill")
+                                    .foregroundColor(.mintGreen)
+                                Text("Master all 4 = Pass the NCLEX")
+                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                    .foregroundColor(.primary)
+                            }
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 12)
+                            .background(Color.mintGreen.opacity(0.15))
+                            .cornerRadius(20)
+                            .scaleEffect(categoryAnimationProgress[3] ? 1 : 0.8)
+                            .opacity(categoryAnimationProgress[3] ? 1 : 0)
+                        }
+                        .offset(y: showContent ? 0 : 30)
+                        .opacity(showContent ? 1 : 0)
+                        .onAppear {
+                            animateCategoriesSequentially()
+                        }
+                    }
+
                     // Sources list for credentials page - scrollable if needed
-                    if pages[currentPage].isSourcesPage {
+                    if pages[currentPage].pageType == .sources {
                         ScrollView {
                             VStack(spacing: 10) {
                                 SourceBadge(name: "Kaplan", color: .blue)
@@ -8175,8 +8965,12 @@ struct OnboardingView: View {
                 .animation(.spring(response: 0.5, dampingFraction: 0.8), value: showContent)
                 .onChange(of: currentPage) { _, _ in
                     showContent = false
+                    categoryAnimationProgress = [false, false, false, false]
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                         withAnimation { showContent = true }
+                        if pages[currentPage].pageType == .categories {
+                            animateCategoriesSequentially()
+                        }
                     }
                 }
 
@@ -8268,6 +9062,69 @@ struct OnboardingView: View {
             currentPage += 1
         }
     }
+
+    private func animateCategoriesSequentially() {
+        for index in 0..<4 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.15 + 0.2) {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                    categoryAnimationProgress[index] = true
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Onboarding Category Card (Inline version for ContentView)
+
+struct OnboardingCategoryCardInline: View {
+    let icon: String
+    let name: String
+    let description: String
+    let color: Color
+    let isAnimated: Bool
+
+    var body: some View {
+        HStack(spacing: 14) {
+            // Icon circle
+            ZStack {
+                Circle()
+                    .fill(color.opacity(0.2))
+                    .frame(width: 44, height: 44)
+
+                Image(systemName: icon)
+                    .font(.system(size: 20))
+                    .foregroundColor(color)
+            }
+
+            // Text
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundColor(.primary)
+
+                Text(description)
+                    .font(.system(size: 12, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            // Checkmark
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 22))
+                .foregroundColor(color)
+                .scaleEffect(isAnimated ? 1 : 0)
+                .opacity(isAnimated ? 1 : 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(Color.adaptiveWhite)
+        .cornerRadius(14)
+        .shadow(color: .black.opacity(0.05), radius: 5, y: 2)
+        .scaleEffect(isAnimated ? 1 : 0.9)
+        .opacity(isAnimated ? 1 : 0.3)
+    }
 }
 
 struct SourceBadge: View {
@@ -8300,11 +9157,19 @@ struct MainMenuView: View {
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
     @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @StateObject private var coachMarkManager = CoachMarkManager.shared
+    @ObservedObject var authManager = AuthManager.shared
     @State private var showSubscriptionSheet = false
     @State private var showCategoryFilter = false
     @State private var showCardOfTheDay = false
     @State private var cardOfTheDayFlipped = false
     @State private var selectedTab = 0 // 0 = Study, 1 = Progress
+    @State private var showDailyMotivation = false
+    @State private var showShareProgress = false
+    @State private var showCardBrowse = false
+    @State private var selectedGameMode: GameMode?
+    @State private var showResumePrompt = false
+    @State private var pendingGameMode: GameMode?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -8321,8 +9186,14 @@ struct MainMenuView: View {
             .pickerStyle(.segmented)
             .padding(.horizontal)
             .padding(.vertical, 12)
-            .onChange(of: selectedTab) { _, _ in
+            .onChange(of: selectedTab) { _, newTab in
                 HapticManager.shared.selection()
+                // Show coach marks for new tab
+                if newTab == 0 && coachMarkManager.isFirstTime {
+                    coachMarkManager.showIfNeeded(.flashcards)
+                } else if newTab == 1 {
+                    coachMarkManager.showIfNeeded(.progressTab)
+                }
             }
 
             // Tab Content
@@ -8330,12 +9201,27 @@ struct MainMenuView: View {
                 // STUDY TAB
                 ScrollView {
                     VStack(spacing: 16) {
-                        CategoryFilterBadge(showCategoryFilter: $showCategoryFilter)
-                        GameModesGridSection(showSubscriptionSheet: $showSubscriptionSheet)
-                        QuickActionsSection()
-                        if !subscriptionManager.isSubscribed {
+                        // Primary Action: Study Flashcards (at the very top)
+                        StudyFlashcardsButton(showCardBrowse: $showCardBrowse)
+
+                        // Premium Upsell (immediately visible for free users)
+                        if !subscriptionManager.hasPremiumAccess && !(authManager.userProfile?.isPremium ?? false) {
                             SubscribeButton(showSheet: $showSubscriptionSheet)
                         }
+
+                        // Study Modes Grid
+                        GameModesGridSection(
+                            showSubscriptionSheet: $showSubscriptionSheet,
+                            selectedGameMode: $selectedGameMode,
+                            showResumePrompt: $showResumePrompt,
+                            pendingGameMode: $pendingGameMode
+                        )
+
+                        // Quick Actions (Create, Sets, Stats)
+                        QuickActionsSection()
+
+                        // Category Filter
+                        CategoryFilterBadge(showCategoryFilter: $showCategoryFilter)
                     }
                     .padding()
                 }
@@ -8345,9 +9231,43 @@ struct MainMenuView: View {
                 ScrollView {
                     VStack(spacing: 16) {
                         LevelProgressSection()
+
+                        // Share Progress Button
+                        Button(action: {
+                            HapticManager.shared.light()
+                            showShareProgress = true
+                        }) {
+                            HStack {
+                                Image(systemName: "square.and.arrow.up")
+                                Text("Share My Progress")
+                                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 10)
+                            .background(
+                                LinearGradient(colors: [.blue, .purple], startPoint: .leading, endPoint: .trailing)
+                            )
+                            .cornerRadius(20)
+                        }
+
                         StreakBanner()
                         DailyGoalsSection()
                         CardOfTheDaySection(showCard: $showCardOfTheDay, isFlipped: $cardOfTheDayFlipped)
+
+                        // NCLEX Readiness (Premium Feature)
+                        NCLEXReadinessView(
+                            masteredCount: cardManager.masteredCardIDs.count,
+                            totalCards: cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess).count,
+                            categoryProgress: calculateCategoryProgress(),
+                            averageAccuracy: statsManager.stats.overallAccuracy / 100.0,
+                            isPremium: subscriptionManager.hasPremiumAccess || (authManager.userProfile?.isPremium ?? false),
+                            onUpgradeTapped: { showSubscriptionSheet = true }
+                        )
+
+                        // Category Progress Section
+                        CategoryProgressSection(categoryProgress: calculateCategoryProgress())
+
                         QuickStatsSection()
                     }
                     .padding()
@@ -8366,10 +9286,173 @@ struct MainMenuView: View {
         .sheet(isPresented: $dailyGoalsManager.showLevelUpCelebration) {
             LevelUpCelebrationView()
         }
+        .sheet(isPresented: $showShareProgress) {
+            ShareProgressView(stats: ShareableStats(
+                level: dailyGoalsManager.currentLevel,
+                levelTitle: dailyGoalsManager.levelTitle,
+                totalXP: dailyGoalsManager.totalXP,
+                masteredCards: cardManager.masteredCardIDs.count,
+                currentStreak: dailyGoalsManager.currentStreak,
+                accuracy: statsManager.stats.overallAccuracy / 100.0
+            ))
+        }
+        .fullScreenCover(isPresented: $showDailyMotivation) {
+            DailyMotivationView {
+                markMotivationSeen()
+            }
+        }
+        .fullScreenCover(isPresented: $dailyGoalsManager.showMilestoneCelebration) {
+            MilestoneCelebrationView(milestone: dailyGoalsManager.milestoneCelebrationValue) {
+                dailyGoalsManager.showMilestoneCelebration = false
+            }
+        }
+        .sheet(isPresented: $showCardBrowse) {
+            BrowseCardsHomeView()
+        }
+        .sheet(item: $selectedGameMode) { mode in
+            StudySessionSetupView(gameMode: mode) { selectedCards in
+                // Navigate to the appropriate game screen with selected cards
+                startGameMode(mode, with: selectedCards)
+            }
+        }
+        .alert("Continue Session?", isPresented: $showResumePrompt) {
+            Button("Resume", role: nil) {
+                if let mode = pendingGameMode {
+                    // Go directly to game mode with saved progress
+                    resumeGameMode(mode)
+                }
+                pendingGameMode = nil
+            }
+            Button("Start New", role: .destructive) {
+                if let mode = pendingGameMode {
+                    // Clear saved progress and show setup sheet
+                    SessionProgressManager.shared.clearProgress(for: mode)
+                    selectedGameMode = mode
+                }
+                pendingGameMode = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingGameMode = nil
+            }
+        } message: {
+            if let mode = pendingGameMode,
+               let progress = SessionProgressManager.shared.loadProgress(for: mode) {
+                Text("You have a saved session with \(progress.currentIndex) of \(progress.cardIDs.count) cards completed. Would you like to continue?")
+            } else {
+                Text("Would you like to continue your previous session?")
+            }
+        }
         .onAppear {
-            let cards = cardManager.getAvailableCards(isSubscribed: subscriptionManager.isSubscribed)
+            let cards = cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess)
             dailyGoalsManager.selectCardOfTheDay(from: cards)
             dailyGoalsManager.checkAndResetDailyGoals()
+
+            // Check for milestone celebration
+            dailyGoalsManager.checkMilestone(masteredCount: cardManager.masteredCardIDs.count)
+
+            // Show daily motivation if not seen today
+            // Delay to allow milestone checks to complete first
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                let seenToday = hasSeenMotivationToday()
+                // Only show if not seen today AND no other fullScreenCover is active
+                let otherModalActive = dailyGoalsManager.showMilestoneCelebration || dailyGoalsManager.showLevelUpCelebration
+                if !seenToday && !otherModalActive {
+                    showDailyMotivation = true
+                    // Note: markMotivationSeen() is called in DailyMotivationView's onDismiss
+                }
+            }
+
+            // Show first-time coach marks after a delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                if coachMarkManager.isFirstTime && !dailyGoalsManager.showMilestoneCelebration && !dailyGoalsManager.showLevelUpCelebration && !showDailyMotivation {
+                    coachMarkManager.showIfNeeded(.studyTab)
+                }
+            }
+        }
+        .overlay {
+            CoachMarkOverlay()
+        }
+    }
+
+    private func calculateCategoryProgress() -> [ContentCategory: Double] {
+        var progress: [ContentCategory: Double] = [:]
+        let allCards = cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess)
+
+        for category in ContentCategory.allCases {
+            let categoryCards = allCards.filter { $0.contentCategory == category }
+            let masteredInCategory = categoryCards.filter { cardManager.masteredCardIDs.contains($0.id) }
+
+            if categoryCards.isEmpty {
+                progress[category] = 0
+            } else {
+                progress[category] = Double(masteredInCategory.count) / Double(categoryCards.count)
+            }
+        }
+
+        return progress
+    }
+
+    private func hasSeenMotivationToday() -> Bool {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        if let lastSeen = UserDefaults.standard.object(forKey: "lastMotivationDate") as? Date {
+            return calendar.isDate(lastSeen, inSameDayAs: today)
+        }
+        return false
+    }
+
+    private func markMotivationSeen() {
+        UserDefaults.standard.set(Date(), forKey: "lastMotivationDate")
+    }
+
+    private func startGameMode(_ mode: GameMode, with cards: [Flashcard]) {
+        // Store selected cards for the game session
+        cardManager.sessionCards = cards
+
+        // Clear selectedGameMode to dismiss the sheet
+        selectedGameMode = nil
+
+        // Navigate to the appropriate screen
+        switch mode {
+        case .swipe: appManager.currentScreen = .swipeGame
+        case .quiz: appManager.currentScreen = .quizGame
+        case .smartReview: appManager.currentScreen = .smartReview
+        case .match: appManager.currentScreen = .matchGame
+        case .write: appManager.currentScreen = .writeMode
+        case .test: appManager.currentScreen = .testMode
+        }
+    }
+
+    private func resumeGameMode(_ mode: GameMode) {
+        guard let progress = SessionProgressManager.shared.loadProgress(for: mode) else { return }
+
+        // Restore cards from saved IDs
+        let allCards = cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess)
+        let savedCardIDs = Set(progress.cardIDs.compactMap { UUID(uuidString: $0) })
+        let restoredCards = allCards.filter { savedCardIDs.contains($0.id) }
+
+        // Maintain the original order
+        var orderedCards: [Flashcard] = []
+        for idString in progress.cardIDs {
+            if let uuid = UUID(uuidString: idString),
+               let card = restoredCards.first(where: { $0.id == uuid }) {
+                orderedCards.append(card)
+            }
+        }
+
+        // Store cards for the session
+        cardManager.sessionCards = orderedCards
+        cardManager.resumeProgress = progress // Store progress for game view to pick up
+
+        // Navigate to game
+        switch mode {
+        case .swipe: appManager.currentScreen = .swipeGame
+        case .quiz: appManager.currentScreen = .quizGame
+        case .smartReview: appManager.currentScreen = .smartReview
+        case .match: appManager.currentScreen = .matchGame
+        case .write: appManager.currentScreen = .writeMode
+        case .test: appManager.currentScreen = .testMode
         }
     }
 }
@@ -8381,7 +9464,9 @@ struct CompactHeaderView: View {
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
     @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @StateObject private var authManager = AuthManager.shared
     @Binding var showCategoryFilter: Bool
+    @State private var showProfile = false
 
     var isFiltered: Bool {
         cardManager.selectedCategories.count < ContentCategory.allCases.count
@@ -8464,7 +9549,42 @@ struct CompactHeaderView: View {
                     .clipShape(Circle())
                     .shadow(color: .black.opacity(0.08), radius: 3)
             }
+
+            // Profile button
+            Button(action: {
+                HapticManager.shared.buttonTap()
+                showProfile = true
+            }) {
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [.mintGreen, .green.opacity(0.7)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 36, height: 36)
+                        .shadow(color: .black.opacity(0.08), radius: 3)
+
+                    Text(userInitials)
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                }
+            }
         }
+        .sheet(isPresented: $showProfile) {
+            ProfileView()
+        }
+    }
+
+    private var userInitials: String {
+        let name = authManager.userProfile?.displayName ?? "S"
+        let components = name.components(separatedBy: " ")
+        if components.count >= 2 {
+            return String(components[0].prefix(1) + components[1].prefix(1)).uppercased()
+        }
+        return String(name.prefix(1)).uppercased()
     }
 }
 
@@ -8474,6 +9594,9 @@ struct GameModesGridSection: View {
     @EnvironmentObject var appManager: AppManager
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @Binding var showSubscriptionSheet: Bool
+    @Binding var selectedGameMode: GameMode?
+    @Binding var showResumePrompt: Bool
+    @Binding var pendingGameMode: GameMode?
 
     let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
 
@@ -8484,7 +9607,13 @@ struct GameModesGridSection: View {
 
             LazyVGrid(columns: columns, spacing: 12) {
                 ForEach(GameMode.allCases, id: \.self) { mode in
-                    GameModeGridCard(mode: mode, showSubscriptionSheet: $showSubscriptionSheet)
+                    GameModeGridCard(
+                        mode: mode,
+                        showSubscriptionSheet: $showSubscriptionSheet,
+                        selectedGameMode: $selectedGameMode,
+                        showResumePrompt: $showResumePrompt,
+                        pendingGameMode: $pendingGameMode
+                    )
                 }
             }
         }
@@ -8496,9 +9625,17 @@ struct GameModeGridCard: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     let mode: GameMode
     @Binding var showSubscriptionSheet: Bool
+    @Binding var selectedGameMode: GameMode?
+    @Binding var showResumePrompt: Bool
+    @Binding var pendingGameMode: GameMode?
 
     var isLocked: Bool {
-        mode.isPaid && !subscriptionManager.isSubscribed
+        mode.isPaid && !subscriptionManager.hasPremiumAccess
+    }
+
+    var hasSavedProgress: Bool {
+        // Match mode doesn't support resume
+        mode != .match && mode != .test && SessionProgressManager.shared.hasProgress(for: mode)
     }
 
     var cardColor: Color {
@@ -8518,15 +9655,16 @@ struct GameModeGridCard: View {
             SoundManager.shared.buttonTap()
             if isLocked {
                 showSubscriptionSheet = true
+            } else if mode == .test {
+                // Test mode goes directly to test screen (has its own format selection)
+                appManager.currentScreen = .testMode
+            } else if hasSavedProgress {
+                // Show resume prompt
+                pendingGameMode = mode
+                showResumePrompt = true
             } else {
-                switch mode {
-                case .swipe: appManager.currentScreen = .swipeGame
-                case .quiz: appManager.currentScreen = .quizGame
-                case .smartReview: appManager.currentScreen = .smartReview
-                case .match: appManager.currentScreen = .matchGame
-                case .write: appManager.currentScreen = .writeMode
-                case .test: appManager.currentScreen = .testMode
-                }
+                // Other modes: setting selectedGameMode triggers the sheet via .sheet(item:)
+                selectedGameMode = mode
             }
         }) {
             VStack(spacing: 10) {
@@ -8565,6 +9703,14 @@ struct GameModeGridCard: View {
                         .padding(.vertical, 2)
                         .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
                         .cornerRadius(6)
+                } else if hasSavedProgress {
+                    Text("CONTINUE")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Color.orange)
+                        .cornerRadius(6)
                 } else if !mode.isPaid {
                     Text("FREE")
                         .font(.system(size: 9, weight: .bold, design: .rounded))
@@ -8582,6 +9728,20 @@ struct GameModeGridCard: View {
             .shadow(color: .black.opacity(0.05), radius: 6)
         }
         .buttonStyle(SoftBounceButtonStyle())
+        .highlightable(for: mode.coachMarkType)
+    }
+}
+
+// MARK: - GameMode Coach Mark Extension
+
+extension GameMode {
+    var coachMarkType: CoachMarkType {
+        switch self {
+        case .swipe: return .flashcards
+        case .quiz: return .quickQuiz
+        case .test: return .testYourself
+        case .smartReview, .match, .write: return .browseCards // Group other modes
+        }
     }
 }
 
@@ -8643,6 +9803,7 @@ struct LevelProgressSection: View {
         .background(Color.cardBackground)
         .cornerRadius(16)
         .shadow(color: .black.opacity(0.05), radius: 8)
+        .highlightable(for: .xpAndLevel)
     }
 }
 
@@ -9106,6 +10267,356 @@ struct StreakBanner: View {
             .padding()
             .background(LinearGradient(colors: [.orange.opacity(0.2), .yellow.opacity(0.2)], startPoint: .leading, endPoint: .trailing))
             .cornerRadius(16)
+            .highlightable(for: .streaks)
+        }
+    }
+}
+
+// MARK: - Category Progress Section
+
+struct CategoryProgressSection: View {
+    let categoryProgress: [ContentCategory: Double]
+    @State private var selectedCategory: ContentCategory?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Category Mastery")
+                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .padding(.horizontal, 4)
+
+            VStack(spacing: 8) {
+                ForEach(ContentCategory.allCases, id: \.self) { category in
+                    CategoryProgressRow(
+                        category: category,
+                        progress: categoryProgress[category] ?? 0
+                    ) {
+                        selectedCategory = category
+                    }
+                }
+            }
+        }
+        .padding()
+        .background(Color.adaptiveWhite)
+        .cornerRadius(16)
+        .sheet(item: $selectedCategory) { category in
+            CategoryDetailView(category: category)
+        }
+    }
+}
+
+struct CategoryProgressRow: View {
+    let category: ContentCategory
+    let progress: Double
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: {
+            HapticManager.shared.light()
+            onTap()
+        }) {
+            HStack(spacing: 12) {
+                // Category icon
+                ZStack {
+                    Circle()
+                        .fill(category.color.opacity(0.2))
+                        .frame(width: 36, height: 36)
+                    Image(systemName: category.icon)
+                        .font(.system(size: 14))
+                        .foregroundColor(category.color)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(category.rawValue)
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundColor(.primary)
+
+                    // Progress bar
+                    GeometryReader { geometry in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.gray.opacity(0.2))
+                                .frame(height: 6)
+
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(category.color)
+                                .frame(width: geometry.size.width * progress, height: 6)
+                        }
+                    }
+                    .frame(height: 6)
+                }
+
+                Spacer()
+
+                // Percentage
+                Text("\(Int(progress * 100))%")
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .foregroundColor(progress >= 0.7 ? .green : (progress >= 0.4 ? .orange : .secondary))
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.vertical, 8)
+            .padding(.horizontal, 4)
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+// MARK: - Category Detail View
+
+struct CategoryDetailView: View {
+    @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var cardManager: CardManager
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
+    @ObservedObject var authManager = AuthManager.shared
+    let category: ContentCategory
+
+    var isPremium: Bool {
+        subscriptionManager.hasPremiumAccess || (authManager.userProfile?.isPremium ?? false)
+    }
+
+    var categoryCards: [Flashcard] {
+        cardManager.getAvailableCards(isSubscribed: isPremium)
+            .filter { $0.contentCategory == category }
+    }
+
+    var masteredCards: [Flashcard] {
+        categoryCards.filter { cardManager.masteredCardIDs.contains($0.id) }
+    }
+
+    var inProgressCards: [Flashcard] {
+        categoryCards.filter {
+            !cardManager.masteredCardIDs.contains($0.id) &&
+            cardManager.progressTowardsMastery($0) > 0
+        }
+    }
+
+    var notStartedCards: [Flashcard] {
+        categoryCards.filter {
+            !cardManager.masteredCardIDs.contains($0.id) &&
+            cardManager.progressTowardsMastery($0) == 0
+        }
+    }
+
+    var masteryProgress: Double {
+        guard !categoryCards.isEmpty else { return 0 }
+        return Double(masteredCards.count) / Double(categoryCards.count)
+    }
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(spacing: 20) {
+                    // Header with circular progress
+                    VStack(spacing: 16) {
+                        ZStack {
+                            Circle()
+                                .stroke(Color.gray.opacity(0.2), lineWidth: 12)
+                                .frame(width: 120, height: 120)
+
+                            Circle()
+                                .trim(from: 0, to: masteryProgress)
+                                .stroke(category.color, style: StrokeStyle(lineWidth: 12, lineCap: .round))
+                                .frame(width: 120, height: 120)
+                                .rotationEffect(.degrees(-90))
+
+                            VStack(spacing: 2) {
+                                Text("\(Int(masteryProgress * 100))%")
+                                    .font(.system(size: 28, weight: .black, design: .rounded))
+                                    .foregroundColor(category.color)
+                                Text("Mastered")
+                                    .font(.system(size: 12, design: .rounded))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        // Stats row
+                        HStack(spacing: 20) {
+                            CategoryStatBadge(
+                                icon: "checkmark.circle.fill",
+                                value: masteredCards.count,
+                                label: "Mastered",
+                                color: .green
+                            )
+                            CategoryStatBadge(
+                                icon: "arrow.triangle.2.circlepath",
+                                value: inProgressCards.count,
+                                label: "In Progress",
+                                color: .orange
+                            )
+                            CategoryStatBadge(
+                                icon: "circle.dashed",
+                                value: notStartedCards.count,
+                                label: "Not Started",
+                                color: .gray
+                            )
+                        }
+                    }
+                    .padding()
+                    .background(Color.adaptiveWhite)
+                    .cornerRadius(16)
+
+                    // Card lists
+                    if !masteredCards.isEmpty {
+                        CardListSection(
+                            title: "Mastered",
+                            cards: masteredCards,
+                            color: .green,
+                            cardManager: cardManager
+                        )
+                    }
+
+                    if !inProgressCards.isEmpty {
+                        CardListSection(
+                            title: "In Progress",
+                            cards: inProgressCards,
+                            color: .orange,
+                            cardManager: cardManager
+                        )
+                    }
+
+                    if !notStartedCards.isEmpty {
+                        CardListSection(
+                            title: "Not Started",
+                            cards: notStartedCards,
+                            color: .gray,
+                            cardManager: cardManager
+                        )
+                    }
+                }
+                .padding()
+            }
+            .background(Color.creamyBackground)
+            .navigationTitle(category.rawValue)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct CategoryStatBadge: View {
+    let icon: String
+    let value: Int
+    let label: String
+    let color: Color
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 18))
+                .foregroundColor(color)
+            Text("\(value)")
+                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .foregroundColor(.primary)
+            Text(label)
+                .font(.system(size: 10, design: .rounded))
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+struct CardListSection: View {
+    let title: String
+    let cards: [Flashcard]
+    let color: Color
+    let cardManager: CardManager
+    @State private var isExpanded = false
+
+    var displayCards: [Flashcard] {
+        isExpanded ? cards : Array(cards.prefix(3))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Circle()
+                    .fill(color)
+                    .frame(width: 10, height: 10)
+                Text(title)
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                Spacer()
+                Text("\(cards.count) cards")
+                    .font(.system(size: 13, design: .rounded))
+                    .foregroundColor(.secondary)
+            }
+
+            ForEach(displayCards) { card in
+                CardProgressRow(card: card, cardManager: cardManager)
+            }
+
+            if cards.count > 3 {
+                Button(action: { withAnimation { isExpanded.toggle() } }) {
+                    HStack {
+                        Text(isExpanded ? "Show Less" : "Show All \(cards.count) Cards")
+                            .font(.system(size: 14, weight: .medium, design: .rounded))
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 12))
+                    }
+                    .foregroundColor(.blue)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                }
+            }
+        }
+        .padding()
+        .background(Color.adaptiveWhite)
+        .cornerRadius(12)
+    }
+}
+
+struct CardProgressRow: View {
+    let card: Flashcard
+    let cardManager: CardManager
+    @State private var showDetail = false
+
+    var consecutiveCorrect: Int {
+        cardManager.progressTowardsMastery(card)
+    }
+
+    var body: some View {
+        Button(action: { showDetail = true }) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(card.question)
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundColor(.primary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+
+                    // Progress indicators
+                    HStack(spacing: 4) {
+                        ForEach(0..<3, id: \.self) { index in
+                            Circle()
+                                .fill(index < consecutiveCorrect ? Color.green : Color.gray.opacity(0.3))
+                                .frame(width: 8, height: 8)
+                        }
+                        if cardManager.masteredCardIDs.contains(card.id) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 10))
+                                .foregroundColor(.green)
+                        }
+                    }
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(PlainButtonStyle())
+        .sheet(isPresented: $showDetail) {
+            CardDetailSheet(card: card)
         }
     }
 }
@@ -9116,7 +10627,7 @@ struct QuickStatsSection: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
 
     var totalCards: Int {
-        cardManager.getAvailableCards(isSubscribed: subscriptionManager.isSubscribed).count
+        cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess).count
     }
 
     var body: some View {
@@ -9159,6 +10670,75 @@ struct TappableStatCard: View {
         }
     }
 }
+
+// MARK: - Study Flashcards Button (Primary Action)
+
+struct StudyFlashcardsButton: View {
+    @EnvironmentObject var cardManager: CardManager
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
+    @ObservedObject var authManager = AuthManager.shared
+    @Binding var showCardBrowse: Bool
+
+    var isPremium: Bool {
+        subscriptionManager.hasPremiumAccess ||
+        (authManager.userProfile?.isPremium ?? false)
+    }
+
+    var weakCardCount: Int {
+        // Only count cards the user has access to
+        let availableCards = cardManager.getAvailableCards(isSubscribed: isPremium)
+        return availableCards.filter { card in
+            !cardManager.masteredCardIDs.contains(card.id) &&
+            (cardManager.consecutiveCorrect[card.id] ?? 0) == 0
+        }.count
+    }
+
+    var body: some View {
+        Button(action: {
+            HapticManager.shared.light()
+            showCardBrowse = true
+        }) {
+            HStack(spacing: 16) {
+                ZStack {
+                    Circle()
+                        .fill(Color.blue.opacity(0.15))
+                        .frame(width: 50, height: 50)
+                    Image(systemName: "rectangle.stack.fill")
+                        .font(.system(size: 22))
+                        .foregroundColor(.blue)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Study Flashcards")
+                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                        .foregroundColor(.primary)
+                    if weakCardCount > 0 {
+                        Text("\(weakCardCount) cards need review")
+                            .font(.system(size: 13, design: .rounded))
+                            .foregroundColor(.orange)
+                    } else {
+                        Text("Review and learn your cards")
+                            .font(.system(size: 13, design: .rounded))
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+            .padding()
+            .background(Color.adaptiveWhite)
+            .cornerRadius(16)
+            .shadow(color: .black.opacity(0.05), radius: 5, y: 2)
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+// MARK: - Quick Actions Section
 
 struct QuickActionsSection: View {
     @EnvironmentObject var appManager: AppManager
@@ -9221,7 +10801,7 @@ struct GameModesSection: View {
             }
 
             // Paid modes - collapsed compact row
-            if !subscriptionManager.isSubscribed {
+            if !subscriptionManager.hasPremiumAccess {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Premium Modes").font(.system(size: 14, weight: .medium, design: .rounded)).foregroundColor(.secondary)
                     HStack(spacing: 10) {
@@ -9246,7 +10826,7 @@ struct GameModesSection: View {
     }
 
     private func handleModeTap(_ mode: GameMode) {
-        if mode.isPaid && !subscriptionManager.isSubscribed {
+        if mode.isPaid && !subscriptionManager.hasPremiumAccess {
             showSubscriptionSheet = true
         } else {
             switch mode {
@@ -9344,9 +10924,9 @@ struct SubscribeButton: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
                         Image(systemName: "star.fill").foregroundColor(.yellow)
-                        Text("Unlock 500+ Cards").font(.system(size: 16, weight: .bold, design: .rounded))
+                        Text("Get NCLEX Ready").font(.system(size: 16, weight: .bold, design: .rounded))
                     }
-                    Text("$4.99/week • All Study Modes").font(.system(size: 13, design: .rounded)).opacity(0.9)
+                    Text("600+ cards • All study modes").font(.system(size: 13, design: .rounded)).opacity(0.9)
                 }
                 Spacer()
                 Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold))
@@ -9363,6 +10943,9 @@ struct SubscriptionSheet: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @Environment(\.dismiss) var dismiss
     @State private var selectedProduct: Product?
+    
+    private let privacyPolicyURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/privacy.html"
+    private let termsOfServiceURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/terms.html"
 
     var body: some View {
         VStack(spacing: 20) {
@@ -9421,7 +11004,7 @@ struct SubscriptionSheet: View {
                     Button(action: {
                         Task {
                             await subscriptionManager.purchase(product)
-                            if subscriptionManager.isSubscribed {
+                            if subscriptionManager.hasPremiumAccess {
                                 dismiss()
                             }
                         }
@@ -9456,7 +11039,7 @@ struct SubscriptionSheet: View {
             Button(action: {
                 Task {
                     await subscriptionManager.restore()
-                    if subscriptionManager.isSubscribed {
+                    if subscriptionManager.hasPremiumAccess {
                         dismiss()
                     }
                 }
@@ -9471,6 +11054,22 @@ struct SubscriptionSheet: View {
                 }
             }
             .disabled(subscriptionManager.isLoading)
+
+            // Required legal links for subscriptions
+            HStack(spacing: 20) {
+                Link("Privacy Policy", destination: URL(string: privacyPolicyURL)!)
+                    .font(.system(size: 12, design: .rounded))
+                    .foregroundColor(.blue)
+                
+                Text("•")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                
+                Link("Terms of Use", destination: URL(string: termsOfServiceURL)!)
+                    .font(.system(size: 12, design: .rounded))
+                    .foregroundColor(.blue)
+            }
+            .padding(.top, 8)
 
             Spacer()
         }
@@ -9565,11 +11164,17 @@ struct CardBrowserView: View {
     @EnvironmentObject var appManager: AppManager
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
+    @ObservedObject var authManager = AuthManager.shared
     @State private var selectedCard: Flashcard? = nil
     @State private var showCategoryFilter = false
 
+    var isPremium: Bool {
+        subscriptionManager.hasPremiumAccess ||
+        (authManager.userProfile?.isPremium ?? false)
+    }
+
     var filteredCards: [Flashcard] {
-        cardManager.getFilteredCards(isSubscribed: subscriptionManager.isSubscribed)
+        cardManager.getFilteredCards(isSubscribed: isPremium)
     }
 
     var isFiltered: Bool {
@@ -9602,6 +11207,7 @@ struct CardBrowserView: View {
                     .padding(.horizontal, 10).padding(.vertical, 5).background(Color.pastelPink).cornerRadius(10)
             }
             .padding()
+
 
             HStack(spacing: 8) {
                 ForEach(CardFilter.allCases, id: \.self) { filter in
@@ -10058,7 +11664,7 @@ struct SearchView: View {
     @State private var selectedCard: Flashcard? = nil
 
     var searchResults: [Flashcard] {
-        cardManager.searchCards(query: searchText, isSubscribed: subscriptionManager.isSubscribed)
+        cardManager.searchCards(query: searchText, isSubscribed: subscriptionManager.hasPremiumAccess)
     }
 
     var body: some View {
@@ -10398,6 +12004,11 @@ struct SettingsView: View {
     @State private var restoreMessage = ""
     @State private var hapticsEnabled = HapticManager.shared.isEnabled
     @State private var showResetConfirmation = false
+    @State private var showDeleteAccountConfirmation = false
+    @State private var showDeleteAccountFinalConfirmation = false
+    @State private var deleteConfirmationText = ""
+    @State private var isDeletingAccount = false
+    @StateObject private var authManager = AuthManager.shared
 
     private let privacyPolicyURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/privacy.html"
     private let termsOfServiceURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/terms.html"
@@ -10475,22 +12086,36 @@ struct SettingsView: View {
                     HStack {
                         Text("Status")
                         Spacer()
-                        Text(subscriptionManager.isSubscribed ? "Premium" : "Free")
-                            .foregroundColor(subscriptionManager.isSubscribed ? .mintGreen : .secondary)
-                            .fontWeight(subscriptionManager.isSubscribed ? .semibold : .regular)
+                        Text(subscriptionManager.hasPremiumAccess ? "Premium" : "Free")
+                            .foregroundColor(subscriptionManager.hasPremiumAccess ? .mintGreen : .secondary)
+                            .fontWeight(subscriptionManager.hasPremiumAccess ? .semibold : .regular)
                     }
 
                     Button(action: {
                         HapticManager.shared.buttonTap()
                         Task {
                             await subscriptionManager.restore()
-                            restoreMessage = subscriptionManager.isSubscribed ? "Subscription restored successfully!" : "No active subscription found."
+                            restoreMessage = subscriptionManager.hasPremiumAccess ? "Subscription restored successfully!" : "No active subscription found."
                             showRestoreAlert = true
                         }
                     }) {
                         HStack {
                             Image(systemName: "arrow.clockwise")
                             Text("Restore Purchases")
+                        }
+                    }
+                }
+
+                Section("Sync & Backup") {
+                    NavigationLink {
+                        SyncSettingsView()
+                    } label: {
+                        HStack {
+                            Image(systemName: "icloud")
+                                .foregroundColor(.blue)
+                            Text("iCloud Sync")
+                            Spacer()
+                            SyncStatusBadge()
                         }
                     }
                 }
@@ -10609,6 +12234,26 @@ struct SettingsView: View {
                         }
                     }
                 }
+
+                Section(header: Text("Account"), footer: Text("Deleting your account will permanently remove all your data and cannot be undone.")) {
+                    Button(action: {
+                        HapticManager.shared.warning()
+                        showDeleteAccountConfirmation = true
+                    }) {
+                        HStack {
+                            Image(systemName: "person.crop.circle.badge.minus")
+                                .foregroundColor(.red)
+                            Text("Delete Account")
+                                .foregroundColor(.red)
+                            Spacer()
+                            if isDeletingAccount {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                            }
+                        }
+                    }
+                    .disabled(isDeletingAccount)
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -10638,6 +12283,46 @@ struct SettingsView: View {
             } message: {
                 Text("This will delete all your study progress, mastered cards, saved cards, stats, XP, and achievements. This cannot be undone.")
             }
+            .alert("Delete Account?", isPresented: $showDeleteAccountConfirmation) {
+                Button("Cancel", role: .cancel) { }
+                Button("Continue", role: .destructive) {
+                    showDeleteAccountFinalConfirmation = true
+                }
+            } message: {
+                Text("This will permanently delete your account, all study progress, and personal data. This action cannot be undone.")
+            }
+            .sheet(isPresented: $showDeleteAccountFinalConfirmation) {
+                DeleteAccountConfirmationView(
+                    deleteConfirmationText: $deleteConfirmationText,
+                    isDeletingAccount: $isDeletingAccount,
+                    onDelete: deleteAccount
+                )
+            }
+        }
+    }
+
+    private func deleteAccount() {
+        isDeletingAccount = true
+        Task {
+            // Reset all local progress first
+            resetAllProgress()
+
+            // Clear cached content
+            SupabaseContentProvider.shared.clearCache()
+
+            // Clear sync data
+            SyncManager.shared.resetSync()
+
+            // Delete the account from Supabase
+            do {
+                try await authManager.deleteAccount()
+            } catch {
+                print("Error deleting account: \(error)")
+            }
+
+            isDeletingAccount = false
+            showDeleteAccountFinalConfirmation = false
+            dismiss()
         }
     }
 
@@ -10674,6 +12359,138 @@ struct SettingsView: View {
     private func requestReview() {
         if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
             SKStoreReviewController.requestReview(in: windowScene)
+        }
+    }
+}
+
+// MARK: - Delete Account Confirmation View
+
+struct DeleteAccountConfirmationView: View {
+    @Environment(\.dismiss) var dismiss
+    @Binding var deleteConfirmationText: String
+    @Binding var isDeletingAccount: Bool
+    let onDelete: () -> Void
+
+    private let confirmationWord = "DELETE"
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 24) {
+                // Warning Icon
+                ZStack {
+                    Circle()
+                        .fill(Color.red.opacity(0.1))
+                        .frame(width: 80, height: 80)
+
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 40))
+                        .foregroundColor(.red)
+                }
+                .padding(.top, 20)
+
+                // Warning Text
+                VStack(spacing: 12) {
+                    Text("Permanently Delete Account")
+                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .foregroundColor(.red)
+
+                    Text("This action is irreversible. All your data will be permanently deleted including:")
+                        .font(.system(size: 15, design: .rounded))
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                }
+
+                // Data that will be deleted
+                VStack(alignment: .leading, spacing: 8) {
+                    DeleteItemRow(icon: "chart.line.uptrend.xyaxis", text: "Study progress & statistics")
+                    DeleteItemRow(icon: "star.fill", text: "XP, levels & achievements")
+                    DeleteItemRow(icon: "bookmark.fill", text: "Saved & mastered cards")
+                    DeleteItemRow(icon: "folder.fill", text: "Custom study sets & notes")
+                    DeleteItemRow(icon: "icloud.fill", text: "iCloud synced data")
+                    DeleteItemRow(icon: "person.fill", text: "Account & profile")
+                }
+                .padding()
+                .background(Color.red.opacity(0.05))
+                .cornerRadius(12)
+                .padding(.horizontal)
+
+                // Confirmation Input
+                VStack(spacing: 8) {
+                    Text("Type \"\(confirmationWord)\" to confirm")
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundColor(.secondary)
+
+                    TextField("", text: $deleteConfirmationText)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .autocapitalization(.allCharacters)
+                        .autocorrectionDisabled()
+                        .padding(.horizontal, 40)
+                }
+
+                Spacer()
+
+                // Buttons
+                VStack(spacing: 12) {
+                    Button(action: {
+                        HapticManager.shared.error()
+                        onDelete()
+                    }) {
+                        HStack {
+                            if isDeletingAccount {
+                                ProgressView()
+                                    .tint(.white)
+                            } else {
+                                Image(systemName: "trash.fill")
+                                Text("Delete My Account")
+                            }
+                        }
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(deleteConfirmationText == confirmationWord ? Color.red : Color.red.opacity(0.4))
+                        .cornerRadius(14)
+                    }
+                    .disabled(deleteConfirmationText != confirmationWord || isDeletingAccount)
+
+                    Button("Cancel") {
+                        deleteConfirmationText = ""
+                        dismiss()
+                    }
+                    .font(.system(size: 17, weight: .medium, design: .rounded))
+                    .foregroundColor(.blue)
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 20)
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct DeleteItemRow: View {
+    let icon: String
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 14))
+                .foregroundColor(.red)
+                .frame(width: 20)
+
+            Text(text)
+                .font(.system(size: 14, design: .rounded))
+                .foregroundColor(.primary)
         }
     }
 }
@@ -10872,9 +12689,25 @@ struct SwipeGameView: View {
     }
 
     func setupSwipeCards() {
-        swipeCards = cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed)
-        currentIndex = 0
-        correctCount = 0
+        // Check if resuming from saved progress
+        if let progress = cardManager.resumeProgress, progress.gameMode == GameMode.swipe.rawValue {
+            // Use session cards (already restored by resumeGameMode)
+            swipeCards = cardManager.sessionCards
+            cardManager.sessionCards = []
+            currentIndex = progress.currentIndex
+            correctCount = progress.score
+            cardManager.resumeProgress = nil // Clear after use
+        } else if !cardManager.sessionCards.isEmpty {
+            // Use session cards if available (from setup screen)
+            swipeCards = cardManager.sessionCards
+            cardManager.sessionCards = [] // Clear after use
+            currentIndex = 0
+            correctCount = 0
+        } else {
+            swipeCards = cardManager.getGameCards(isSubscribed: subscriptionManager.hasPremiumAccess)
+            currentIndex = 0
+            correctCount = 0
+        }
         showCelebration = false
         startTime = Date()
     }
@@ -10916,6 +12749,19 @@ struct SwipeGameView: View {
         if currentIndex > 0 {
             statsManager.recordSession(cardsStudied: currentIndex, correct: correctCount, timeSeconds: timeSpent, mode: "Swipe")
             dailyGoalsManager.recordStudySession(cardsStudied: currentIndex, correct: correctCount, timeSeconds: timeSpent)
+        }
+
+        // Save progress for resume (only if not completed)
+        if !showCelebration && currentIndex > 0 && currentIndex < swipeCards.count {
+            SessionProgressManager.shared.saveProgress(
+                gameMode: .swipe,
+                cardIDs: swipeCards.map { $0.id },
+                currentIndex: currentIndex,
+                score: correctCount
+            )
+        } else {
+            // Clear progress if completed
+            SessionProgressManager.shared.clearProgress(for: .swipe)
         }
     }
 }
@@ -11152,6 +12998,23 @@ struct BearQuizView: View {
                     // Progress dots
                     QuizProgressDots(current: currentIndex, total: quizCards.count)
                         .padding(.bottom, 20)
+                } else {
+                    // Fallback: cards exist but currentCard is nil (shouldn't happen)
+                    Spacer()
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .scaleEffect(1.5)
+                        Text("Loading quiz...")
+                            .font(.system(size: 16, design: .rounded))
+                            .foregroundColor(.secondary)
+                    }
+                    .onAppear {
+                        // Try to reload if needed
+                        if !quizCards.isEmpty && currentIndex < quizCards.count {
+                            loadQuestion()
+                        }
+                    }
+                    Spacer()
                 }
             }
 
@@ -11165,11 +13028,30 @@ struct BearQuizView: View {
     }
 
     func setupQuiz() {
-        let allCards = cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed)
-        quizCards = Array(allCards.prefix(maxQuestions))
-        currentIndex = 0
-        score = 0
-        streakCount = 0
+        // Check if resuming from saved progress
+        if let progress = cardManager.resumeProgress, progress.gameMode == GameMode.quiz.rawValue {
+            // Use session cards (already restored by resumeGameMode)
+            quizCards = cardManager.sessionCards
+            cardManager.sessionCards = []
+            currentIndex = progress.currentIndex
+            score = progress.score
+            streakCount = progress.streakCount
+            cardManager.resumeProgress = nil // Clear after use
+        } else if !cardManager.sessionCards.isEmpty {
+            // Use session cards if available (from setup screen)
+            quizCards = cardManager.sessionCards
+            cardManager.sessionCards = [] // Clear after use
+            currentIndex = 0
+            score = 0
+            streakCount = 0
+        } else {
+            let allCards = cardManager.getGameCards(isSubscribed: subscriptionManager.hasPremiumAccess)
+            quizCards = Array(allCards.prefix(maxQuestions))
+            currentIndex = 0
+            score = 0
+            streakCount = 0
+        }
+
         startTime = Date()
         loadQuestion()
     }
@@ -11278,6 +13160,20 @@ struct BearQuizView: View {
         if currentIndex > 0 {
             statsManager.recordSession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent, mode: "Quiz")
             dailyGoalsManager.recordStudySession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent)
+        }
+
+        // Save progress for resume (only if not completed)
+        if !showCelebration && currentIndex > 0 && currentIndex < quizCards.count {
+            SessionProgressManager.shared.saveProgress(
+                gameMode: .quiz,
+                cardIDs: quizCards.map { $0.id },
+                currentIndex: currentIndex,
+                score: score,
+                streakCount: streakCount
+            )
+        } else {
+            // Clear progress if completed
+            SessionProgressManager.shared.clearProgress(for: .quiz)
         }
     }
 }
@@ -11996,9 +13892,25 @@ struct WriteModeView: View {
     }
 
     func setupWriteMode() {
-        writeCards = cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed)
-        currentIndex = 0
-        score = 0
+        // Check if resuming from saved progress
+        if let progress = cardManager.resumeProgress, progress.gameMode == GameMode.write.rawValue {
+            // Use session cards (already restored by resumeGameMode)
+            writeCards = cardManager.sessionCards
+            cardManager.sessionCards = []
+            currentIndex = progress.currentIndex
+            score = progress.score
+            cardManager.resumeProgress = nil // Clear after use
+        } else if !cardManager.sessionCards.isEmpty {
+            // Use session cards if available (from setup screen)
+            writeCards = cardManager.sessionCards
+            cardManager.sessionCards = [] // Clear after use
+            currentIndex = 0
+            score = 0
+        } else {
+            writeCards = cardManager.getGameCards(isSubscribed: subscriptionManager.hasPremiumAccess)
+            currentIndex = 0
+            score = 0
+        }
         userAnswer = ""
         showResult = false
         isCorrect = false
@@ -12072,6 +13984,19 @@ struct WriteModeView: View {
             statsManager.recordSession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent, mode: "Write")
             DailyGoalsManager.shared.recordStudySession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent)
         }
+
+        // Save progress for resume (only if not completed)
+        if !showCelebration && currentIndex > 0 && currentIndex < writeCards.count {
+            SessionProgressManager.shared.saveProgress(
+                gameMode: .write,
+                cardIDs: writeCards.map { $0.id },
+                currentIndex: currentIndex,
+                score: score
+            )
+        } else {
+            // Clear progress if completed
+            SessionProgressManager.shared.clearProgress(for: .write)
+        }
     }
 }
 
@@ -12119,7 +14044,7 @@ struct TestModeView: View {
         TestFormat(name: "CAT Simulation", questionCount: 75, timeMinutes: 90)  // Variable length like real NCLEX
     ]
 
-    var availableCards: [Flashcard] { cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed) }
+    var availableCards: [Flashcard] { cardManager.getGameCards(isSubscribed: subscriptionManager.hasPremiumAccess) }
     var currentCard: Flashcard? { currentIndex < testCards.count ? testCards[currentIndex] : nil }
     var correctCount: Int { testCards.filter { answers[$0.id] == $0.answer }.count }
 
@@ -12703,7 +14628,7 @@ struct SmartReviewView: View {
     }
 
     var dueCount: Int {
-        cardManager.getDueCardCount(isSubscribed: subscriptionManager.isSubscribed)
+        cardManager.getDueCardCount(isSubscribed: subscriptionManager.hasPremiumAccess)
     }
 
     var body: some View {
@@ -12865,8 +14790,28 @@ struct SmartReviewView: View {
     }
 
     func loadReviewCards() {
-        reviewCards = cardManager.getCardsForSpacedReview(isSubscribed: subscriptionManager.isSubscribed).shuffled()
-        currentIndex = 0
+        // Check if resuming from saved progress
+        if let progress = cardManager.resumeProgress, progress.gameMode == GameMode.smartReview.rawValue {
+            // Use session cards (already restored by resumeGameMode)
+            reviewCards = cardManager.sessionCards
+            cardManager.sessionCards = []
+            currentIndex = progress.currentIndex
+            score = progress.score
+            cardsReviewed = progress.cardsReviewed
+            cardManager.resumeProgress = nil // Clear after use
+        } else if !cardManager.sessionCards.isEmpty {
+            // Use session cards if available (from setup screen)
+            reviewCards = cardManager.sessionCards
+            cardManager.sessionCards = [] // Clear after use
+            currentIndex = 0
+            score = 0
+            cardsReviewed = 0
+        } else {
+            reviewCards = cardManager.getCardsForSpacedReview(isSubscribed: subscriptionManager.hasPremiumAccess).shuffled()
+            currentIndex = 0
+            score = 0
+            cardsReviewed = 0
+        }
         showAnswer = false
     }
 
@@ -12923,6 +14868,20 @@ struct SmartReviewView: View {
         if cardsReviewed > 0 {
             statsManager.recordSession(cardsStudied: cardsReviewed, correct: score, timeSeconds: timeSpent, mode: "Smart Review")
             DailyGoalsManager.shared.recordStudySession(cardsStudied: cardsReviewed, correct: score, timeSeconds: timeSpent)
+        }
+
+        // Save progress for resume (only if not completed)
+        if !showCelebration && currentIndex > 0 && currentIndex < reviewCards.count {
+            SessionProgressManager.shared.saveProgress(
+                gameMode: .smartReview,
+                cardIDs: reviewCards.map { $0.id },
+                currentIndex: currentIndex,
+                score: score,
+                cardsReviewed: cardsReviewed
+            )
+        } else {
+            // Clear progress if completed
+            SessionProgressManager.shared.clearProgress(for: .smartReview)
         }
     }
 }
@@ -13043,7 +15002,7 @@ struct CozyMatchView: View {
     @State private var isProcessing = false
     @State private var startTime = Date()
 
-    var availableCards: [Flashcard] { cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed) }
+    var availableCards: [Flashcard] { cardManager.getGameCards(isSubscribed: subscriptionManager.hasPremiumAccess) }
 
     let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
 
@@ -13096,8 +15055,17 @@ struct CozyMatchView: View {
     }
 
     func setupGame() {
-        guard availableCards.count >= 6 else { tiles = []; return }
-        let selected = Array(availableCards.shuffled().prefix(6))
+        // Use session cards if available (from setup screen), otherwise get all cards
+        let cardsToUse: [Flashcard]
+        if !cardManager.sessionCards.isEmpty {
+            cardsToUse = cardManager.sessionCards
+            cardManager.sessionCards = [] // Clear after use
+        } else {
+            cardsToUse = availableCards
+        }
+
+        guard cardsToUse.count >= 6 else { tiles = []; return }
+        let selected = Array(cardsToUse.shuffled().prefix(6))
         gameCards = selected
         var newTiles: [MatchTile] = []
         for card in selected {
