@@ -1493,6 +1493,60 @@ class DailyGoalsManager: ObservableObject {
         addXP(25) // Bonus for mastering
     }
 
+    /// Record cards reviewed (for Smart Review mode)
+    func recordReviewCards(count: Int) {
+        updateGoal(.reviewCards, progress: count)
+    }
+
+    /// Record a perfect quiz (100% correct)
+    func recordPerfectQuiz() {
+        updateGoal(.perfectQuiz, progress: 1)
+        addXP(50) // Bonus XP for perfect quiz
+    }
+
+    /// Record correct answer streak
+    func recordCorrectStreak(streakCount: Int) {
+        // Only update if this streak is longer than current progress
+        if let index = dailyGoals.firstIndex(where: { $0.type == .correctStreak }) {
+            if streakCount > dailyGoals[index].progress {
+                dailyGoals[index].progress = streakCount
+                if streakCount >= dailyGoals[index].target && !dailyGoals[index].isCompleted {
+                    dailyGoals[index].isCompleted = true
+                    addXP(dailyGoals[index].xpReward)
+                    HapticManager.shared.achievement()
+                }
+                saveData()
+            }
+        }
+    }
+
+    /// Record categories studied (tracks unique categories per day)
+    func recordCategoryStudied(_ category: ContentCategory) {
+        let key = "categoriesStudiedToday"
+        let dateKey = "categoriesStudiedDate"
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        // Check if we need to reset for a new day
+        var studiedCategories: Set<String>
+        if let storedDate = UserDefaults.standard.object(forKey: dateKey) as? Date,
+           calendar.isDate(storedDate, inSameDayAs: today),
+           let stored = UserDefaults.standard.stringArray(forKey: key) {
+            studiedCategories = Set(stored)
+        } else {
+            studiedCategories = []
+            UserDefaults.standard.set(today, forKey: dateKey)
+        }
+
+        // Add this category if not already studied today
+        let categoryName = category.rawValue
+        if !studiedCategories.contains(categoryName) {
+            studiedCategories.insert(categoryName)
+            UserDefaults.standard.set(Array(studiedCategories), forKey: key)
+            updateGoal(.studyCategories, progress: 1)
+        }
+    }
+
     func addXP(_ amount: Int) {
         let oldLevel = currentLevel
         totalXP += amount
@@ -12941,6 +12995,12 @@ struct SwipeGameView: View {
         if currentIndex > 0 {
             statsManager.recordSession(cardsStudied: currentIndex, correct: correctCount, timeSeconds: timeSpent, mode: "Swipe")
             dailyGoalsManager.recordStudySession(cardsStudied: currentIndex, correct: correctCount, timeSeconds: timeSpent)
+
+            // Track categories studied
+            let categoriesStudied = Set(swipeCards.prefix(currentIndex).map { $0.contentCategory })
+            for category in categoriesStudied {
+                dailyGoalsManager.recordCategoryStudied(category)
+            }
         }
 
         // Save progress for resume (only if not completed)
@@ -13352,6 +13412,20 @@ struct BearQuizView: View {
         if currentIndex > 0 {
             statsManager.recordSession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent, mode: "Quiz")
             dailyGoalsManager.recordStudySession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent)
+
+            // Track categories studied
+            let categoriesStudied = Set(quizCards.prefix(currentIndex).map { $0.contentCategory })
+            for category in categoriesStudied {
+                dailyGoalsManager.recordCategoryStudied(category)
+            }
+
+            // Track correct streak
+            dailyGoalsManager.recordCorrectStreak(streakCount: streakCount)
+
+            // Check for perfect quiz (completed with 100%)
+            if showCelebration && score == quizCards.count && quizCards.count >= 5 {
+                dailyGoalsManager.recordPerfectQuiz()
+            }
         }
 
         // Save progress for resume (only if not completed)
@@ -14175,6 +14249,17 @@ struct WriteModeView: View {
         if currentIndex > 0 {
             statsManager.recordSession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent, mode: "Write")
             DailyGoalsManager.shared.recordStudySession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent)
+
+            // Track categories studied
+            let categoriesStudied = Set(writeCards.prefix(currentIndex).map { $0.contentCategory })
+            for category in categoriesStudied {
+                DailyGoalsManager.shared.recordCategoryStudied(category)
+            }
+
+            // Check for perfect score
+            if showCelebration && score == writeCards.count && writeCards.count >= 5 {
+                DailyGoalsManager.shared.recordPerfectQuiz()
+            }
         }
 
         // Save progress for resume (only if not completed)
@@ -14579,6 +14664,17 @@ struct TestModeView: View {
         let timeSpent = Int(Date().timeIntervalSince(startTime))
         statsManager.recordSession(cardsStudied: testCards.count, correct: correctCount, timeSeconds: timeSpent, mode: "Test")
         DailyGoalsManager.shared.recordStudySession(cardsStudied: testCards.count, correct: correctCount, timeSeconds: timeSpent)
+
+        // Track categories studied
+        let categoriesStudied = Set(testCards.map { $0.contentCategory })
+        for category in categoriesStudied {
+            DailyGoalsManager.shared.recordCategoryStudied(category)
+        }
+
+        // Check for perfect test
+        if correctCount == testCards.count && testCards.count >= 5 {
+            DailyGoalsManager.shared.recordPerfectQuiz()
+        }
     }
 
     func getTestAnswers() -> [TestAnswer] {
@@ -15060,6 +15156,15 @@ struct SmartReviewView: View {
         if cardsReviewed > 0 {
             statsManager.recordSession(cardsStudied: cardsReviewed, correct: score, timeSeconds: timeSpent, mode: "Smart Review")
             DailyGoalsManager.shared.recordStudySession(cardsStudied: cardsReviewed, correct: score, timeSeconds: timeSpent)
+
+            // Track review cards goal
+            DailyGoalsManager.shared.recordReviewCards(count: cardsReviewed)
+
+            // Track categories studied
+            let categoriesStudied = Set(reviewCards.prefix(currentIndex).map { $0.contentCategory })
+            for category in categoriesStudied {
+                DailyGoalsManager.shared.recordCategoryStudied(category)
+            }
         }
 
         // Save progress for resume (only if not completed)
@@ -15320,6 +15425,17 @@ struct CozyMatchView: View {
         if matchedPairs > 0 {
             statsManager.recordSession(cardsStudied: matchedPairs * 2, correct: matchedPairs, timeSeconds: timeSpent, mode: "Match")
             DailyGoalsManager.shared.recordStudySession(cardsStudied: matchedPairs * 2, correct: matchedPairs, timeSeconds: timeSpent)
+
+            // Track categories studied
+            let categoriesStudied = Set(gameCards.map { $0.contentCategory })
+            for category in categoriesStudied {
+                DailyGoalsManager.shared.recordCategoryStudied(category)
+            }
+
+            // Perfect match game (all 6 pairs matched)
+            if showWin && matchedPairs == 6 {
+                DailyGoalsManager.shared.recordPerfectQuiz()
+            }
         }
     }
 }
