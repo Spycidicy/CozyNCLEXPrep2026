@@ -9472,6 +9472,24 @@ struct SubscriptionSheet: View {
             }
             .disabled(subscriptionManager.isLoading)
 
+            // Required legal links for App Store
+            HStack(spacing: 16) {
+                Link(destination: URL(string: "https://spycidicy.github.io/CozyNCLEXPrep2026/terms.html")!) {
+                    Text("Terms of Use")
+                        .font(.system(size: 12, design: .rounded))
+                        .foregroundColor(.secondary)
+                        .underline()
+                }
+
+                Link(destination: URL(string: "https://spycidicy.github.io/CozyNCLEXPrep2026/privacy.html")!) {
+                    Text("Privacy Policy")
+                        .font(.system(size: 12, design: .rounded))
+                        .foregroundColor(.secondary)
+                        .underline()
+                }
+            }
+            .padding(.top, 8)
+
             Spacer()
         }
         .padding()
