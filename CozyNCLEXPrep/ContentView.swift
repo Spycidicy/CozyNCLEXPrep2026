@@ -1965,6 +1965,132 @@ enum ContentCategory: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Flexible Database Value Conversion
+
+extension ContentCategory {
+    /// Convert database value to ContentCategory with flexible matching
+    static func fromDatabaseValue(_ value: String) -> ContentCategory? {
+        // Try exact match first
+        if let category = ContentCategory(rawValue: value) {
+            return category
+        }
+
+        // Normalize: lowercase, remove spaces/underscores/hyphens
+        let normalized = value.lowercased()
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+
+        // Map normalized values to categories
+        switch normalized {
+        case "fundamentals":
+            return .fundamentals
+        case "medsurg", "medsurgery", "medicalsurgical":
+            return .medSurg
+        case "pharmacology", "pharm":
+            return .pharmacology
+        case "pediatrics", "peds":
+            return .pediatrics
+        case "maternity", "maternal", "maternalnewborn", "ob":
+            return .maternity
+        case "mentalhealth", "mental", "psychiatric", "psych":
+            return .mentalHealth
+        case "leadership", "management", "leadershipmanagement":
+            return .leadership
+        case "infectioncontrol", "infection":
+            return .infectionControl
+        case "safety", "safetyinfectioncontrol":
+            return .safety
+        default:
+            return nil
+        }
+    }
+}
+
+extension NCLEXCategory {
+    /// Convert database value to NCLEXCategory with flexible matching
+    static func fromDatabaseValue(_ value: String) -> NCLEXCategory? {
+        // Try exact match first
+        if let category = NCLEXCategory(rawValue: value) {
+            return category
+        }
+
+        // Normalize: lowercase, remove spaces/underscores/hyphens
+        let normalized = value.lowercased()
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: "&", with: "")
+
+        // Map normalized values to categories
+        switch normalized {
+        case "safeeffectivecareenvironment", "safeeffectivecare", "safecare", "safeeffective":
+            return .safeEffectiveCare
+        case "healthpromotionandmaintenance", "healthpromotion", "healthmaintenance":
+            return .healthPromotion
+        case "psychosocialintegrity", "psychosocial", "psych":
+            return .psychosocial
+        case "physiologicalintegrity", "physiological", "physio":
+            return .physiological
+        default:
+            return nil
+        }
+    }
+}
+
+extension Difficulty {
+    /// Convert database value to Difficulty with flexible matching
+    static func fromDatabaseValue(_ value: String) -> Difficulty? {
+        // Try exact match first
+        if let difficulty = Difficulty(rawValue: value) {
+            return difficulty
+        }
+
+        // Normalize: lowercase
+        let normalized = value.lowercased()
+
+        switch normalized {
+        case "easy", "beginner", "simple":
+            return .easy
+        case "medium", "moderate", "intermediate":
+            return .medium
+        case "hard", "difficult", "advanced":
+            return .hard
+        default:
+            return nil
+        }
+    }
+}
+
+extension QuestionType {
+    /// Convert database value to QuestionType with flexible matching
+    static func fromDatabaseValue(_ value: String) -> QuestionType? {
+        // Try exact match first
+        if let questionType = QuestionType(rawValue: value) {
+            return questionType
+        }
+
+        // Normalize: lowercase, remove spaces/underscores/hyphens
+        let normalized = value.lowercased()
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+
+        switch normalized {
+        case "standard", "multiplechoice", "mc", "regular":
+            return .standard
+        case "selectallthatapply", "sata", "selectall", "multiselect":
+            return .sata
+        case "priority", "priorityorder", "ordering", "ordered", "sequence", "dragdrop":
+            return .priority
+        case "written", "writtenresponse", "fillintheblank", "fillin", "blank", "fill":
+            return .written
+        default:
+            return nil
+        }
+    }
+}
+
 // MARK: - Data Models
 
 struct Flashcard: Identifiable, Equatable, Codable {

@@ -43,23 +43,23 @@ struct RemoteFlashcard: Codable, Identifiable {
 
     /// Convert to local Flashcard model
     func toFlashcard() -> Flashcard? {
-        // Try to convert each enum with detailed logging
-        guard let contentCat = ContentCategory(rawValue: contentCategory) else {
+        // Try to convert each enum with flexible matching
+        guard let contentCat = ContentCategory.fromDatabaseValue(contentCategory) else {
             print("❌ Failed to convert contentCategory: '\(contentCategory)'")
             return nil
         }
 
-        guard let nclexCat = NCLEXCategory(rawValue: nclexCategory) else {
+        guard let nclexCat = NCLEXCategory.fromDatabaseValue(nclexCategory) else {
             print("❌ Failed to convert nclexCategory: '\(nclexCategory)'")
             return nil
         }
 
-        guard let diff = Difficulty(rawValue: difficulty) else {
+        guard let diff = Difficulty.fromDatabaseValue(difficulty) else {
             print("❌ Failed to convert difficulty: '\(difficulty)'")
             return nil
         }
 
-        guard let qType = QuestionType(rawValue: questionType) else {
+        guard let qType = QuestionType.fromDatabaseValue(questionType) else {
             print("❌ Failed to convert questionType: '\(questionType)'")
             return nil
         }

@@ -64,7 +64,24 @@ class SupabaseContentProvider: ObservableObject {
 
                 if converted.count < cards.count {
                     print("⚠️ \(cards.count - converted.count) cards failed to convert - check category values")
+                    // Log unique failed categories for debugging
+                    let failedCategories = Set(cards.compactMap { card -> String? in
+                        if ContentCategory.fromDatabaseValue(card.contentCategory) == nil {
+                            return card.contentCategory
+                        }
+                        return nil
+                    })
+                    if !failedCategories.isEmpty {
+                        print("❌ Failed category values: \(failedCategories.sorted().joined(separator: ", "))")
+                    }
                 }
+
+                // Log card distribution by category
+                var categoryCount: [String: Int] = [:]
+                for card in converted {
+                    categoryCount[card.contentCategory.rawValue, default: 0] += 1
+                }
+                print("📊 Cards by category: \(categoryCount.sorted(by: { $0.key < $1.key }).map { "\($0.key): \($0.value)" }.joined(separator: ", "))")
 
                 remoteCards = converted
 
