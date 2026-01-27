@@ -242,6 +242,11 @@ class CloudSyncManager: ObservableObject {
                 }
             }
 
+            // Always ensure daily goals exist after sync (they may have been reset or never generated)
+            await MainActor.run {
+                DailyGoalsManager.shared.checkAndResetDailyGoals()
+            }
+
             print("☁️ Starting cloud sync for user: \(userId)")
             print("☁️ Session valid, user email: \(session.user.email ?? "unknown")")
 
@@ -256,6 +261,14 @@ class CloudSyncManager: ObservableObject {
             try await syncUserStats(userId: userId)
             try await syncUserCards(userId: userId)
             try await syncStudySets(userId: userId)
+
+            // Reload all managers with the synced data
+            await MainActor.run {
+                CardManager.shared.loadData()
+                StatsManager.shared.loadData()
+                print("☁️ Reloaded CardManager and StatsManager with synced data")
+                print("☁️ Mastered cards count after sync: \(CardManager.shared.masteredCardIDs.count)")
+            }
 
             lastSyncDate = Date()
             UserDefaults.standard.set(lastSyncDate, forKey: lastSyncKey)

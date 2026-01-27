@@ -17,6 +17,8 @@ struct ProfileView: View {
     @State private var isEditingName = false
     @State private var newDisplayName = ""
 
+    var onSignOut: (() -> Void)?
+
     var body: some View {
         NavigationView {
             List {
@@ -188,6 +190,7 @@ struct ProfileView: View {
                     Task {
                         await authManager.signOut()
                         dismiss()
+                        onSignOut?()
                     }
                 }
             } message: {

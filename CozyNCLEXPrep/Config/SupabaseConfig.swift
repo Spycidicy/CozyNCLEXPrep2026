@@ -20,6 +20,7 @@ struct SupabaseConfig {
     struct Tables {
         static let nclexQuestions = "nclex_questions"
         static let contentVersions = "content_versions"
+        static let dailyGoalsSchedule = "daily_goals_schedule"
     }
 
     // MARK: - Validation

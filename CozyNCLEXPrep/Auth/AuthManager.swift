@@ -301,7 +301,9 @@ class AuthManager: ObservableObject {
                 .value
 
             userProfile = profile
+            print("🔐 Loaded profile: \(profile.displayName), isPremium: \(profile.isPremium)")
         } catch {
+            print("🔐 Error loading profile: \(error)")
             // Profile doesn't exist, create one with email prefix as display name
             let email = currentUser?.email ?? "Student"
             let displayName = displayNameFromEmail(email)

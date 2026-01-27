@@ -13,6 +13,7 @@ import Charts
 import UserNotifications
 import UIKit
 import AudioToolbox
+import Supabase
 
 // MARK: - Persistence Manager
 
@@ -1055,6 +1056,38 @@ enum DailyCommitment: String, CaseIterable {
     }
 }
 
+// MARK: - Remote Daily Goals Model
+struct RemoteDailyGoal: Codable {
+    let type: String
+    let target: Int
+    let xpReward: Int
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case target
+        case xpReward
+    }
+
+    func toDailyGoal() -> DailyGoal? {
+        guard let goalType = DailyGoalType(rawValue: type) else { return nil }
+        return DailyGoal(type: goalType, target: target, xpReward: xpReward)
+    }
+}
+
+struct DailyGoalsSchedule: Codable {
+    let id: UUID
+    let goalDate: String
+    let goals: [RemoteDailyGoal]
+    let createdAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case goalDate = "goal_date"
+        case goals
+        case createdAt = "created_at"
+    }
+}
+
 class DailyGoalsManager: ObservableObject {
     static let shared = DailyGoalsManager()
 
@@ -1072,6 +1105,7 @@ class DailyGoalsManager: ObservableObject {
     @Published var dailyCommitment: DailyCommitment?
     @Published var showMilestoneCelebration = false
     @Published var milestoneCelebrationValue: Int = 0
+    @Published var isLoadingGoals = false
 
     private let dailyGoalsKey = "dailyGoals"
     private let totalXPKey = "totalXP"
@@ -1085,11 +1119,13 @@ class DailyGoalsManager: ObservableObject {
     private let dailyContractDateKey = "dailyContractDate"
     private let dailyCommitmentKey = "dailyCommitment"
     private let celebratedMilestonesKey = "celebratedMilestones"
+    private let lastFetchedGoalsDateKey = "lastFetchedGoalsDate"
     private let syncManager = SyncManager.shared
 
     init() {
         loadData()
         checkAndResetDailyGoals()
+        print("🎯 DailyGoalsManager init: \(dailyGoals.count) goals loaded")
     }
 
     func loadData() {
@@ -1273,23 +1309,95 @@ class DailyGoalsManager: ObservableObject {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
 
+        print("🎯 checkAndResetDailyGoals: lastGoalDate = \(String(describing: lastGoalDate)), today = \(today)")
+
         if let lastDate = lastGoalDate {
             let lastDay = calendar.startOfDay(for: lastDate)
             if today > lastDay {
                 // New day - reset goals
-                generateDailyGoals()
+                print("🎯 New day detected, fetching/generating new goals")
+                fetchOrGenerateDailyGoals()
                 hasCompletedCardOfTheDay = false
+            } else {
+                print("🎯 Same day, keeping existing \(dailyGoals.count) goals")
             }
         } else {
             // First time - generate goals
-            generateDailyGoals()
+            print("🎯 First time, fetching/generating goals")
+            fetchOrGenerateDailyGoals()
         }
 
         lastGoalDate = today
         saveData()
+        print("🎯 After checkAndResetDailyGoals: \(dailyGoals.count) goals")
     }
 
-    func generateDailyGoals() {
+    /// Fetch daily goals from Supabase, fall back to local generation
+    func fetchOrGenerateDailyGoals() {
+        // First, generate local goals immediately so UI isn't empty
+        generateLocalDailyGoals()
+
+        // Then try to fetch from server (will update if successful)
+        Task {
+            await fetchDailyGoalsFromServer()
+        }
+    }
+
+    /// Fetch today's daily goals from Supabase
+    @MainActor
+    func fetchDailyGoalsFromServer() async {
+        guard SupabaseConfig.isConfigured else {
+            print("🎯 Supabase not configured, using local goals")
+            return
+        }
+
+        isLoadingGoals = true
+        defer { isLoadingGoals = false }
+
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        let todayString = dateFormatter.string(from: Date())
+
+        print("🎯 Fetching daily goals for \(todayString) from Supabase...")
+
+        do {
+            let schedules: [DailyGoalsSchedule] = try await SupabaseConfig.client
+                .from("daily_goals_schedule")
+                .select()
+                .eq("goal_date", value: todayString)
+                .execute()
+                .value
+
+            if let schedule = schedules.first {
+                let remoteGoals = schedule.goals.compactMap { $0.toDailyGoal() }
+                if remoteGoals.count >= 3 {
+                    // Keep current progress if goal types match
+                    var updatedGoals: [DailyGoal] = []
+                    for remoteGoal in remoteGoals {
+                        if let existingGoal = dailyGoals.first(where: { $0.type == remoteGoal.type }) {
+                            var goal = remoteGoal
+                            goal.progress = existingGoal.progress
+                            goal.isCompleted = existingGoal.isCompleted
+                            updatedGoals.append(goal)
+                        } else {
+                            updatedGoals.append(remoteGoal)
+                        }
+                    }
+                    dailyGoals = updatedGoals
+                    saveData()
+                    print("🎯 Loaded \(remoteGoals.count) goals from server: \(remoteGoals.map { $0.type.rawValue })")
+                    return
+                }
+            }
+
+            print("🎯 No goals found for today in database, using local goals")
+        } catch {
+            print("🎯 Error fetching daily goals: \(error.localizedDescription)")
+        }
+    }
+
+    /// Generate goals locally (deterministic based on date - same for all users)
+    func generateLocalDailyGoals() {
         // Pool of possible goals with varying difficulty
         let goalPool: [(type: DailyGoalType, target: Int, xpReward: Int)] = [
             // Easy goals
@@ -1313,13 +1421,15 @@ class DailyGoalsManager: ObservableObject {
             (.correctStreak, 10, 75),
         ]
 
-        // Use today's date as seed for consistent daily goals
+        // Use today's date as seed for consistent daily goals (same for all users!)
         let calendar = Calendar.current
         let dayOfYear = calendar.ordinality(of: .day, in: .year, for: Date()) ?? 1
+        let year = calendar.component(.year, from: Date())
+        let combinedSeed = UInt64(year * 1000 + dayOfYear) // Unique per day across years
 
         // Shuffle based on day to get different goals each day
-        var seededRandom = SeededRandomGenerator(seed: UInt64(dayOfYear))
-        var shuffledPool = goalPool.shuffled(using: &seededRandom)
+        var seededRandom = SeededRandomGenerator(seed: combinedSeed)
+        let shuffledPool = goalPool.shuffled(using: &seededRandom)
 
         // Select 3 unique goal types
         var selectedGoals: [DailyGoal] = []
@@ -1346,7 +1456,13 @@ class DailyGoalsManager: ObservableObject {
         }
 
         dailyGoals = selectedGoals
+        print("🎯 generateLocalDailyGoals: Generated \(selectedGoals.count) goals: \(selectedGoals.map { $0.type.rawValue })")
         saveData()
+    }
+
+    /// Legacy function name for compatibility
+    func generateDailyGoals() {
+        fetchOrGenerateDailyGoals()
     }
 
     func updateGoal(_ type: DailyGoalType, progress: Int) {
@@ -1647,6 +1763,7 @@ extension Color {
 
 enum Screen {
     case onboarding
+    case auth
     case menu
     case swipeGame
     case quizGame
@@ -7784,17 +7901,38 @@ class AppManager: ObservableObject {
 
     init() {
         // Check if user has seen onboarding
-        if PersistenceManager.shared.hasSeenOnboarding() {
-            currentScreen = .menu
-        } else {
+        if !PersistenceManager.shared.hasSeenOnboarding() {
             currentScreen = .onboarding
+        } else if !AuthManager.shared.isAuthenticated {
+            // Onboarding done but not authenticated
+            currentScreen = .auth
+        } else {
+            currentScreen = .menu
         }
     }
 
     func completeOnboarding() {
         PersistenceManager.shared.setOnboardingComplete()
         withAnimation(.easeInOut(duration: 0.5)) {
+            currentScreen = .auth
+        }
+    }
+
+    func completeAuth() {
+        withAnimation(.easeInOut(duration: 0.5)) {
             currentScreen = .menu
+        }
+        // Auto-sync data after login
+        Task {
+            print("🔄 Auto-syncing after login...")
+            await CloudSyncManager.shared.syncAll()
+            print("🔄 Auto-sync complete")
+        }
+    }
+
+    func signOut() {
+        withAnimation(.easeInOut(duration: 0.5)) {
+            currentScreen = .auth
         }
     }
 }
@@ -7847,7 +7985,9 @@ class SubscriptionManager: ObservableObject {
         AuthManager.shared.$userProfile
             .receive(on: DispatchQueue.main)
             .sink { [weak self] profile in
-                self?.hasSupabasePremium = profile?.isPremium ?? false
+                let isPremium = profile?.isPremium ?? false
+                print("💎 SubscriptionManager: profile changed, isPremium = \(isPremium)")
+                self?.hasSupabasePremium = isPremium
             }
             .store(in: &cancellables)
 
@@ -7855,7 +7995,21 @@ class SubscriptionManager: ObservableObject {
         Task {
             await loadProducts()
             await checkSubscriptionStatus()
+            // Sync any StoreKit premium to Supabase
+            await syncPremiumToSupabase()
         }
+
+        // Also sync when auth state changes
+        AuthManager.shared.$isAuthenticated
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isAuthenticated in
+                if isAuthenticated {
+                    Task {
+                        await self?.syncPremiumToSupabase()
+                    }
+                }
+            }
+            .store(in: &cancellables)
     }
 
     deinit {
@@ -7959,6 +8113,37 @@ class SubscriptionManager: ObservableObject {
     @MainActor
     func updateSubscriptionStatus() async {
         await checkSubscriptionStatus()
+        // Sync premium status to Supabase for cross-device access
+        await syncPremiumToSupabase()
+    }
+
+    @MainActor
+    private func syncPremiumToSupabase() async {
+        guard AuthManager.shared.isAuthenticated,
+              let profile = AuthManager.shared.userProfile else { return }
+
+        // Only sync if user has StoreKit premium and profile isn't already premium
+        guard isSubscribed && !profile.isPremium else { return }
+
+        do {
+            struct PremiumUpdate: Encodable {
+                let is_premium: Bool
+                let updated_at: String
+            }
+            let update = PremiumUpdate(is_premium: true, updated_at: ISO8601DateFormatter().string(from: Date()))
+
+            try await SupabaseConfig.client
+                .from("user_profiles")
+                .update(update)
+                .eq("id", value: profile.id.uuidString)
+                .execute()
+            print("💎 Synced premium status to Supabase")
+
+            // Reload profile to get updated premium status
+            await AuthManager.shared.checkSession()
+        } catch {
+            print("💎 Failed to sync premium to Supabase: \(error)")
+        }
     }
 
     @MainActor
@@ -8677,6 +8862,7 @@ struct ContentView: View {
 
             switch appManager.currentScreen {
             case .onboarding: OnboardingView()
+            case .auth: AuthView(onAuthenticated: { appManager.completeAuth() })
             case .menu: MainMenuView()
             case .swipeGame: SwipeGameView()
             case .quizGame: BearQuizView()
@@ -8702,6 +8888,10 @@ struct ContentView: View {
         .environmentObject(statsManager)
         .environmentObject(speechManager)
         .preferredColorScheme(appearanceManager.currentMode.colorScheme)
+        .task {
+            // Load content from Supabase on app startup
+            await SupabaseContentProvider.shared.loadContent()
+        }
     }
 }
 
@@ -9156,7 +9346,7 @@ struct MainMenuView: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
     @StateObject private var coachMarkManager = CoachMarkManager.shared
     @ObservedObject var authManager = AuthManager.shared
     @State private var showSubscriptionSheet = false
@@ -9463,7 +9653,7 @@ struct CompactHeaderView: View {
     @EnvironmentObject var appManager: AppManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
     @StateObject private var authManager = AuthManager.shared
     @Binding var showCategoryFilter: Bool
     @State private var showProfile = false
@@ -9574,7 +9764,9 @@ struct CompactHeaderView: View {
             }
         }
         .sheet(isPresented: $showProfile) {
-            ProfileView()
+            ProfileView(onSignOut: {
+                appManager.signOut()
+            })
         }
     }
 
@@ -9748,7 +9940,7 @@ extension GameMode {
 // MARK: - Level Progress Section
 
 struct LevelProgressSection: View {
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
 
     var body: some View {
         VStack(spacing: 10) {
@@ -9810,7 +10002,7 @@ struct LevelProgressSection: View {
 // MARK: - Daily Goals Section
 
 struct DailyGoalsSection: View {
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
 
     var completedCount: Int {
         dailyGoalsManager.dailyGoals.filter { $0.isCompleted }.count
@@ -9905,7 +10097,7 @@ struct DailyGoalRow: View {
 
 struct CardOfTheDaySection: View {
     @EnvironmentObject var cardManager: CardManager
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
     @Binding var showCard: Bool
     @Binding var isFlipped: Bool
 
@@ -10015,7 +10207,7 @@ struct CardOfTheDaySection: View {
 // MARK: - Level Up Celebration View
 
 struct LevelUpCelebrationView: View {
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
     @Environment(\.dismiss) var dismiss
     @State private var showContent = false
     @State private var showConfetti = false
@@ -11996,7 +12188,7 @@ struct SettingsView: View {
     @EnvironmentObject var statsManager: StatsManager
     @StateObject private var notificationManager = NotificationManager.shared
     @StateObject private var soundManager = SoundManager.shared
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
     @StateObject private var appearanceManager = AppearanceManager.shared
     @State private var remindersEnabled = false
     @State private var selectedTime = Date()
@@ -12593,7 +12785,7 @@ struct SwipeGameView: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
     @State private var currentIndex = 0
     @State private var offset: CGSize = .zero
     @State private var isFlipped = false
@@ -12914,7 +13106,7 @@ struct BearQuizView: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
     @State private var currentIndex = 0
     @State private var shuffledAnswers: [String] = []
     @State private var selectedAnswer: String? = nil

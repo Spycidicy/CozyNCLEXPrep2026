@@ -22,8 +22,11 @@ struct AuthView: View {
     @State private var showResetPassword = false
     @State private var subscribeToNewsletter = true
 
-    init(startInSignUpMode: Bool = false) {
+    var onAuthenticated: (() -> Void)?
+
+    init(startInSignUpMode: Bool = false, onAuthenticated: (() -> Void)? = nil) {
         _isSignUp = State(initialValue: startInSignUpMode)
+        self.onAuthenticated = onAuthenticated
     }
 
     var body: some View {
@@ -205,6 +208,11 @@ struct AuthView: View {
         }
         .sheet(isPresented: $showResetPassword) {
             ResetPasswordSheet()
+        }
+        .onChange(of: authManager.isAuthenticated) { _, isAuthenticated in
+            if isAuthenticated {
+                onAuthenticated?()
+            }
         }
     }
 
