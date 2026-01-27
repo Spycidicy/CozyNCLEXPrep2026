@@ -49,63 +49,11 @@ struct ProfileView: View {
                             Text(authManager.currentUser?.email ?? "")
                                 .font(.system(size: 14, design: .rounded))
                                 .foregroundColor(.secondary)
-
-                            // Level Badge
-                            HStack(spacing: 4) {
-                                Image(systemName: "star.fill")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.yellow)
-                                Text("Level \(dailyGoalsManager.currentLevel)")
-                                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.yellow.opacity(0.2))
-                            .cornerRadius(8)
                         }
 
                         Spacer()
                     }
                     .padding(.vertical, 8)
-                }
-
-                // Stats Section
-                Section("Your Progress") {
-                    StatRow(icon: "star.fill", color: .yellow, title: "Total XP", value: "\(dailyGoalsManager.totalXP)")
-                    StatRow(icon: "flame.fill", color: .orange, title: "Level", value: "\(dailyGoalsManager.currentLevel)")
-
-                    // XP Progress to Next Level
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Progress to Level \(dailyGoalsManager.currentLevel + 1)")
-                                .font(.system(size: 14, design: .rounded))
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Text("\(dailyGoalsManager.xpProgressInCurrentLevel)/\(dailyGoalsManager.xpForNextLevel) XP")
-                                .font(.system(size: 13, weight: .medium, design: .rounded))
-                                .foregroundColor(.mintGreen)
-                        }
-
-                        GeometryReader { geometry in
-                            ZStack(alignment: .leading) {
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color.gray.opacity(0.2))
-                                    .frame(height: 12)
-
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(
-                                        LinearGradient(
-                                            colors: [.mintGreen, .green],
-                                            startPoint: .leading,
-                                            endPoint: .trailing
-                                        )
-                                    )
-                                    .frame(width: geometry.size.width * dailyGoalsManager.xpProgressPercent, height: 12)
-                            }
-                        }
-                        .frame(height: 12)
-                    }
-                    .padding(.vertical, 4)
                 }
 
                 // Account Settings

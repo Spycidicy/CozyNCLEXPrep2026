@@ -242,6 +242,9 @@ class PersistenceManager {
         defaults.removeObject(forKey: flaggedCardsKey)
         defaults.removeObject(forKey: testHistoryKey)
 
+        // Subscription status - IMPORTANT: Clear cached premium to prevent leaking to other accounts
+        defaults.removeObject(forKey: isSubscribedKey)
+
         // Daily goals and XP data
         defaults.removeObject(forKey: "totalXP")
         defaults.removeObject(forKey: "dailyGoals")
@@ -1653,13 +1656,24 @@ class DailyGoalsManager: ObservableObject {
         case 2: return "Student Nurse"
         case 3: return "Aspiring Nurse"
         case 4: return "Dedicated Learner"
-        case 5: return "NCLEX Warrior"
-        case 6: return "Knowledge Seeker"
+        case 5: return "Knowledge Builder"
+        case 6: return "Focused Scholar"
         case 7: return "Study Champion"
-        case 8: return "Expert in Training"
-        case 9: return "Nearly There"
-        case 10: return "NCLEX Master"
-        default: return "NCLEX Legend \(currentLevel - 9)"
+        case 8: return "Clinical Thinker"
+        case 9: return "Expert in Training"
+        case 10: return "NCLEX Warrior"
+        case 11: return "Quiz Conqueror"
+        case 12: return "Senior Scholar"
+        case 13: return "Nearly There"
+        case 14: return "NCLEX Candidate"
+        case 15: return "Test Day Tough"
+        case 16: return "Board Ready"
+        case 17: return "Elite Learner"
+        case 18: return "Future RN"
+        case 19: return "Almost There"
+        case 20: return "NCLEX Ready"
+        case 21: return "NCLEX Master"
+        default: return "NCLEX Legend"
         }
     }
 }
@@ -1819,9 +1833,8 @@ enum Screen {
     case onboarding
     case auth
     case menu
-    case swipeGame
-    case quizGame
-    case smartReview
+    case flashcardsGame
+    case learnGame
     case matchGame
     case cardBrowser
     case createCard
@@ -1830,43 +1843,44 @@ enum Screen {
     case writeMode
     case stats
     case search
+    case blocksGame
 }
 
 enum GameMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
-    case swipe = "Cozy Swipe"
-    case quiz = "Bear Quiz"
-    case smartReview = "Smart Review"
+    case flashcards = "Study Flashcards"
+    case learn = "Bear Learn"
     case match = "Cozy Match"
     case write = "Write Mode"
     case test = "Practice Test"
+    case blocks = "Cozy Blocks"
 
     var icon: String {
         switch self {
-        case .swipe: return "hand.draw"
-        case .quiz: return "questionmark.circle"
-        case .smartReview: return "brain.head.profile"
+        case .flashcards: return "rectangle.on.rectangle.angled"
+        case .learn: return "brain.head.profile"
         case .match: return "square.grid.2x2"
         case .write: return "pencil.line"
         case .test: return "doc.text"
+        case .blocks: return "square.grid.3x3.fill"
         }
     }
 
     var subtitle: String {
         switch self {
-        case .swipe: return "Tinder-style study"
-        case .quiz: return "Multiple choice"
-        case .smartReview: return "Spaced repetition"
+        case .flashcards: return "Swipe to learn"
+        case .learn: return "Adaptive learning"
         case .match: return "Memory match"
         case .write: return "Type answers"
         case .test: return "Practice exam"
+        case .blocks: return "Block puzzle study"
         }
     }
 
     var isPaid: Bool {
         switch self {
-        case .swipe, .quiz: return false
-        case .match, .write, .test, .smartReview: return true
+        case .flashcards, .learn: return false
+        case .match, .write, .test, .blocks: return true
         }
     }
 }
@@ -2187,7 +2201,8 @@ struct CategoryStats: Codable {
 
     var accuracy: Double {
         guard total > 0 else { return 0 }
-        return Double(correct) / Double(total) * 100
+        // Cap at 100% to handle any edge cases
+        return min(Double(correct) / Double(total) * 100, 100.0)
     }
 }
 
@@ -2203,8 +2218,20 @@ struct UserStats: Codable {
 
     var overallAccuracy: Double {
         guard totalCardsStudied > 0 else { return 0 }
-        return Double(totalCorrectAnswers) / Double(totalCardsStudied) * 100
+        // Cap at 100% to handle any edge cases where data might be inconsistent
+        return min(Double(totalCorrectAnswers) / Double(totalCardsStudied) * 100, 100.0)
     }
+}
+
+/// Tracks card mastery within a single Learn session
+struct LearnSessionCard: Identifiable {
+    let id: UUID
+    let card: Flashcard
+    var sessionLevel: Int = 0      // 0 = new, 1 = seen once correct, 2 = learned
+    var attempts: Int = 0          // Total attempts this session
+    var correctStreak: Int = 0     // Consecutive correct in session
+
+    var isLearned: Bool { sessionLevel >= 2 }
 }
 
 struct MatchTile: Identifiable, Equatable {
@@ -8187,6 +8214,14 @@ class SubscriptionManager: ObservableObject {
                     Task {
                         await self?.syncPremiumToSupabase()
                     }
+                } else {
+                    // User logged out - reset premium state to prevent leaking to next user
+                    self?.isSubscribed = false
+                    self?.hasSupabasePremium = false
+                    // Re-check StoreKit for actual subscription status
+                    Task {
+                        await self?.checkSubscriptionStatus()
+                    }
                 }
             }
             .store(in: &cancellables)
@@ -8346,6 +8381,19 @@ class SubscriptionManager: ObservableObject {
             }
         }
         // Do nothing if no products - user must wait for products to load
+    }
+
+    /// Resets subscription state for new user (called on logout)
+    @MainActor
+    func resetForNewUser() {
+        isSubscribed = false
+        hasSupabasePremium = false
+        hasPremiumAccess = false
+        purchaseError = nil
+        // Re-check actual subscription status from StoreKit
+        Task {
+            await checkSubscriptionStatus()
+        }
     }
 }
 
@@ -8546,11 +8594,13 @@ class CardManager: ObservableObject {
             return available
         case .mastered:
             // Show ALL mastered cards regardless of subscription or category filters
-            let allCards = Flashcard.allCards + userCreatedCards
+            let baseCards = remoteCards.isEmpty ? Flashcard.allCards : remoteCards
+            let allCards = baseCards + userCreatedCards
             return allCards.filter { masteredCardIDs.contains($0.id) }
         case .saved:
             // Show ALL saved cards regardless of subscription or category filters
-            let allCards = Flashcard.allCards + userCreatedCards
+            let baseCards = remoteCards.isEmpty ? Flashcard.allCards : remoteCards
+            let allCards = baseCards + userCreatedCards
             return allCards.filter { savedCardIDs.contains($0.id) }
         case .userCreated:
             return userCreatedCards.filter { selectedCategories.contains($0.contentCategory) }
@@ -8760,14 +8810,18 @@ class CardManager: ObservableObject {
 
     // Count of mastered cards that actually exist in the database
     var validMasteredCount: Int {
-        let allCards = Flashcard.allCards + userCreatedCards
+        // Use remote cards if available, otherwise fallback to bundled cards
+        let baseCards = remoteCards.isEmpty ? Flashcard.allCards : remoteCards
+        let allCards = baseCards + userCreatedCards
         let allCardIDs = Set(allCards.map { $0.id })
         return masteredCardIDs.filter { allCardIDs.contains($0) }.count
     }
 
     // Count of saved cards that actually exist in the database
     var validSavedCount: Int {
-        let allCards = Flashcard.allCards + userCreatedCards
+        // Use remote cards if available, otherwise fallback to bundled cards
+        let baseCards = remoteCards.isEmpty ? Flashcard.allCards : remoteCards
+        let allCards = baseCards + userCreatedCards
         let allCardIDs = Set(allCards.map { $0.id })
         return savedCardIDs.filter { allCardIDs.contains($0) }.count
     }
@@ -9014,15 +9068,55 @@ class ReviewManager {
 class SpeechManager: ObservableObject {
     private let synthesizer = AVSpeechSynthesizer()
 
+    /// Preferred female voices in order of quality (enhanced voices sound more natural)
+    private var preferredVoice: AVSpeechSynthesisVoice? {
+        // Try enhanced/premium Samantha first (most natural US female voice)
+        if let voice = AVSpeechSynthesisVoice(identifier: "com.apple.voice.enhanced.en-US.Samantha") {
+            return voice
+        }
+        // Fall back to premium Samantha
+        if let voice = AVSpeechSynthesisVoice(identifier: "com.apple.voice.premium.en-US.Samantha") {
+            return voice
+        }
+        // Fall back to compact Samantha
+        if let voice = AVSpeechSynthesisVoice(identifier: "com.apple.voice.compact.en-US.Samantha") {
+            return voice
+        }
+        // Last resort: default US English voice
+        return AVSpeechSynthesisVoice(language: "en-US")
+    }
+
     func speak(_ text: String) {
+        // Stop any current speech first
+        if synthesizer.isSpeaking {
+            synthesizer.stopSpeaking(at: .immediate)
+        }
+
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
-        utterance.rate = 0.5
+        utterance.voice = preferredVoice
+
+        // Natural speech rate (0.5 is default, 0.52 is slightly faster and more natural)
+        utterance.rate = 0.52
+
+        // Slight pitch adjustment for warmth (1.0 is default, 1.05 is slightly higher/warmer)
+        utterance.pitchMultiplier = 1.05
+
+        // Add small delays for more natural pacing
+        utterance.preUtteranceDelay = 0.1
+        utterance.postUtteranceDelay = 0.1
+
+        // Volume (1.0 is max)
+        utterance.volume = 0.9
+
         synthesizer.speak(utterance)
     }
 
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
+    }
+
+    var isSpeaking: Bool {
+        synthesizer.isSpeaking
     }
 }
 
@@ -9044,9 +9138,8 @@ struct ContentView: View {
             case .onboarding: OnboardingView()
             case .auth: AuthView(onAuthenticated: { appManager.completeAuth() })
             case .menu: MainMenuView()
-            case .swipeGame: SwipeGameView()
-            case .quizGame: BearQuizView()
-            case .smartReview: SmartReviewView()
+            case .flashcardsGame: StudyFlashcardsView()
+            case .learnGame: BearLearnView()
             case .matchGame: CozyMatchView()
             case .cardBrowser: CardBrowserView()
             case .createCard: CreateCardView()
@@ -9055,6 +9148,7 @@ struct ContentView: View {
             case .writeMode: WriteModeView()
             case .stats: StatsView()
             case .search: SearchView()
+            case .blocksGame: CozyBlocksView()
             }
 
             // DEBUG: Show Supabase status overlay
@@ -9223,15 +9317,16 @@ struct OnboardingView: View {
             .ignoresSafeArea()
             .animation(.easeInOut(duration: 0.5), value: currentPage)
 
+            GeometryReader { geo in
             VStack(spacing: 0) {
-                // Fixed top spacing for consistent bear position
-                Spacer().frame(height: 60)
+                // Dynamic top spacing based on screen height
+                Spacer().frame(height: geo.size.height * 0.05)
 
-                // Mascot - fixed position
+                // Mascot - proportional to screen
                 Image("NurseBear")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 160, height: 160)
+                    .frame(width: min(geo.size.width * 0.38, 160), height: min(geo.size.width * 0.38, 160))
                     .shadow(color: .black.opacity(0.1), radius: 10, y: 5)
                     .offset(y: mascotOffset)
                     .opacity(mascotOpacity)
@@ -9242,7 +9337,7 @@ struct OnboardingView: View {
                         }
                     }
 
-                Spacer().frame(height: 24)
+                Spacer().frame(height: geo.size.height * 0.02)
 
                 // Page content - fixed height container for consistency
                 VStack(spacing: 12) {
@@ -9250,10 +9345,10 @@ struct OnboardingView: View {
                     ZStack {
                         Circle()
                             .fill(pages[currentPage].color.opacity(0.2))
-                            .frame(width: 70, height: 70)
+                            .frame(width: min(geo.size.width * 0.17, 70), height: min(geo.size.width * 0.17, 70))
 
                         Image(systemName: pages[currentPage].icon)
-                            .font(.system(size: 32))
+                            .font(.system(size: min(geo.size.width * 0.08, 32)))
                             .foregroundColor(pages[currentPage].color)
                     }
                     .scaleEffect(showContent ? 1 : 0.5)
@@ -9261,7 +9356,7 @@ struct OnboardingView: View {
 
                     // Title
                     Text(pages[currentPage].title)
-                        .font(.system(size: 26, weight: .bold, design: .rounded))
+                        .font(.system(size: min(geo.size.width * 0.065, 26), weight: .bold, design: .rounded))
                         .multilineTextAlignment(.center)
                         .offset(y: showContent ? 0 : 20)
                         .opacity(showContent ? 1 : 0)
@@ -9271,7 +9366,7 @@ struct OnboardingView: View {
                         .font(.system(size: 15, design: .rounded))
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
-                        .padding(.horizontal, 40)
+                        .padding(.horizontal, 30)
                         .offset(y: showContent ? 0 : 20)
                         .opacity(showContent ? 1 : 0)
 
@@ -9355,7 +9450,7 @@ struct OnboardingView: View {
                             .animation(.spring(response: 0.3), value: currentPage)
                     }
                 }
-                .padding(.bottom, 30)
+                .padding(.bottom, geo.size.height * 0.02)
 
                 // Buttons
                 VStack(spacing: 12) {
@@ -9405,8 +9500,9 @@ struct OnboardingView: View {
                     }
                 }
                 .padding(.horizontal, 30)
-                .padding(.bottom, 50)
+                .padding(.bottom, geo.size.height * 0.04)
             }
+            } // GeometryReader
         }
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -9571,12 +9667,9 @@ struct MainMenuView: View {
                 // STUDY TAB
                 ScrollView {
                     VStack(spacing: 16) {
-                        // Primary Action: Study Flashcards (at the very top)
-                        StudyFlashcardsButton(showCardBrowse: $showCardBrowse)
-
                         // Premium Upsell (immediately visible for free users)
                         if !subscriptionManager.hasPremiumAccess && !(authManager.userProfile?.isPremium ?? false) {
-                            SubscribeButton(showSheet: $showSubscriptionSheet)
+                            SubscribeButton(showSheet: $showSubscriptionSheet, totalCardCount: cardManager.getAvailableCards(isSubscribed: true).count)
                         }
 
                         // Study Modes Grid
@@ -9587,8 +9680,8 @@ struct MainMenuView: View {
                             pendingGameMode: $pendingGameMode
                         )
 
-                        // Quick Actions (Create, Sets, Stats)
-                        QuickActionsSection()
+                        // Quick Actions (Browse, Create, Sets, Stats)
+                        QuickActionsSection(showCardBrowse: $showCardBrowse)
 
                         // Category Filter
                         CategoryFilterBadge(showCategoryFilter: $showCategoryFilter)
@@ -9601,6 +9694,8 @@ struct MainMenuView: View {
                 ScrollView {
                     VStack(spacing: 16) {
                         LevelProgressSection()
+                        StreakBanner()
+                        DailyGoalsSection()
 
                         // Share Progress Button
                         Button(action: {
@@ -9621,13 +9716,11 @@ struct MainMenuView: View {
                             .cornerRadius(20)
                         }
 
-                        StreakBanner()
-                        DailyGoalsSection()
                         CardOfTheDaySection(showCard: $showCardOfTheDay, isFlipped: $cardOfTheDayFlipped)
 
                         // NCLEX Readiness (Premium Feature)
                         NCLEXReadinessView(
-                            masteredCount: cardManager.masteredCardIDs.count,
+                            masteredCount: cardManager.validMasteredCount,
                             totalCards: cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess).count,
                             categoryProgress: calculateCategoryProgress(),
                             averageAccuracy: statsManager.stats.overallAccuracy / 100.0,
@@ -9637,8 +9730,6 @@ struct MainMenuView: View {
 
                         // Category Progress Section
                         CategoryProgressSection(categoryProgress: calculateCategoryProgress())
-
-                        QuickStatsSection()
                     }
                     .padding()
                 }
@@ -9661,7 +9752,7 @@ struct MainMenuView: View {
                 level: dailyGoalsManager.currentLevel,
                 levelTitle: dailyGoalsManager.levelTitle,
                 totalXP: dailyGoalsManager.totalXP,
-                masteredCards: cardManager.masteredCardIDs.count,
+                masteredCards: cardManager.validMasteredCount,
                 currentStreak: dailyGoalsManager.currentStreak,
                 accuracy: statsManager.stats.overallAccuracy / 100.0
             ))
@@ -9707,7 +9798,14 @@ struct MainMenuView: View {
         } message: {
             if let mode = pendingGameMode,
                let progress = SessionProgressManager.shared.loadProgress(for: mode) {
-                Text("You have a saved session with \(progress.currentIndex) of \(progress.cardIDs.count) cards completed. Would you like to continue?")
+                if mode == .learn {
+                    // For Bear Learn: currentIndex = learnedCount, cardsReviewed = totalCards
+                    let learned = progress.currentIndex
+                    let remaining = progress.cardIDs.count
+                    Text("You have \(learned) terms learned with \(remaining) remaining. Would you like to continue?")
+                } else {
+                    Text("You have a saved session with \(progress.currentIndex) of \(progress.cardIDs.count) cards completed. Would you like to continue?")
+                }
             } else {
                 Text("Would you like to continue your previous session?")
             }
@@ -9718,7 +9816,7 @@ struct MainMenuView: View {
             dailyGoalsManager.checkAndResetDailyGoals()
 
             // Check for milestone celebration
-            dailyGoalsManager.checkMilestone(masteredCount: cardManager.masteredCardIDs.count)
+            dailyGoalsManager.checkMilestone(masteredCount: cardManager.validMasteredCount)
 
             // Show daily motivation if not seen today
             // Delay to allow milestone checks to complete first
@@ -9785,12 +9883,12 @@ struct MainMenuView: View {
 
         // Navigate to the appropriate screen
         switch mode {
-        case .swipe: appManager.currentScreen = .swipeGame
-        case .quiz: appManager.currentScreen = .quizGame
-        case .smartReview: appManager.currentScreen = .smartReview
+        case .flashcards: appManager.currentScreen = .flashcardsGame
+        case .learn: appManager.currentScreen = .learnGame
         case .match: appManager.currentScreen = .matchGame
         case .write: appManager.currentScreen = .writeMode
         case .test: appManager.currentScreen = .testMode
+        case .blocks: appManager.currentScreen = .blocksGame
         }
     }
 
@@ -9817,12 +9915,12 @@ struct MainMenuView: View {
 
         // Navigate to game
         switch mode {
-        case .swipe: appManager.currentScreen = .swipeGame
-        case .quiz: appManager.currentScreen = .quizGame
-        case .smartReview: appManager.currentScreen = .smartReview
+        case .flashcards: appManager.currentScreen = .flashcardsGame
+        case .learn: appManager.currentScreen = .learnGame
         case .match: appManager.currentScreen = .matchGame
         case .write: appManager.currentScreen = .writeMode
         case .test: appManager.currentScreen = .testMode
+        case .blocks: appManager.currentScreen = .blocksGame
         }
     }
 }
@@ -9854,15 +9952,6 @@ struct CompactHeaderView: View {
                 Text("CozyNCLEX")
                     .font(.system(size: 20, weight: .bold, design: .rounded))
                 HStack(spacing: 8) {
-                    // Level badge
-                    HStack(spacing: 3) {
-                        Image(systemName: "star.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.pastelPink)
-                        Text("Lv.\(dailyGoalsManager.currentLevel)")
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .foregroundColor(.secondary)
-                    }
                     // Streak
                     if statsManager.stats.currentStreak > 0 {
                         HStack(spacing: 3) {
@@ -9874,10 +9963,6 @@ struct CompactHeaderView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
-                    // XP
-                    Text("\(dailyGoalsManager.totalXP) XP")
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .foregroundColor(.softLavender)
                 }
             }
 
@@ -10006,18 +10091,18 @@ struct GameModeGridCard: View {
     }
 
     var hasSavedProgress: Bool {
-        // Match mode doesn't support resume
+        // Match and test modes don't support resume
         mode != .match && mode != .test && SessionProgressManager.shared.hasProgress(for: mode)
     }
 
     var cardColor: Color {
         switch mode {
-        case .swipe: return .mintGreen
-        case .quiz: return .pastelPink
-        case .smartReview: return .softLavender
+        case .flashcards: return .mintGreen
+        case .learn: return .softLavender
         case .match: return .peachOrange
         case .write: return .skyBlue
         case .test: return .coralPink
+        case .blocks: return .peachOrange
         }
     }
 
@@ -10109,10 +10194,10 @@ struct GameModeGridCard: View {
 extension GameMode {
     var coachMarkType: CoachMarkType {
         switch self {
-        case .swipe: return .flashcards
-        case .quiz: return .quickQuiz
+        case .flashcards: return .flashcards
+        case .learn: return .quickQuiz
         case .test: return .testYourself
-        case .smartReview, .match, .write: return .browseCards // Group other modes
+        case .match, .write, .blocks: return .browseCards // Group other modes
         }
     }
 }
@@ -10452,8 +10537,8 @@ struct LevelUpCelebrationView: View {
                         .cornerRadius(16)
                 }
                 .buttonStyle(BounceButtonStyle())
-                .padding(.horizontal, 40)
-                .padding(.bottom, 50)
+                .padding(.horizontal, 30)
+                .padding(.bottom, 30)
                 .opacity(showContent ? 1 : 0)
             }
         }
@@ -10480,18 +10565,18 @@ struct LevelUpConfettiView: View {
                     LevelUpConfettiPieceAnimatedView(piece: piece, screenHeight: geo.size.height)
                 }
             }
-        }
-        .onAppear {
-            generateConfetti()
+            .onAppear {
+                generateConfetti(width: geo.size.width)
+            }
         }
     }
 
-    func generateConfetti() {
+    func generateConfetti(width: CGFloat) {
         let colors: [Color] = [.pastelPink, .mintGreen, .softLavender, .peachOrange, .skyBlue, .yellow]
         confettiPieces = (0..<60).map { _ in
             LevelUpConfettiPiece(
                 color: colors.randomElement() ?? .pastelPink,
-                x: CGFloat.random(in: 0...UIScreen.main.bounds.width),
+                x: CGFloat.random(in: 0...width),
                 delay: Double.random(in: 0...0.5)
             )
         }
@@ -11046,10 +11131,13 @@ struct TappableStatCard: View {
 // MARK: - Study Flashcards Button (Primary Action)
 
 struct StudyFlashcardsButton: View {
+    @EnvironmentObject var appManager: AppManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @ObservedObject var authManager = AuthManager.shared
-    @Binding var showCardBrowse: Bool
+    @Binding var selectedGameMode: GameMode?
+    @Binding var showResumePrompt: Bool
+    @Binding var pendingGameMode: GameMode?
 
     var isPremium: Bool {
         subscriptionManager.hasPremiumAccess ||
@@ -11057,7 +11145,6 @@ struct StudyFlashcardsButton: View {
     }
 
     var weakCardCount: Int {
-        // Only count cards the user has access to
         let availableCards = cardManager.getAvailableCards(isSubscribed: isPremium)
         return availableCards.filter { card in
             !cardManager.masteredCardIDs.contains(card.id) &&
@@ -11065,31 +11152,44 @@ struct StudyFlashcardsButton: View {
         }.count
     }
 
+    var hasSavedProgress: Bool {
+        SessionProgressManager.shared.hasProgress(for: .flashcards)
+    }
+
     var body: some View {
         Button(action: {
             HapticManager.shared.light()
-            showCardBrowse = true
+            if hasSavedProgress {
+                pendingGameMode = .flashcards
+                showResumePrompt = true
+            } else {
+                selectedGameMode = .flashcards
+            }
         }) {
             HStack(spacing: 16) {
                 ZStack {
                     Circle()
-                        .fill(Color.blue.opacity(0.15))
+                        .fill(Color.mintGreen.opacity(0.15))
                         .frame(width: 50, height: 50)
-                    Image(systemName: "rectangle.stack.fill")
+                    Image(systemName: "rectangle.on.rectangle.angled")
                         .font(.system(size: 22))
-                        .foregroundColor(.blue)
+                        .foregroundColor(.mintGreen)
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Study Flashcards")
                         .font(.system(size: 18, weight: .bold, design: .rounded))
                         .foregroundColor(.primary)
-                    if weakCardCount > 0 {
+                    if hasSavedProgress {
+                        Text("Continue where you left off")
+                            .font(.system(size: 13, design: .rounded))
+                            .foregroundColor(.orange)
+                    } else if weakCardCount > 0 {
                         Text("\(weakCardCount) cards need review")
                             .font(.system(size: 13, design: .rounded))
                             .foregroundColor(.orange)
                     } else {
-                        Text("Review and learn your cards")
+                        Text("Sort cards into Know & Still Learning")
                             .font(.system(size: 13, design: .rounded))
                             .foregroundColor(.secondary)
                     }
@@ -11114,17 +11214,25 @@ struct StudyFlashcardsButton: View {
 
 struct QuickActionsSection: View {
     @EnvironmentObject var appManager: AppManager
+    @Binding var showCardBrowse: Bool
 
     var body: some View {
-        HStack(spacing: 12) {
-            QuickActionButton(icon: "plus.circle.fill", label: "Create Card", color: .mintGreen) {
-                appManager.currentScreen = .createCard
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                QuickActionButton(icon: "rectangle.stack.fill", label: "Browse Cards", color: .blue) {
+                    showCardBrowse = true
+                }
+                QuickActionButton(icon: "plus.circle.fill", label: "Create Card", color: .mintGreen) {
+                    appManager.currentScreen = .createCard
+                }
             }
-            QuickActionButton(icon: "folder.fill", label: "Study Sets", color: .peachOrange) {
-                appManager.currentScreen = .studySets
-            }
-            QuickActionButton(icon: "chart.bar.fill", label: "Stats", color: .softLavender) {
-                appManager.currentScreen = .stats
+            HStack(spacing: 12) {
+                QuickActionButton(icon: "folder.fill", label: "Study Sets", color: .peachOrange) {
+                    appManager.currentScreen = .studySets
+                }
+                QuickActionButton(icon: "chart.bar.fill", label: "Stats", color: .softLavender) {
+                    appManager.currentScreen = .stats
+                }
             }
         }
     }
@@ -11202,12 +11310,12 @@ struct GameModesSection: View {
             showSubscriptionSheet = true
         } else {
             switch mode {
-            case .swipe: appManager.currentScreen = .swipeGame
-            case .quiz: appManager.currentScreen = .quizGame
-            case .smartReview: appManager.currentScreen = .smartReview
+            case .flashcards: appManager.currentScreen = .flashcardsGame
+            case .learn: appManager.currentScreen = .learnGame
             case .match: appManager.currentScreen = .matchGame
             case .write: appManager.currentScreen = .writeMode
             case .test: appManager.currentScreen = .testMode
+            case .blocks: appManager.currentScreen = .blocksGame
             }
         }
     }
@@ -11219,12 +11327,12 @@ struct CompactModeCard: View {
 
     var modeColor: Color {
         switch mode {
-        case .swipe: return .mintGreen
-        case .quiz: return .pastelPink
-        case .smartReview: return .softLavender
+        case .flashcards: return .mintGreen
+        case .learn: return .softLavender
         case .match: return .softLavender
         case .write: return .skyBlue
         case .test: return .peachOrange
+        case .blocks: return .peachOrange
         }
     }
 
@@ -11254,12 +11362,12 @@ struct GameModeCard: View {
 
     var modeColor: Color {
         switch mode {
-        case .swipe: return .mintGreen
-        case .quiz: return .pastelPink
-        case .smartReview: return .softLavender
+        case .flashcards: return .mintGreen
+        case .learn: return .softLavender
         case .match: return .softLavender
         case .write: return .skyBlue
         case .test: return .peachOrange
+        case .blocks: return .peachOrange
         }
     }
 
@@ -11289,6 +11397,7 @@ struct GameModeCard: View {
 
 struct SubscribeButton: View {
     @Binding var showSheet: Bool
+    var totalCardCount: Int = 0
 
     var body: some View {
         Button(action: { showSheet = true }) {
@@ -11298,7 +11407,7 @@ struct SubscribeButton: View {
                         Image(systemName: "star.fill").foregroundColor(.yellow)
                         Text("Get NCLEX Ready").font(.system(size: 16, weight: .bold, design: .rounded))
                     }
-                    Text("600+ cards • All study modes").font(.system(size: 13, design: .rounded)).opacity(0.9)
+                    Text("\(totalCardCount)+ cards • All study modes").font(.system(size: 13, design: .rounded)).opacity(0.9)
                 }
                 Spacer()
                 Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold))
@@ -11313,11 +11422,16 @@ struct SubscribeButton: View {
 
 struct SubscriptionSheet: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
+    @EnvironmentObject var cardManager: CardManager
     @Environment(\.dismiss) var dismiss
     @State private var selectedProduct: Product?
-    
+
     private let privacyPolicyURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/privacy.html"
     private let termsOfServiceURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/terms.html"
+
+    private var totalCardCount: Int {
+        cardManager.getAvailableCards(isSubscribed: true).count
+    }
 
     var body: some View {
         VStack(spacing: 20) {
@@ -11329,8 +11443,8 @@ struct SubscriptionSheet: View {
             Text("Unlock Everything!").font(.system(size: 26, weight: .bold, design: .rounded))
 
             VStack(alignment: .leading, spacing: 10) {
-                FeatureRow(icon: "square.stack.3d.up.fill", text: "500+ NCLEX Questions")
-                FeatureRow(icon: "brain.head.profile", text: "Smart Review (Spaced Repetition)")
+                FeatureRow(icon: "square.stack.3d.up.fill", text: "\(totalCardCount)+ NCLEX Questions")
+                FeatureRow(icon: "checkmark.seal.fill", text: "NCLEX Readiness Tracker")
                 FeatureRow(icon: "gamecontroller.fill", text: "All Study Modes")
                 FeatureRow(icon: "doc.text.fill", text: "Practice Tests")
             }
@@ -11427,21 +11541,32 @@ struct SubscriptionSheet: View {
             }
             .disabled(subscriptionManager.isLoading)
 
+            // Auto-renewal disclosure (required by Apple)
+            Text("Subscriptions automatically renew unless cancelled at least 24 hours before the end of the current period. Your Apple ID account will be charged for renewal within 24 hours prior to the end of the current period. You can manage and cancel subscriptions in your App Store account settings.")
+                .font(.system(size: 10, design: .rounded))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+
             // Required legal links for subscriptions
             HStack(spacing: 20) {
-                Link("Privacy Policy", destination: URL(string: privacyPolicyURL)!)
-                    .font(.system(size: 12, design: .rounded))
-                    .foregroundColor(.blue)
-                
+                if let privacyURL = URL(string: privacyPolicyURL) {
+                    Link("Privacy Policy", destination: privacyURL)
+                        .font(.system(size: 12, design: .rounded))
+                        .foregroundColor(.blue)
+                }
+
                 Text("•")
                     .font(.system(size: 12))
                     .foregroundColor(.secondary)
-                
-                Link("Terms of Use", destination: URL(string: termsOfServiceURL)!)
-                    .font(.system(size: 12, design: .rounded))
-                    .foregroundColor(.blue)
+
+                if let termsURL = URL(string: termsOfServiceURL) {
+                    Link("Terms of Use", destination: termsURL)
+                        .font(.system(size: 12, design: .rounded))
+                        .foregroundColor(.blue)
+                }
             }
-            .padding(.top, 8)
 
             Spacer()
         }
@@ -11704,6 +11829,16 @@ struct CardDetailSheet: View {
                         Text(card.contentCategory.rawValue).font(.system(size: 13, weight: .semibold, design: .rounded)).foregroundColor(.secondary)
                     }
                     Spacer()
+                    // Save button
+                    Button(action: {
+                        HapticManager.shared.light()
+                        cardManager.toggleSaved(card)
+                    }) {
+                        Image(systemName: cardManager.isSaved(card) ? "heart.fill" : "heart")
+                            .font(.system(size: 14))
+                            .foregroundColor(cardManager.isSaved(card) ? .red : .secondary)
+                            .padding(10).background(Color.gray.opacity(0.1)).clipShape(Circle())
+                    }
                     // Flag button
                     Button(action: { cardManager.toggleFlagged(card) }) {
                         Image(systemName: cardManager.isFlagged(card) ? "flag.fill" : "flag")
@@ -12115,12 +12250,6 @@ struct StatsView: View {
                 HStack(spacing: 12) {
                     StatBox(title: "Cards Studied", value: "\(statsManager.stats.totalCardsStudied)", icon: "square.stack.fill", color: .softLavender)
                     StatBox(title: "Accuracy", value: String(format: "%.0f%%", statsManager.stats.overallAccuracy), icon: "target", color: .mintGreen)
-                }
-                .padding(.horizontal)
-
-                HStack(spacing: 12) {
-                    StatBox(title: "Current Streak", value: "\(statsManager.stats.currentStreak) days", icon: "flame.fill", color: .orange)
-                    StatBox(title: "Cards Mastered", value: "\(cardManager.validMasteredCount)", icon: "checkmark.seal.fill", color: .pastelPink)
                 }
                 .padding(.horizontal)
 
@@ -12958,188 +13087,450 @@ struct BackButton: View {
     }
 }
 
-// MARK: - Swipe Game View
+// MARK: - Study Flashcards View (Quizlet-Style)
 
-struct SwipeGameView: View {
+struct StudyFlashcardsView: View {
     @EnvironmentObject var appManager: AppManager
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
     @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
+
+    // Card data
+    @State private var allCards: [Flashcard] = []
+    @State private var currentRoundCards: [Flashcard] = []
     @State private var currentIndex = 0
-    @State private var offset: CGSize = .zero
+    @State private var knowCards: [Flashcard] = []
+    @State private var stillLearningCards: [Flashcard] = []
+
+    // UI state
     @State private var isFlipped = false
-    @State private var showStamp: String? = nil
-    @State private var showCelebration = false
-    @State private var correctCount = 0
-    @State private var startTime = Date()
-    @State private var swipeCards: [Flashcard] = []
+    @State private var dragOffset: CGSize = .zero
     @State private var isDragging = false
+    @State private var showStamp: String? = nil
+    @State private var showRoundSummary = false
+    @State private var roundNumber = 1
+    @State private var showCelebration = false
+    @State private var showConfetti = false
+    @State private var startTime = Date()
 
     var body: some View {
         ZStack {
             Color.creamyBackground.ignoresSafeArea()
-            VStack(spacing: 16) {
-                HStack {
-                    BackButton {
-                        HapticManager.shared.buttonTap()
-                        saveSession()
-                        appManager.currentScreen = .menu
-                    }
-                    Spacer()
-                    Text("Cozy Swipe").font(.system(size: 18, weight: .bold, design: .rounded))
-                    Spacer()
-                    Text("\(currentIndex + 1)/\(swipeCards.count)")
-                        .font(.system(size: 14, weight: .medium, design: .rounded)).foregroundColor(.secondary)
+
+            if showCelebration {
+                allKnownCelebrationView
+            } else if showRoundSummary {
+                roundSummaryView
+            } else if currentRoundCards.isEmpty {
+                AllMasteredView {
+                    HapticManager.shared.buttonTap()
+                    appManager.currentScreen = .cardBrowser
+                    cardManager.currentFilter = .mastered
                 }
-                .padding(.horizontal)
+            } else {
+                studyContentView
+            }
 
-                ProgressBar(current: currentIndex + 1, total: swipeCards.count)
-                    .padding(.horizontal)
-
-                Spacer()
-
-                if showCelebration {
-                    CelebrationView(score: correctCount, total: swipeCards.count) {
-                        HapticManager.shared.buttonTap()
-                        saveSession()
-                        setupSwipeCards()
-                    }
-                } else if swipeCards.isEmpty {
-                    AllMasteredView {
-                        HapticManager.shared.buttonTap()
-                        appManager.currentScreen = .cardBrowser
-                        cardManager.currentFilter = .mastered
-                    }
-                } else if currentIndex < swipeCards.count {
-                    ZStack {
-                        FlashcardView(card: swipeCards[currentIndex], isFlipped: $isFlipped,
-                                     isSaved: cardManager.isSaved(swipeCards[currentIndex])) {
-                            HapticManager.shared.light()
-                            cardManager.toggleSaved(swipeCards[currentIndex])
-                        }
-                        .offset(offset)
-                        .rotationEffect(.degrees(Double(offset.width / 20)))
-                        .gesture(
-                            DragGesture(minimumDistance: 10)
-                                .onChanged { g in
-                                    isDragging = true
-                                    offset = g.translation
-                                    let newStamp = g.translation.width > 50 ? "GOT IT!" : (g.translation.width < -50 ? "STUDY MORE" : nil)
-                                    if newStamp != showStamp && newStamp != nil {
-                                        HapticManager.shared.selection()
-                                    }
-                                    showStamp = newStamp
-                                }
-                                .onEnded { g in
-                                    isDragging = false
-                                    if g.translation.width > 100 { swipeRight() }
-                                    else if g.translation.width < -100 { swipeLeft() }
-                                    else { withAnimation(.spring()) { offset = .zero; showStamp = nil } }
-                                }
-                        )
-                        .onTapGesture {
-                            guard !isDragging else { return }
-                            HapticManager.shared.cardFlip()
-                            SoundManager.shared.cardFlip()
-                            withAnimation(.spring(response: 0.5)) { isFlipped.toggle() }
-                        }
-
-                        if let stamp = showStamp {
-                            StampOverlay(text: stamp, isPositive: stamp == "GOT IT!")
-                        }
-                    }
-                }
-                Spacer()
-
-                if !showCelebration && !swipeCards.isEmpty && currentIndex < swipeCards.count {
-                    SwipeInstructions()
-                }
+            if showConfetti {
+                QuizConfettiOverlay()
+                    .allowsHitTesting(false)
             }
         }
-        .onAppear { setupSwipeCards() }
+        .onAppear { setupSession() }
     }
 
-    func setupSwipeCards() {
-        // Check if resuming from saved progress
-        if let progress = cardManager.resumeProgress, progress.gameMode == GameMode.swipe.rawValue {
-            // Use session cards (already restored by resumeGameMode)
-            swipeCards = cardManager.sessionCards
+    // MARK: - Study Content
+
+    private var studyContentView: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                BackButton {
+                    HapticManager.shared.buttonTap()
+                    saveSession()
+                    appManager.currentScreen = .menu
+                }
+                Spacer()
+                VStack(spacing: 2) {
+                    Text("Study Flashcards")
+                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                    if roundNumber > 1 {
+                        Text("Round \(roundNumber)")
+                            .font(.system(size: 12, design: .rounded))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                Spacer()
+                // Invisible spacer to balance back button
+                Color.clear.frame(width: 44, height: 44)
+            }
+            .padding(.horizontal)
+            .padding(.top, 4)
+
+            // Progress bar
+            ProgressBar(current: currentIndex, total: currentRoundCards.count)
+                .padding(.horizontal)
+                .padding(.top, 8)
+
+            // Counters row
+            HStack {
+                // Still Learning counter
+                HStack(spacing: 6) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.orange)
+                        .font(.system(size: 16))
+                    Text("\(stillLearningCards.count)")
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundColor(.orange)
+                    Text("Still Learning")
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundColor(.orange.opacity(0.8))
+                }
+
+                Spacer()
+
+                // Know counter
+                HStack(spacing: 6) {
+                    Text("Know")
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundColor(.green.opacity(0.8))
+                    Text("\(knowCards.count)")
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundColor(.green)
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                        .font(.system(size: 16))
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+
+            Spacer()
+
+            // Card area
+            if currentIndex < currentRoundCards.count {
+                ZStack {
+                    FlashcardView(
+                        card: currentRoundCards[currentIndex],
+                        isFlipped: $isFlipped,
+                        isSaved: cardManager.isSaved(currentRoundCards[currentIndex])
+                    ) {
+                        HapticManager.shared.light()
+                        cardManager.toggleSaved(currentRoundCards[currentIndex])
+                    }
+                    .offset(dragOffset)
+                    .rotationEffect(.degrees(Double(dragOffset.width / 20)))
+                    .gesture(
+                        DragGesture(minimumDistance: 10)
+                            .onChanged { g in
+                                isDragging = true
+                                dragOffset = g.translation
+                                let newStamp = g.translation.width > 50 ? "KNOW" : (g.translation.width < -50 ? "STILL LEARNING" : nil)
+                                if newStamp != showStamp && newStamp != nil {
+                                    HapticManager.shared.selection()
+                                }
+                                showStamp = newStamp
+                            }
+                            .onEnded { g in
+                                isDragging = false
+                                if g.translation.width > 100 { markKnow() }
+                                else if g.translation.width < -100 { markStillLearning() }
+                                else { withAnimation(.spring()) { dragOffset = .zero; showStamp = nil } }
+                            }
+                    )
+                    .onTapGesture {
+                        guard !isDragging else { return }
+                        HapticManager.shared.cardFlip()
+                        SoundManager.shared.cardFlip()
+                        withAnimation(.spring(response: 0.5)) { isFlipped.toggle() }
+                    }
+
+                    if let stamp = showStamp {
+                        StampOverlay(text: stamp, isPositive: stamp == "KNOW")
+                    }
+                }
+            }
+
+            Spacer()
+
+            // Bottom buttons
+            if currentIndex < currentRoundCards.count {
+                HStack(spacing: 16) {
+                    Button(action: { markStillLearning() }) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 16, weight: .bold))
+                            Text("Still Learning")
+                                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        }
+                        .foregroundColor(.orange)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(Color.orange.opacity(0.12))
+                        .cornerRadius(16)
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.orange.opacity(0.3), lineWidth: 1.5))
+                    }
+
+                    Button(action: { markKnow() }) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 16, weight: .bold))
+                            Text("Know")
+                                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        }
+                        .foregroundColor(.green)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(Color.green.opacity(0.12))
+                        .cornerRadius(16)
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.green.opacity(0.3), lineWidth: 1.5))
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
+            }
+        }
+    }
+
+    // MARK: - Round Summary
+
+    private var roundSummaryView: some View {
+        VStack(spacing: 24) {
+            Spacer()
+
+            Text("🐻").font(.system(size: 60))
+
+            Text("Round \(roundNumber) Complete!")
+                .font(.system(size: 26, weight: .bold, design: .rounded))
+
+            // Score display
+            VStack(spacing: 8) {
+                Text("You know \(knowCards.count) of \(allCards.count) cards")
+                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    .foregroundColor(.primary)
+
+                // Visual split bar
+                GeometryReader { geo in
+                    HStack(spacing: 0) {
+                        let knowFraction = allCards.isEmpty ? 0 : CGFloat(knowCards.count) / CGFloat(allCards.count)
+                        Rectangle()
+                            .fill(Color.green)
+                            .frame(width: geo.size.width * knowFraction)
+                        Rectangle()
+                            .fill(Color.orange)
+                            .frame(width: geo.size.width * (1 - knowFraction))
+                    }
+                    .cornerRadius(6)
+                }
+                .frame(height: 12)
+                .padding(.horizontal, 40)
+            }
+
+            // Legend
+            HStack(spacing: 24) {
+                HStack(spacing: 6) {
+                    Circle().fill(Color.green).frame(width: 10, height: 10)
+                    Text("Know: \(knowCards.count)")
+                        .font(.system(size: 14, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+                HStack(spacing: 6) {
+                    Circle().fill(Color.orange).frame(width: 10, height: 10)
+                    Text("Still Learning: \(stillLearningCards.count)")
+                        .font(.system(size: 14, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Spacer()
+
+            // Action buttons
+            VStack(spacing: 12) {
+                if !stillLearningCards.isEmpty {
+                    Button(action: { startNextRound() }) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.counterclockwise")
+                            Text("Keep Studying (\(stillLearningCards.count) cards)")
+                                .font(.system(size: 17, weight: .bold, design: .rounded))
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(
+                            LinearGradient(colors: [.orange, .orange.opacity(0.8)], startPoint: .leading, endPoint: .trailing)
+                        )
+                        .cornerRadius(16)
+                    }
+                }
+
+                Button(action: { finishSession() }) {
+                    Text("Done")
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .foregroundColor(.primary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(Color.adaptiveWhite)
+                        .cornerRadius(16)
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.gray.opacity(0.2), lineWidth: 1))
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 30)
+        }
+        .background(Color.creamyBackground)
+    }
+
+    // MARK: - All Known Celebration
+
+    private var allKnownCelebrationView: some View {
+        VStack(spacing: 24) {
+            Spacer()
+            Text("🎉").font(.system(size: 70))
+            Text("Amazing!").font(.system(size: 30, weight: .bold, design: .rounded))
+            Text("You know all \(allCards.count) cards!")
+                .font(.system(size: 18, weight: .semibold, design: .rounded))
+                .foregroundColor(.secondary)
+
+            Button(action: { finishSession() }) {
+                Text("Done")
+                    .font(.system(size: 17, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(
+                        LinearGradient(colors: [.mintGreen, .green], startPoint: .leading, endPoint: .trailing)
+                    )
+                    .cornerRadius(16)
+            }
+            .padding(.horizontal, 40)
+
+            Spacer()
+        }
+        .background(Color.creamyBackground)
+    }
+
+    // MARK: - Actions
+
+    private func markKnow() {
+        guard currentIndex < currentRoundCards.count else { return }
+        let card = currentRoundCards[currentIndex]
+        HapticManager.shared.correctAnswer()
+        SoundManager.shared.correctAnswer()
+        cardManager.recordCorrectAnswer(card)
+        knowCards.append(card)
+        advanceCard(positive: true)
+    }
+
+    private func markStillLearning() {
+        guard currentIndex < currentRoundCards.count else { return }
+        let card = currentRoundCards[currentIndex]
+        HapticManager.shared.wrongAnswer()
+        SoundManager.shared.wrongAnswer()
+        cardManager.recordWrongAnswer(card)
+        stillLearningCards.append(card)
+        advanceCard(positive: false)
+    }
+
+    private func advanceCard(positive: Bool) {
+        HapticManager.shared.swipe()
+        SoundManager.shared.swipe()
+        withAnimation(.easeOut(duration: 0.3)) {
+            dragOffset = CGSize(width: positive ? 500 : -500, height: 0)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            dragOffset = .zero
+            showStamp = nil
+            isFlipped = false
+            if currentIndex + 1 >= currentRoundCards.count {
+                // Round complete
+                if stillLearningCards.isEmpty {
+                    // All cards known — celebration
+                    showCelebration = true
+                    showConfetti = true
+                    HapticManager.shared.achievement()
+                    SoundManager.shared.celebration()
+                } else {
+                    showRoundSummary = true
+                }
+            } else {
+                currentIndex += 1
+            }
+        }
+    }
+
+    private func startNextRound() {
+        HapticManager.shared.buttonTap()
+        roundNumber += 1
+        currentRoundCards = stillLearningCards.shuffled()
+        stillLearningCards = []
+        currentIndex = 0
+        isFlipped = false
+        showRoundSummary = false
+    }
+
+    private func finishSession() {
+        HapticManager.shared.buttonTap()
+        saveSession()
+        SessionProgressManager.shared.clearProgress(for: .flashcards)
+        appManager.currentScreen = .menu
+    }
+
+    // MARK: - Setup
+
+    private func setupSession() {
+        if let progress = cardManager.resumeProgress, progress.gameMode == GameMode.flashcards.rawValue {
+            allCards = cardManager.sessionCards
+            currentRoundCards = allCards
             cardManager.sessionCards = []
             currentIndex = progress.currentIndex
-            correctCount = progress.score
-            cardManager.resumeProgress = nil // Clear after use
+            // Restore know count from score
+            knowCards = Array(allCards.prefix(progress.score))
+            cardManager.resumeProgress = nil
         } else if !cardManager.sessionCards.isEmpty {
-            // Use session cards if available (from setup screen)
-            swipeCards = cardManager.sessionCards
-            cardManager.sessionCards = [] // Clear after use
+            allCards = cardManager.sessionCards
+            currentRoundCards = allCards
+            cardManager.sessionCards = []
             currentIndex = 0
-            correctCount = 0
         } else {
-            swipeCards = cardManager.getGameCards(isSubscribed: subscriptionManager.hasPremiumAccess)
+            allCards = cardManager.getGameCards(isSubscribed: subscriptionManager.hasPremiumAccess)
+            currentRoundCards = allCards
             currentIndex = 0
-            correctCount = 0
         }
+        knowCards = []
+        stillLearningCards = []
         showCelebration = false
+        showConfetti = false
+        showRoundSummary = false
+        roundNumber = 1
         startTime = Date()
     }
 
-    func swipeRight() {
-        guard currentIndex < swipeCards.count else { return }
-        HapticManager.shared.correctAnswer()
-        SoundManager.shared.correctAnswer()
-        cardManager.recordCorrectAnswer(swipeCards[currentIndex])
-        correctCount += 1
-        nextCard(positive: true)
-    }
+    // MARK: - Save
 
-    func swipeLeft() {
-        guard currentIndex < swipeCards.count else { return }
-        HapticManager.shared.wrongAnswer()
-        SoundManager.shared.wrongAnswer()
-        cardManager.recordWrongAnswer(swipeCards[currentIndex])
-        nextCard(positive: false)
-    }
-
-    func nextCard(positive: Bool) {
-        HapticManager.shared.swipe()
-        SoundManager.shared.swipe()
-        withAnimation(.easeOut(duration: 0.3)) { offset = CGSize(width: positive ? 500 : -500, height: 0) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            offset = .zero; showStamp = nil; isFlipped = false
-            if currentIndex + 1 >= swipeCards.count {
-                showCelebration = true
-                HapticManager.shared.achievement()
-                SoundManager.shared.celebration()
-            }
-            else { currentIndex += 1 }
-        }
-    }
-
-    func saveSession() {
+    private func saveSession() {
+        let cardsStudied = knowCards.count + stillLearningCards.count
         let timeSpent = Int(Date().timeIntervalSince(startTime))
-        if currentIndex > 0 {
-            statsManager.recordSession(cardsStudied: currentIndex, correct: correctCount, timeSeconds: timeSpent, mode: "Swipe")
-            dailyGoalsManager.recordStudySession(cardsStudied: currentIndex, correct: correctCount, timeSeconds: timeSpent)
+        if cardsStudied > 0 {
+            statsManager.recordSession(cardsStudied: cardsStudied, correct: knowCards.count, timeSeconds: timeSpent, mode: "Flashcards")
+            dailyGoalsManager.recordStudySession(cardsStudied: cardsStudied, correct: knowCards.count, timeSeconds: timeSpent)
 
-            // Track categories studied
-            let categoriesStudied = Set(swipeCards.prefix(currentIndex).map { $0.contentCategory })
+            let categoriesStudied = Set((knowCards + stillLearningCards).map { $0.contentCategory })
             for category in categoriesStudied {
                 dailyGoalsManager.recordCategoryStudied(category)
             }
         }
 
-        // Save progress for resume (only if not completed)
-        if !showCelebration && currentIndex > 0 && currentIndex < swipeCards.count {
+        // Save progress for resume if mid-session
+        if !showCelebration && !showRoundSummary && currentIndex > 0 && currentIndex < currentRoundCards.count {
             SessionProgressManager.shared.saveProgress(
-                gameMode: .swipe,
-                cardIDs: swipeCards.map { $0.id },
+                gameMode: .flashcards,
+                cardIDs: currentRoundCards.map { $0.id },
                 currentIndex: currentIndex,
-                score: correctCount
+                score: knowCards.count
             )
         } else {
-            // Clear progress if completed
-            SessionProgressManager.shared.clearProgress(for: .swipe)
+            SessionProgressManager.shared.clearProgress(for: .flashcards)
         }
     }
 }
@@ -13165,20 +13556,41 @@ struct FlashcardView: View {
     @Binding var isFlipped: Bool
     let isSaved: Bool
     let onSaveTap: () -> Void
+    @StateObject private var speechManager = SpeechManager()
+
+    private var spokenText: String {
+        isFlipped ? card.answer : card.question
+    }
 
     var body: some View {
-        ZStack {
-            CardFace(content: card.answer, category: card.contentCategory, isQuestion: false, rationale: card.rationale)
-                .rotation3DEffect(.degrees(isFlipped ? 0 : 180), axis: (x: 0, y: 1, z: 0)).opacity(isFlipped ? 1 : 0)
-            CardFace(content: card.question, category: card.contentCategory, isQuestion: true, rationale: "")
-                .rotation3DEffect(.degrees(isFlipped ? -180 : 0), axis: (x: 0, y: 1, z: 0)).opacity(isFlipped ? 0 : 1)
-        }
-        .frame(width: 300, height: 400)
-        .overlay(alignment: .topTrailing) {
-            Button(action: onSaveTap) {
-                Image(systemName: isSaved ? "heart.fill" : "heart").font(.system(size: 22))
-                    .foregroundColor(isSaved ? .red : .gray).padding(14)
+        GeometryReader { geo in
+            let cardWidth = min(geo.size.width - 32, 500)
+            let cardHeight = min(geo.size.height * 0.85, 520)
+            ZStack {
+                CardFace(content: card.answer, category: card.contentCategory, isQuestion: false, rationale: card.rationale)
+                    .rotation3DEffect(.degrees(isFlipped ? 0 : 180), axis: (x: 0, y: 1, z: 0)).opacity(isFlipped ? 1 : 0)
+                CardFace(content: card.question, category: card.contentCategory, isQuestion: true, rationale: "")
+                    .rotation3DEffect(.degrees(isFlipped ? -180 : 0), axis: (x: 0, y: 1, z: 0)).opacity(isFlipped ? 0 : 1)
             }
+            .frame(width: cardWidth, height: cardHeight)
+            .overlay(alignment: .topTrailing) {
+                Button(action: onSaveTap) {
+                    Image(systemName: isSaved ? "heart.fill" : "heart").font(.system(size: 22))
+                        .foregroundColor(isSaved ? .red : .gray).padding(14)
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                Button(action: {
+                    HapticManager.shared.light()
+                    speechManager.speak(spokenText)
+                }) {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.system(size: 18))
+                        .foregroundColor(.secondary)
+                        .padding(14)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }
@@ -13191,18 +13603,57 @@ struct CardFace: View {
 
     var body: some View {
         VStack(spacing: 14) {
+            // Category header (fixed)
             HStack {
                 Image(systemName: category.icon).foregroundColor(category.color)
                 Text(category.rawValue).font(.system(size: 13, weight: .semibold, design: .rounded)).foregroundColor(.secondary)
             }
-            Spacer()
-            Text(content).font(.system(size: 20, weight: .medium, design: .rounded)).multilineTextAlignment(.center).padding(.horizontal)
-            Spacer()
-            if !isQuestion && !rationale.isEmpty {
-                Text(rationale).font(.system(size: 12, design: .rounded)).foregroundColor(.secondary)
-                    .multilineTextAlignment(.center).padding(.horizontal).lineLimit(4)
+
+            if isQuestion {
+                // Question side - simple layout
+                Spacer()
+                Text(content).font(.system(size: 20, weight: .medium, design: .rounded)).multilineTextAlignment(.center).padding(.horizontal)
+                Spacer()
+                Text("Tap to reveal").font(.system(size: 13, design: .rounded)).foregroundColor(.secondary)
+            } else {
+                // Answer side - scrollable to fit long rationales
+                ScrollView(showsIndicators: true) {
+                    VStack(spacing: 16) {
+                        Text(content)
+                            .font(.system(size: 20, weight: .medium, design: .rounded))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                            .padding(.top, 10)
+
+                        if !rationale.isEmpty {
+                            VStack(spacing: 8) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "lightbulb.fill")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.yellow)
+                                    Text("Rationale")
+                                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                        .foregroundColor(.secondary)
+                                }
+
+                                Text(rationale)
+                                    .font(.system(size: 13, design: .rounded))
+                                    .foregroundColor(.secondary)
+                                    .multilineTextAlignment(.center)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(Color.yellow.opacity(0.1))
+                            .cornerRadius(10)
+                            .padding(.horizontal, 4)
+                        }
+                    }
+                    .padding(.bottom, 10)
+                }
+
+                Text("Answer").font(.system(size: 13, design: .rounded)).foregroundColor(.secondary)
             }
-            Text(isQuestion ? "Tap to reveal" : "Answer").font(.system(size: 13, design: .rounded)).foregroundColor(.secondary)
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -13265,6 +13716,7 @@ struct CelebrationView: View {
     let score: Int
     let total: Int
     let onRestart: () -> Void
+    var onHome: (() -> Void)? = nil
 
     var percentage: Int { total > 0 ? Int(Double(score) / Double(total) * 100) : 0 }
 
@@ -13281,42 +13733,66 @@ struct CelebrationView: View {
                     .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
                     .cornerRadius(22)
             }
+            if let onHome {
+                Button(action: onHome) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "house.fill").font(.system(size: 14))
+                        Text("Home").font(.system(size: 16, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 30).padding(.vertical, 12)
+                }
+            }
         }
     }
 }
 
-// MARK: - Bear Quiz View
+// MARK: - Bear Learn View (Adaptive Learning)
 
-struct BearQuizView: View {
+struct BearLearnView: View {
     @EnvironmentObject var appManager: AppManager
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
     @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
-    @State private var currentIndex = 0
+
+    // Session card tracking
+    @State private var sessionCards: [LearnSessionCard] = []
+    @State private var cardQueue: [UUID] = []           // Order to show cards
+    @State private var currentCardId: UUID? = nil
+    @State private var learnedCount: Int = 0
+    @State private var totalCards: Int = 0
+
+    // UI state
     @State private var shuffledAnswers: [String] = []
     @State private var selectedAnswer: String? = nil
     @State private var showResult = false
     @State private var isCorrect = false
-    @State private var score = 0
-    @State private var showCelebration = false
-    @State private var startTime = Date()
     @State private var showRationale = false
-    @State private var cardScale: CGFloat = 1.0
-    @State private var cardOpacity: Double = 1.0
+    @State private var showCelebration = false
     @State private var showConfetti = false
     @State private var streakCount = 0
-    @State private var quizCards: [Flashcard] = []
+    @State private var startTime = Date()
+    @State private var cardScale: CGFloat = 1.0
+    @State private var cardOpacity: Double = 1.0
+    @State private var aboutToLearn = false  // Card is level 1, about to become learned
 
-    private let maxQuestions = 10
+    var currentSessionCard: LearnSessionCard? {
+        guard let id = currentCardId else { return nil }
+        return sessionCards.first { $0.id == id }
+    }
 
-    var currentCard: Flashcard? { currentIndex < quizCards.count ? quizCards[currentIndex] : nil }
+    var currentCard: Flashcard? { currentSessionCard?.card }
+
+    var totalAttempts: Int {
+        sessionCards.reduce(0) { $0 + $1.attempts }
+    }
 
     var body: some View {
         ZStack {
             // Background gradient
             LinearGradient(
-                colors: [Color.creamyBackground, Color.pastelPink.opacity(0.1)],
+                colors: [Color.creamyBackground, Color.softLavender.opacity(0.1)],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -13324,10 +13800,9 @@ struct BearQuizView: View {
 
             VStack(spacing: 0) {
                 // Header
-                QuizHeader(
-                    score: score,
-                    currentIndex: currentIndex,
-                    total: quizCards.count,
+                LearnHeader(
+                    learnedCount: learnedCount,
+                    totalCards: totalCards,
                     streakCount: streakCount,
                     onBack: {
                         HapticManager.shared.buttonTap()
@@ -13337,11 +13812,20 @@ struct BearQuizView: View {
                 )
 
                 if showCelebration {
-                    QuizCelebrationView(score: score, total: quizCards.count, onPlayAgain: {
-                        HapticManager.shared.buttonTap()
-                        resetQuiz()
-                    })
-                } else if quizCards.isEmpty {
+                    LearnCelebrationView(
+                        totalCards: totalCards,
+                        totalAttempts: totalAttempts,
+                        onPlayAgain: {
+                            HapticManager.shared.buttonTap()
+                            resetLearn()
+                        },
+                        onHome: {
+                            HapticManager.shared.buttonTap()
+                            saveSession()
+                            appManager.currentScreen = .menu
+                        }
+                    )
+                } else if sessionCards.isEmpty {
                     Spacer()
                     AllMasteredView {
                         HapticManager.shared.buttonTap()
@@ -13351,45 +13835,69 @@ struct BearQuizView: View {
                     Spacer()
                 } else if let card = currentCard {
                     Spacer()
+                        .frame(maxHeight: 20)
+
+                    // About to learn indicator
+                    if aboutToLearn {
+                        HStack(spacing: 6) {
+                            Image(systemName: "star.fill")
+                                .foregroundColor(.yellow)
+                            Text("Get this right to learn it!")
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .foregroundColor(.yellow)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.yellow.opacity(0.15))
+                        .cornerRadius(20)
+                        .transition(.scale.combined(with: .opacity))
+                    }
 
                     // Main Question Modal Card
-                    QuizModalCard(
+                    LearnModalCard(
                         card: card,
                         shuffledAnswers: shuffledAnswers,
                         selectedAnswer: selectedAnswer,
                         showResult: showResult,
                         isCorrect: isCorrect,
                         showRationale: showRationale,
+                        aboutToLearn: aboutToLearn,
                         onSelectAnswer: { answer in
                             selectAnswer(answer, correctAnswer: card.answer)
                         },
                         onNext: {
                             HapticManager.shared.buttonTap()
-                            nextQuestion()
+                            nextCard()
                         }
                     )
                     .scaleEffect(cardScale)
                     .opacity(cardOpacity)
 
                     Spacer()
+                        .frame(maxHeight: 16)
 
-                    // Progress dots
-                    QuizProgressDots(current: currentIndex, total: quizCards.count)
-                        .padding(.bottom, 20)
+                    // Remaining cards indicator
+                    HStack(spacing: 4) {
+                        Image(systemName: "rectangle.stack")
+                            .font(.system(size: 12))
+                        Text("\(cardQueue.count) cards remaining")
+                            .font(.system(size: 13, design: .rounded))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.bottom, 20)
                 } else {
-                    // Fallback: cards exist but currentCard is nil (shouldn't happen)
+                    // Fallback
                     Spacer()
                     VStack(spacing: 16) {
                         ProgressView()
                             .scaleEffect(1.5)
-                        Text("Loading quiz...")
+                        Text("Loading...")
                             .font(.system(size: 16, design: .rounded))
                             .foregroundColor(.secondary)
                     }
                     .onAppear {
-                        // Try to reload if needed
-                        if !quizCards.isEmpty && currentIndex < quizCards.count {
-                            loadQuestion()
+                        if !sessionCards.isEmpty {
+                            loadNextCard()
                         }
                     }
                     Spacer()
@@ -13402,46 +13910,86 @@ struct BearQuizView: View {
                     .allowsHitTesting(false)
             }
         }
-        .onAppear { setupQuiz() }
+        .onAppear { setupLearnSession() }
     }
 
-    func setupQuiz() {
+    func setupLearnSession() {
         // Check if resuming from saved progress
-        if let progress = cardManager.resumeProgress, progress.gameMode == GameMode.quiz.rawValue {
-            // Use session cards (already restored by resumeGameMode)
-            quizCards = cardManager.sessionCards
-            cardManager.sessionCards = []
-            currentIndex = progress.currentIndex
-            score = progress.score
+        if let progress = cardManager.resumeProgress, progress.gameMode == GameMode.learn.rawValue {
+            // Resuming a previous session
+            // progress.cardIDs contains the unlearned cards (remaining to study)
+            // progress.currentIndex stores the learnedCount
+            // progress.cardsReviewed stores the original totalCards
+            // progress.streakCount stores the streak
+
+            let allCards = cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess)
+            let remainingCardIDs = Set(progress.cardIDs.compactMap { UUID(uuidString: $0) })
+            let remainingCards = allCards.filter { remainingCardIDs.contains($0.id) }
+
+            // Restore order from saved progress
+            var orderedCards: [Flashcard] = []
+            for idString in progress.cardIDs {
+                if let uuid = UUID(uuidString: idString),
+                   let card = remainingCards.first(where: { $0.id == uuid }) {
+                    orderedCards.append(card)
+                }
+            }
+
+            // Convert to LearnSessionCards (starting at level 0 for remaining cards)
+            sessionCards = orderedCards.map { LearnSessionCard(id: $0.id, card: $0) }
+            cardQueue = sessionCards.map { $0.id }  // Keep the saved order
+
+            // Restore progress
+            learnedCount = progress.currentIndex  // We stored learnedCount here
+            totalCards = progress.cardsReviewed   // We stored totalCards here
             streakCount = progress.streakCount
+
             cardManager.resumeProgress = nil // Clear after use
+            cardManager.sessionCards = []
         } else if !cardManager.sessionCards.isEmpty {
-            // Use session cards if available (from setup screen)
-            quizCards = cardManager.sessionCards
-            cardManager.sessionCards = [] // Clear after use
-            currentIndex = 0
-            score = 0
+            // New session with selected cards (from setup screen)
+            let cards = cardManager.sessionCards
+            cardManager.sessionCards = []
+
+            sessionCards = cards.map { LearnSessionCard(id: $0.id, card: $0) }
+            totalCards = sessionCards.count
+            cardQueue = sessionCards.map { $0.id }.shuffled()
+            learnedCount = 0
             streakCount = 0
         } else {
-            let allCards = cardManager.getGameCards(isSubscribed: subscriptionManager.hasPremiumAccess)
-            quizCards = Array(allCards.prefix(maxQuestions))
-            currentIndex = 0
-            score = 0
+            // New session with default cards
+            let cards = cardManager.getGameCards(isSubscribed: subscriptionManager.hasPremiumAccess)
+
+            sessionCards = cards.map { LearnSessionCard(id: $0.id, card: $0) }
+            totalCards = sessionCards.count
+            cardQueue = sessionCards.map { $0.id }.shuffled()
+            learnedCount = 0
             streakCount = 0
         }
 
         startTime = Date()
-        loadQuestion()
+        loadNextCard()
     }
 
-    func loadQuestion() {
-        guard let card = currentCard else { return }
+    func loadNextCard() {
+        guard !cardQueue.isEmpty else {
+            showCelebration = true
+            HapticManager.shared.achievement()
+            SoundManager.shared.celebration()
+            return
+        }
+
+        currentCardId = cardQueue.removeFirst()
+        guard let sessionCard = currentSessionCard else { return }
+
+        // Check if card is about to be learned
+        aboutToLearn = sessionCard.sessionLevel == 1
 
         // Animate card in
         cardScale = 0.8
         cardOpacity = 0
 
-        shuffledAnswers = card.shuffledAnswers()
+        shuffledAnswers = sessionCard.card.shuffledAnswers()
         selectedAnswer = nil
         showResult = false
         isCorrect = false
@@ -13455,7 +14003,8 @@ struct BearQuizView: View {
     }
 
     func selectAnswer(_ answer: String, correctAnswer: String) {
-        guard !showResult, let card = currentCard else { return }
+        guard !showResult, let cardId = currentCardId,
+              let index = sessionCards.firstIndex(where: { $0.id == cardId }) else { return }
 
         // Haptic feedback
         HapticManager.shared.medium()
@@ -13467,22 +14016,48 @@ struct BearQuizView: View {
             showResult = true
         }
 
-        if isCorrect {
-            score += 1
-            streakCount += 1
-            cardManager.recordCorrectAnswer(card)
+        // Update session card
+        sessionCards[index].attempts += 1
 
-            // Show confetti for correct answer
-            withAnimation(.easeOut(duration: 0.2)) {
-                showConfetti = true
+        if isCorrect {
+            sessionCards[index].correctStreak += 1
+            sessionCards[index].sessionLevel += 1
+            streakCount += 1
+
+            if sessionCards[index].isLearned {
+                learnedCount += 1
+                // Card is learned - don't add back to queue
+                // Show extra celebration for learning
+                withAnimation(.easeOut(duration: 0.2)) {
+                    showConfetti = true
+                }
+            } else {
+                // Move card further back (5-8 positions)
+                reinsertCard(cardId, positions: Int.random(in: 5...8))
+                // Still show confetti for correct
+                withAnimation(.easeOut(duration: 0.2)) {
+                    showConfetti = true
+                }
             }
+
+            // Update spaced rep (quality 4 for correct)
+            cardManager.recordSpacedRepResponse(card: sessionCards[index].card, quality: 4)
+            cardManager.recordCorrectAnswer(sessionCards[index].card)
 
             // Success feedback
             HapticManager.shared.correctAnswer()
             SoundManager.shared.correctAnswer()
         } else {
+            sessionCards[index].correctStreak = 0
+            sessionCards[index].sessionLevel = 0  // Reset to beginning
             streakCount = 0
-            cardManager.recordWrongAnswer(card)
+
+            // Card returns soon (3-5 positions)
+            reinsertCard(cardId, positions: Int.random(in: 3...5))
+
+            // Update spaced rep (quality 1 for wrong)
+            cardManager.recordSpacedRepResponse(card: sessionCards[index].card, quality: 1)
+            cardManager.recordWrongAnswer(sessionCards[index].card)
 
             // Error feedback
             HapticManager.shared.wrongAnswer()
@@ -13499,48 +14074,59 @@ struct BearQuizView: View {
             }
         }
 
-        statsManager.recordCategoryResult(category: card.contentCategory.rawValue, correct: isCorrect)
+        statsManager.recordCategoryResult(category: sessionCards[index].card.contentCategory.rawValue, correct: isCorrect)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            withAnimation(.easeInOut(duration: 0.3)) {
-                showRationale = true
+        // Check if session complete
+        if learnedCount >= totalCards {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                showCelebration = true
+                HapticManager.shared.achievement()
+                SoundManager.shared.celebration()
+            }
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    showRationale = true
+                }
             }
         }
     }
 
-    func nextQuestion() {
+    func reinsertCard(_ cardId: UUID, positions: Int) {
+        let insertIndex = min(positions, cardQueue.count)
+        cardQueue.insert(cardId, at: insertIndex)
+    }
+
+    func nextCard() {
         // Animate card out
         withAnimation(.easeInOut(duration: 0.2)) {
             cardScale = 0.9
             cardOpacity = 0
+            aboutToLearn = false
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            if currentIndex + 1 >= quizCards.count {
-                showCelebration = true
-                HapticManager.shared.achievement()
-                SoundManager.shared.celebration()
-            } else {
-                currentIndex += 1
-                loadQuestion()
-            }
+            loadNextCard()
         }
     }
 
-    func resetQuiz() {
+    func resetLearn() {
         saveSession()
-        showCelebration = false
-        setupQuiz()
+        // Navigate back to menu so user goes through setup flow again
+        appManager.currentScreen = .menu
     }
 
     func saveSession() {
         let timeSpent = Int(Date().timeIntervalSince(startTime))
-        if currentIndex > 0 {
-            statsManager.recordSession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent, mode: "Quiz")
-            dailyGoalsManager.recordStudySession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent)
+        let cardsStudied = sessionCards.filter { $0.attempts > 0 }.count
+
+        if cardsStudied > 0 {
+            let correctAnswers = sessionCards.filter { $0.isLearned }.count
+            statsManager.recordSession(cardsStudied: cardsStudied, correct: correctAnswers, timeSeconds: timeSpent, mode: "Learn")
+            dailyGoalsManager.recordStudySession(cardsStudied: cardsStudied, correct: correctAnswers, timeSeconds: timeSpent)
 
             // Track categories studied
-            let categoriesStudied = Set(quizCards.prefix(currentIndex).map { $0.contentCategory })
+            let categoriesStudied = Set(sessionCards.filter { $0.attempts > 0 }.map { $0.card.contentCategory })
             for category in categoriesStudied {
                 dailyGoalsManager.recordCategoryStudied(category)
             }
@@ -13548,39 +14134,71 @@ struct BearQuizView: View {
             // Track correct streak
             dailyGoalsManager.recordCorrectStreak(streakCount: streakCount)
 
-            // Check for perfect quiz (completed with 100%)
-            if showCelebration && score == quizCards.count && quizCards.count >= 5 {
+            // Check for perfect session (all learned with no mistakes)
+            if showCelebration && totalAttempts == totalCards && totalCards >= 5 {
                 dailyGoalsManager.recordPerfectQuiz()
             }
         }
 
-        // Save progress for resume (only if not completed)
-        if !showCelebration && currentIndex > 0 && currentIndex < quizCards.count {
-            SessionProgressManager.shared.saveProgress(
-                gameMode: .quiz,
-                cardIDs: quizCards.map { $0.id },
-                currentIndex: currentIndex,
-                score: score,
-                streakCount: streakCount
+        // Save progress for resume (only if not completed and user has made progress)
+        let unlearnedCards = sessionCards.filter { !$0.isLearned }
+        let hasStartedSession = cardsStudied > 0 || learnedCount > 0
+
+        if !showCelebration && !unlearnedCards.isEmpty && hasStartedSession {
+            // Build the remaining card queue: current card (if any) + queue + unlearned cards not in queue
+            var remainingCardIDs: [UUID] = []
+
+            // Add current card if exists
+            if let currentId = currentCardId {
+                remainingCardIDs.append(currentId)
+            }
+
+            // Add cards in queue
+            remainingCardIDs.append(contentsOf: cardQueue)
+
+            // Add any unlearned cards that might not be in queue yet
+            let inQueueOrCurrent = Set(remainingCardIDs)
+            for card in unlearnedCards {
+                if !inQueueOrCurrent.contains(card.id) {
+                    remainingCardIDs.append(card.id)
+                }
+            }
+
+            // Use max(1, learnedCount) to ensure the guard in saveProgress passes
+            // The actual learnedCount is stored in currentIndex, totalCards in cardsReviewed
+            let indexToSave = max(1, learnedCount)
+
+            // Save directly to UserDefaults to bypass the guard that requires currentIndex > 0
+            let progress = SessionProgress(
+                gameMode: GameMode.learn.rawValue,
+                cardIDs: remainingCardIDs.map { $0.uuidString },
+                currentIndex: learnedCount,
+                score: cardsStudied,  // Store cardsStudied for display
+                cardsReviewed: totalCards,
+                streakCount: streakCount,
+                savedAt: Date()
             )
+
+            if let encoded = try? JSONEncoder().encode(progress) {
+                UserDefaults.standard.set(encoded, forKey: "sessionProgress_\(GameMode.learn.rawValue)")
+            }
         } else {
-            // Clear progress if completed
-            SessionProgressManager.shared.clearProgress(for: .quiz)
+            // Clear progress if completed or no progress made
+            SessionProgressManager.shared.clearProgress(for: .learn)
         }
     }
 }
 
-// MARK: - Quiz Header
+// MARK: - Learn Header
 
-struct QuizHeader: View {
-    let score: Int
-    let currentIndex: Int
-    let total: Int
+struct LearnHeader: View {
+    let learnedCount: Int
+    let totalCards: Int
     let streakCount: Int
     let onBack: () -> Void
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 8) {
             HStack {
                 Button(action: onBack) {
                     HStack(spacing: 4) {
@@ -13589,7 +14207,7 @@ struct QuizHeader: View {
                         Text("Back")
                             .font(.system(size: 14, weight: .semibold, design: .rounded))
                     }
-                    .foregroundColor(.pastelPink)
+                    .foregroundColor(.softLavender)
                 }
 
                 Spacer()
@@ -13600,55 +14218,325 @@ struct QuizHeader: View {
                         .resizable()
                         .scaledToFit()
                         .frame(width: 32, height: 32)
-                    Text("Bear Quiz")
+                    Text("Bear Learn")
                         .font(.system(size: 18, weight: .bold, design: .rounded))
                 }
 
                 Spacer()
 
-                // Score badge
-                HStack(spacing: 4) {
-                    Image(systemName: "star.fill")
-                        .font(.system(size: 12))
-                        .foregroundColor(.yellow)
-                    Text("\(score)")
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color.cardBackground)
-                .cornerRadius(16)
-                .shadow(color: .black.opacity(0.05), radius: 4)
-            }
-            .padding(.horizontal)
-
-            // Progress and streak
-            HStack {
-                Text("Question \(currentIndex + 1) of \(total)")
-                    .font(.system(size: 13, design: .rounded))
-                    .foregroundColor(.secondary)
-
-                Spacer()
-
+                // Streak indicator
                 if streakCount > 1 {
                     HStack(spacing: 4) {
                         Image(systemName: "flame.fill")
                             .foregroundColor(.orange)
-                        Text("\(streakCount) streak!")
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
-                            .foregroundColor(.orange)
+                        Text("\(streakCount)")
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
                     }
-                    .transition(.scale.combined(with: .opacity))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.cardBackground)
+                    .cornerRadius(16)
+                    .shadow(color: .black.opacity(0.05), radius: 4)
+                } else {
+                    // Placeholder for alignment
+                    Color.clear.frame(width: 44, height: 1)
                 }
             }
             .padding(.horizontal)
+
+            // Progress section
+            VStack(spacing: 6) {
+                // Progress text
+                Text("\(learnedCount) of \(totalCards) terms learned")
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .foregroundColor(.secondary)
+
+                // Progress bar
+                GeometryReader { barGeo in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.gray.opacity(0.2))
+                            .frame(height: 8)
+
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(LinearGradient(colors: [.mintGreen, .softLavender], startPoint: .leading, endPoint: .trailing))
+                            .frame(width: max(0, CGFloat(learnedCount) / CGFloat(max(1, totalCards))) * barGeo.size.width, height: 8)
+                            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: learnedCount)
+                    }
+                }
+                .frame(height: 8)
+                .padding(.horizontal)
+            }
         }
         .padding(.top, 8)
-        .padding(.bottom, 16)
+        .padding(.bottom, 12)
     }
 }
 
-// MARK: - Quiz Modal Card
+// MARK: - Learn Modal Card
+
+struct LearnModalCard: View {
+    let card: Flashcard
+    let shuffledAnswers: [String]
+    let selectedAnswer: String?
+    let showResult: Bool
+    let isCorrect: Bool
+    let showRationale: Bool
+    let aboutToLearn: Bool
+    let onSelectAnswer: (String) -> Void
+    let onNext: () -> Void
+
+    // Filter answers when showing result: only show selected + correct answer
+    var visibleAnswers: [(index: Int, answer: String)] {
+        if showResult {
+            return shuffledAnswers.enumerated().filter { (_, answer) in
+                answer == selectedAnswer || answer == card.answer
+            }.map { (index: $0.offset, answer: $0.element) }
+        } else {
+            return shuffledAnswers.enumerated().map { (index: $0.offset, answer: $0.element) }
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Question Section
+            VStack(spacing: 16) {
+                // Category and difficulty badges
+                HStack {
+                    HStack(spacing: 6) {
+                        Image(systemName: card.contentCategory.icon)
+                            .font(.system(size: 12))
+                            .foregroundColor(card.contentCategory.color)
+                        Text(card.contentCategory.rawValue)
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundColor(card.contentCategory.color)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(card.contentCategory.color.opacity(0.15))
+                    .cornerRadius(12)
+
+                    Spacer()
+
+                    Text(card.difficulty.rawValue)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(card.difficulty.color)
+                        .cornerRadius(12)
+                }
+
+                // Question text
+                Text(card.question)
+                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(4)
+                    .padding(.vertical, 8)
+            }
+            .padding(20)
+            .background(Color.cardBackground)
+
+            Divider()
+
+            // Answers Section (scrollable with constrained height)
+            ScrollViewReader { scrollProxy in
+                ScrollView(showsIndicators: true) {
+                    VStack(spacing: 10) {
+                        ForEach(visibleAnswers, id: \.answer) { item in
+                            LearnAnswerOption(
+                                answer: item.answer,
+                                index: item.index,
+                                isSelected: selectedAnswer == item.answer,
+                                isCorrectAnswer: item.answer == card.answer,
+                                showResult: showResult,
+                                aboutToLearn: aboutToLearn && !showResult,
+                                action: { onSelectAnswer(item.answer) }
+                            )
+                        }
+                        .animation(.easeInOut(duration: 0.3), value: showResult)
+
+                        // Rationale (inside scroll so it's viewable)
+                        if showResult && showRationale && !card.rationale.isEmpty {
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "lightbulb.fill")
+                                        .foregroundColor(.yellow)
+                                    Text("Rationale")
+                                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                }
+                                Text(card.rationale)
+                                    .font(.system(size: 14, design: .rounded))
+                                    .foregroundColor(.secondary)
+                                    .lineSpacing(3)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.yellow.opacity(0.1))
+                            .cornerRadius(12)
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                            .id("rationale")
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 20)
+                    .padding(.bottom, 10)
+                }
+                .frame(maxHeight: UIScreen.main.bounds.height * 0.45)
+                .background(Color.cardBackground.opacity(0.5))
+                .onChange(of: showRationale) { newValue in
+                    if newValue {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            scrollProxy.scrollTo("rationale", anchor: .bottom)
+                        }
+                    }
+                }
+            }
+
+            // Continue button (fixed at bottom, outside scroll)
+            if showResult {
+                Button(action: onNext) {
+                    HStack {
+                        Text("Continue")
+                            .font(.system(size: 16, weight: .bold, design: .rounded))
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 14, weight: .bold))
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(
+                        LinearGradient(
+                            colors: isCorrect ? [.mintGreen, .green.opacity(0.8)] : [.softLavender, .pastelPink],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .cornerRadius(14)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(Color.cardBackground)
+                .transition(.scale.combined(with: .opacity))
+            }
+
+            // Result Banner
+            if showResult {
+                LearnResultBanner(isCorrect: isCorrect)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .background(Color.cardBackground)
+        .cornerRadius(24)
+        .shadow(color: .black.opacity(0.15), radius: 20, y: 10)
+        .padding(.horizontal, 16)
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: showResult)
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: showRationale)
+    }
+}
+
+// MARK: - Learn Answer Option
+
+struct LearnAnswerOption: View {
+    let answer: String
+    let index: Int
+    let isSelected: Bool
+    let isCorrectAnswer: Bool
+    let showResult: Bool
+    let aboutToLearn: Bool
+    let action: () -> Void
+
+    var backgroundColor: Color {
+        if showResult {
+            if isCorrectAnswer { return .mintGreen.opacity(0.2) }
+            if isSelected { return .coralPink.opacity(0.2) }
+        }
+        if isSelected { return .softLavender.opacity(0.3) }
+        return Color.cardBackground
+    }
+
+    var borderColor: Color {
+        if showResult {
+            if isCorrectAnswer { return .mintGreen }
+            if isSelected { return .coralPink }
+        }
+        if aboutToLearn { return .yellow.opacity(0.5) }
+        if isSelected { return .softLavender }
+        return Color.gray.opacity(0.2)
+    }
+
+    var letterLabels: [String] { ["A", "B", "C", "D"] }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                // Letter badge
+                ZStack {
+                    Circle()
+                        .fill(showResult && isCorrectAnswer ? Color.mintGreen :
+                                showResult && isSelected ? Color.coralPink :
+                                aboutToLearn ? Color.yellow.opacity(0.3) :
+                                Color.gray.opacity(0.15))
+                        .frame(width: 32, height: 32)
+                    Text(index < letterLabels.count ? letterLabels[index] : "?")
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundColor(showResult && (isCorrectAnswer || isSelected) ? .white : .primary)
+                }
+
+                Text(answer)
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .multilineTextAlignment(.leading)
+                    .foregroundColor(.primary)
+
+                Spacer()
+
+                if showResult {
+                    if isCorrectAnswer {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.mintGreen)
+                            .font(.system(size: 22))
+                    } else if isSelected {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.coralPink)
+                            .font(.system(size: 22))
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(backgroundColor)
+            .cornerRadius(14)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(borderColor, lineWidth: aboutToLearn && !showResult ? 2 : 1.5)
+            )
+        }
+        .disabled(showResult)
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+// MARK: - Learn Result Banner
+
+struct LearnResultBanner: View {
+    let isCorrect: Bool
+
+    var body: some View {
+        HStack {
+            Image(systemName: isCorrect ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .font(.system(size: 20))
+            Text(isCorrect ? "Correct!" : "Not quite - keep practicing!")
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+        }
+        .foregroundColor(.white)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
+        .background(isCorrect ? Color.mintGreen : Color.coralPink)
+    }
+}
+
+// MARK: - Quiz Modal Card (Legacy - used by other views)
 
 struct QuizModalCard: View {
     let card: Flashcard
@@ -13713,47 +14601,60 @@ struct QuizModalCard: View {
 
             Divider()
 
-            // Answers Section (scrollable)
-            ScrollView {
-                VStack(spacing: 10) {
-                    ForEach(visibleAnswers, id: \.answer) { item in
-                        QuizAnswerOption(
-                            answer: item.answer,
-                            index: item.index,
-                            isSelected: selectedAnswer == item.answer,
-                            isCorrectAnswer: item.answer == card.answer,
-                            showResult: showResult,
-                            action: { onSelectAnswer(item.answer) }
-                        )
-                    }
-                    .animation(.easeInOut(duration: 0.3), value: showResult)
-
-                    // Rationale (inside scroll so it's viewable)
-                    if showResult && showRationale && !card.rationale.isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "lightbulb.fill")
-                                    .foregroundColor(.yellow)
-                                Text("Rationale")
-                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            }
-                            Text(card.rationale)
-                                .font(.system(size: 14, design: .rounded))
-                                .foregroundColor(.secondary)
-                                .lineSpacing(3)
+            // Answers Section (scrollable with constrained height)
+            ScrollViewReader { scrollProxy in
+                ScrollView(showsIndicators: true) {
+                    VStack(spacing: 10) {
+                        ForEach(visibleAnswers, id: \.answer) { item in
+                            QuizAnswerOption(
+                                answer: item.answer,
+                                index: item.index,
+                                isSelected: selectedAnswer == item.answer,
+                                isCorrectAnswer: item.answer == card.answer,
+                                showResult: showResult,
+                                action: { onSelectAnswer(item.answer) }
+                            )
                         }
-                        .padding()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.yellow.opacity(0.1))
-                        .cornerRadius(12)
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        .animation(.easeInOut(duration: 0.3), value: showResult)
+
+                        // Rationale (inside scroll so it's viewable)
+                        if showResult && showRationale && !card.rationale.isEmpty {
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "lightbulb.fill")
+                                        .foregroundColor(.yellow)
+                                    Text("Rationale")
+                                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                }
+                                Text(card.rationale)
+                                    .font(.system(size: 14, design: .rounded))
+                                    .foregroundColor(.secondary)
+                                    .lineSpacing(3)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.yellow.opacity(0.1))
+                            .cornerRadius(12)
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                            .id("rationale")
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 20)
+                    .padding(.bottom, 10)
+                }
+                .frame(maxHeight: UIScreen.main.bounds.height * 0.45)
+                .background(Color.cardBackground.opacity(0.5))
+                .onChange(of: showRationale) { newValue in
+                    if newValue {
+                        // Auto-scroll to show rationale when it appears
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            scrollProxy.scrollTo("rationale", anchor: .bottom)
+                        }
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 20)
-                .padding(.bottom, 10)
             }
-            .background(Color.cardBackground.opacity(0.5))
 
             // Continue button (fixed at bottom, outside scroll)
             if showResult {
@@ -13938,24 +14839,26 @@ struct QuizConfettiOverlay: View {
     @State private var confettiPieces: [ConfettiPiece] = []
 
     var body: some View {
-        ZStack {
-            ForEach(confettiPieces) { piece in
-                ConfettiPieceView(piece: piece)
+        GeometryReader { geo in
+            ZStack {
+                ForEach(confettiPieces) { piece in
+                    ConfettiPieceView(piece: piece, screenHeight: geo.size.height)
+                }
             }
-        }
-        .onAppear {
-            createConfetti()
+            .onAppear {
+                createConfetti(width: geo.size.width)
+            }
         }
     }
 
-    func createConfetti() {
+    func createConfetti(width: CGFloat) {
         let colors: [Color] = [.pastelPink, .mintGreen, .softLavender, .peachOrange, .skyBlue, .yellow, .red, .orange, .green, .blue, .purple]
         let shapes: [ConfettiShape] = [.rectangle, .circle, .triangle, .strip]
 
         for i in 0..<50 {
             let piece = ConfettiPiece(
                 id: i,
-                x: CGFloat.random(in: 0...UIScreen.main.bounds.width),
+                x: CGFloat.random(in: 0...width),
                 color: colors.randomElement() ?? .pastelPink,
                 shape: shapes.randomElement() ?? .rectangle,
                 size: CGFloat.random(in: 8...14),
@@ -13985,6 +14888,7 @@ struct ConfettiPiece: Identifiable {
 
 struct ConfettiPieceView: View {
     let piece: ConfettiPiece
+    var screenHeight: CGFloat = 900
     @State private var yOffset: CGFloat = -50
     @State private var xOffset: CGFloat = 0
     @State private var opacity: Double = 1
@@ -14002,7 +14906,7 @@ struct ConfettiPieceView: View {
             .rotation3DEffect(.degrees(rotation3D), axis: (x: 1, y: 0, z: 0))
             .onAppear {
                 withAnimation(.easeIn(duration: 2.5).delay(piece.delay)) {
-                    yOffset = UIScreen.main.bounds.height + 100
+                    yOffset = screenHeight + 100
                     xOffset = piece.horizontalMovement
                     rotation = piece.rotationSpeed
                     rotation3D = Double.random(in: 180...540)
@@ -14039,12 +14943,124 @@ struct TriangleShape: Shape {
     }
 }
 
-// MARK: - Quiz Celebration View
+// MARK: - Learn Celebration View
+
+struct LearnCelebrationView: View {
+    let totalCards: Int
+    let totalAttempts: Int
+    let onPlayAgain: () -> Void
+    var onHome: (() -> Void)? = nil
+    @State private var showContent = false
+
+    var efficiency: Int {
+        totalAttempts > 0 ? Int(Double(totalCards) / Double(totalAttempts) * 100) : 0
+    }
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Spacer()
+
+            // Mascot
+            Image("NurseBear")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 120, height: 120)
+                .scaleEffect(showContent ? 1 : 0.5)
+                .opacity(showContent ? 1 : 0)
+
+            // Result text
+            VStack(spacing: 8) {
+                Text("All Terms Learned!")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+
+                Text("Great job mastering these terms!")
+                    .font(.system(size: 16, design: .rounded))
+                    .foregroundColor(.secondary)
+            }
+            .scaleEffect(showContent ? 1 : 0.8)
+            .opacity(showContent ? 1 : 0)
+
+            // Stats display
+            HStack(spacing: 40) {
+                VStack(spacing: 4) {
+                    Text("\(totalCards)")
+                        .font(.system(size: 36, weight: .bold, design: .rounded))
+                        .foregroundColor(.mintGreen)
+                    Text("Terms")
+                        .font(.system(size: 14, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+
+                VStack(spacing: 4) {
+                    Text("\(efficiency)%")
+                        .font(.system(size: 36, weight: .bold, design: .rounded))
+                        .foregroundColor(.softLavender)
+                    Text("Efficiency")
+                        .font(.system(size: 14, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding()
+            .background(Color.cardBackground)
+            .cornerRadius(20)
+            .shadow(color: .black.opacity(0.08), radius: 10)
+            .scaleEffect(showContent ? 1 : 0.8)
+            .opacity(showContent ? 1 : 0)
+
+            Spacer()
+
+            // Learn more button
+            Button(action: onPlayAgain) {
+                HStack {
+                    Image(systemName: "arrow.counterclockwise")
+                    Text("Learn More")
+                }
+                .font(.system(size: 17, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+                .background(
+                    LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing)
+                )
+                .cornerRadius(16)
+            }
+            .padding(.horizontal, 40)
+            .scaleEffect(showContent ? 1 : 0.8)
+            .opacity(showContent ? 1 : 0)
+
+            if let onHome {
+                Button(action: onHome) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "house.fill").font(.system(size: 14))
+                        Text("Home").font(.system(size: 16, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 30).padding(.vertical, 12)
+                }
+                .scaleEffect(showContent ? 1 : 0.8)
+                .opacity(showContent ? 1 : 0)
+            }
+
+            Spacer()
+        }
+        .onAppear {
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.7).delay(0.1)) {
+                showContent = true
+            }
+
+            // Trigger review prompt for completing learn session
+            ReviewManager.shared.recordPositiveExperience()
+        }
+    }
+}
+
+// MARK: - Quiz Celebration View (Legacy)
 
 struct QuizCelebrationView: View {
     let score: Int
     let total: Int
     let onPlayAgain: () -> Void
+    var onHome: (() -> Void)? = nil
     @State private var showContent = false
 
     var percentage: Int { total > 0 ? Int(Double(score) / Double(total) * 100) : 0 }
@@ -14121,6 +15137,19 @@ struct QuizCelebrationView: View {
             .padding(.horizontal, 40)
             .scaleEffect(showContent ? 1 : 0.8)
             .opacity(showContent ? 1 : 0)
+
+            if let onHome {
+                Button(action: onHome) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "house.fill").font(.system(size: 14))
+                        Text("Home").font(.system(size: 16, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 30).padding(.vertical, 12)
+                }
+                .scaleEffect(showContent ? 1 : 0.8)
+                .opacity(showContent ? 1 : 0)
+            }
 
             Spacer()
         }
@@ -14210,7 +15239,7 @@ struct WriteModeView: View {
                 .padding(.horizontal)
 
                 if showCelebration {
-                    CelebrationView(score: score, total: writeCards.count) { resetMode() }
+                    CelebrationView(score: score, total: writeCards.count, onRestart: { resetMode() }, onHome: { saveSession(); appManager.currentScreen = .menu })
                 } else if writeCards.isEmpty {
                     Spacer()
                     AllMasteredView { appManager.currentScreen = .cardBrowser; cardManager.currentFilter = .mastered }
@@ -14585,7 +15614,10 @@ struct TestModeView: View {
                 } else if showResults {
                     TestResultsView(correct: correctCount, total: testCards.count, onRetry: {
                         testCards = []; shuffledAnswers = [:]; showResults = false; selectedFormat = nil
-                    }, testAnswers: getTestAnswers())
+                    }, testAnswers: getTestAnswers(), onHome: {
+                        saveSession()
+                        appManager.currentScreen = .menu
+                    })
                 } else if let card = currentCard, let cardAnswers = shuffledAnswers[card.id] {
                     ProgressBar(current: currentIndex + 1, total: testCards.count).padding(.horizontal)
                     ScrollView {
@@ -14852,6 +15884,7 @@ struct TestResultsView: View {
     let total: Int
     let onRetry: () -> Void
     var testAnswers: [TestAnswer] = []
+    var onHome: (() -> Void)? = nil
     @State private var showReview = false
 
     var percentage: Int { total > 0 ? Int(Double(correct) / Double(total) * 100) : 0 }
@@ -14885,6 +15918,16 @@ struct TestResultsView: View {
                     .foregroundColor(.white).padding(.horizontal, 30).padding(.vertical, 14)
                     .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
                     .cornerRadius(22)
+            }
+            if let onHome {
+                Button(action: onHome) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "house.fill").font(.system(size: 14))
+                        Text("Home").font(.system(size: 16, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 30).padding(.vertical, 12)
+                }
             }
             Spacer()
         }
@@ -15022,393 +16065,6 @@ struct TestReviewCard: View {
     }
 }
 
-// MARK: - Smart Review View (Spaced Repetition)
-
-struct SmartReviewView: View {
-    @EnvironmentObject var appManager: AppManager
-    @EnvironmentObject var subscriptionManager: SubscriptionManager
-    @EnvironmentObject var cardManager: CardManager
-    @EnvironmentObject var statsManager: StatsManager
-    @State private var reviewCards: [Flashcard] = []
-    @State private var currentIndex = 0
-    @State private var showAnswer = false
-    @State private var score = 0
-    @State private var cardsReviewed = 0
-    @State private var startTime = Date()
-    @State private var showCelebration = false
-
-    var currentCard: Flashcard? {
-        currentIndex < reviewCards.count ? reviewCards[currentIndex] : nil
-    }
-
-    var dueCount: Int {
-        cardManager.getDueCardCount(isSubscribed: subscriptionManager.hasPremiumAccess)
-    }
-
-    var body: some View {
-        ZStack {
-            Color.creamyBackground.ignoresSafeArea()
-
-            VStack(spacing: 16) {
-                // Header
-                HStack {
-                    BackButton { saveSession(); appManager.currentScreen = .menu }
-                    Spacer()
-                    Text("Smart Review 🧠").font(.system(size: 18, weight: .bold, design: .rounded))
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text("\(score)/\(cardsReviewed)")
-                            .font(.system(size: 14, weight: .bold, design: .rounded))
-                            .foregroundColor(.mintGreen)
-                        Text("\(dueCount) due")
-                            .font(.system(size: 11, design: .rounded))
-                            .foregroundColor(.secondary)
-                    }
-                }
-                .padding(.horizontal)
-
-                if showCelebration {
-                    SmartReviewCelebration(cardsReviewed: cardsReviewed, score: score) {
-                        resetReview()
-                    }
-                } else if reviewCards.isEmpty {
-                    Spacer()
-                    NoCardsDueView {
-                        appManager.currentScreen = .menu
-                    }
-                    Spacer()
-                } else if let card = currentCard {
-                    // Progress bar
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(Color.gray.opacity(0.2))
-                                .frame(height: 8)
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(LinearGradient(colors: [.mintGreen, .softLavender], startPoint: .leading, endPoint: .trailing))
-                                .frame(width: geo.size.width * CGFloat(currentIndex) / CGFloat(max(1, reviewCards.count)), height: 8)
-                        }
-                    }
-                    .frame(height: 8)
-                    .padding(.horizontal)
-
-                    // Spaced Rep Info
-                    if let srData = cardManager.getSpacedRepInfo(card: card) {
-                        HStack {
-                            Label("Interval: \(srData.interval) days", systemImage: "calendar")
-                            Spacer()
-                            Label("Reviews: \(srData.repetitions)", systemImage: "arrow.counterclockwise")
-                        }
-                        .font(.system(size: 11, design: .rounded))
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal)
-                    }
-
-                    ScrollView {
-                        VStack(spacing: 20) {
-                            // Question Card
-                            VStack(spacing: 12) {
-                                HStack {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: card.contentCategory.icon)
-                                            .foregroundColor(card.contentCategory.color)
-                                        Text(card.contentCategory.rawValue)
-                                            .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                            .foregroundColor(.secondary)
-                                    }
-                                    Spacer()
-                                    Text(card.difficulty.rawValue)
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .foregroundColor(.white)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 4)
-                                        .background(card.difficulty.color)
-                                        .cornerRadius(8)
-                                }
-
-                                Text(card.question)
-                                    .font(.system(size: 18, weight: .semibold, design: .rounded))
-                                    .multilineTextAlignment(.center)
-                                    .padding(.vertical, 10)
-                            }
-                            .padding(20)
-                            .background(Color.adaptiveWhite)
-                            .cornerRadius(18)
-                            .shadow(color: .black.opacity(0.08), radius: 6)
-
-                            if showAnswer {
-                                // Answer Card
-                                VStack(spacing: 12) {
-                                    Text("Answer")
-                                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                        .foregroundColor(.secondary)
-
-                                    Text(card.answer)
-                                        .font(.system(size: 17, weight: .medium, design: .rounded))
-                                        .multilineTextAlignment(.center)
-                                        .foregroundColor(.mintGreen)
-
-                                    if !card.rationale.isEmpty {
-                                        Divider().padding(.vertical, 8)
-                                        Text(card.rationale)
-                                            .font(.system(size: 14, design: .rounded))
-                                            .foregroundColor(.secondary)
-                                            .multilineTextAlignment(.leading)
-                                    }
-                                }
-                                .padding(20)
-                                .background(Color.mintGreen.opacity(0.1))
-                                .cornerRadius(18)
-
-                                // Rating Buttons
-                                VStack(spacing: 10) {
-                                    Text("How well did you know this?")
-                                        .font(.system(size: 13, weight: .medium, design: .rounded))
-                                        .foregroundColor(.secondary)
-
-                                    HStack(spacing: 12) {
-                                        RatingButton(title: "Again", subtitle: "1 day", color: .coralPink) {
-                                            rateCard(quality: 1)
-                                        }
-                                        RatingButton(title: "Hard", subtitle: "3 days", color: .peachOrange) {
-                                            rateCard(quality: 3)
-                                        }
-                                        RatingButton(title: "Good", subtitle: "1 week", color: .mintGreen) {
-                                            rateCard(quality: 4)
-                                        }
-                                        RatingButton(title: "Easy", subtitle: "2 weeks", color: .skyBlue) {
-                                            rateCard(quality: 5)
-                                        }
-                                    }
-                                }
-                                .padding(.top, 10)
-                            } else {
-                                // Show Answer Button
-                                Button(action: { withAnimation { showAnswer = true } }) {
-                                    Text("Show Answer")
-                                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                                        .foregroundColor(.white)
-                                        .frame(maxWidth: .infinity)
-                                        .padding()
-                                        .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
-                                        .cornerRadius(14)
-                                }
-                            }
-                        }
-                        .padding()
-                    }
-                }
-            }
-        }
-        .onAppear { loadReviewCards() }
-    }
-
-    func loadReviewCards() {
-        // Check if resuming from saved progress
-        if let progress = cardManager.resumeProgress, progress.gameMode == GameMode.smartReview.rawValue {
-            // Use session cards (already restored by resumeGameMode)
-            reviewCards = cardManager.sessionCards
-            cardManager.sessionCards = []
-            currentIndex = progress.currentIndex
-            score = progress.score
-            cardsReviewed = progress.cardsReviewed
-            cardManager.resumeProgress = nil // Clear after use
-        } else if !cardManager.sessionCards.isEmpty {
-            // Use session cards if available (from setup screen)
-            reviewCards = cardManager.sessionCards
-            cardManager.sessionCards = [] // Clear after use
-            currentIndex = 0
-            score = 0
-            cardsReviewed = 0
-        } else {
-            reviewCards = cardManager.getCardsForSpacedReview(isSubscribed: subscriptionManager.hasPremiumAccess).shuffled()
-            currentIndex = 0
-            score = 0
-            cardsReviewed = 0
-        }
-        showAnswer = false
-    }
-
-    func rateCard(quality: Int) {
-        guard let card = currentCard else { return }
-
-        // Haptic feedback based on rating
-        if quality >= 4 {
-            HapticManager.shared.correctAnswer()
-            SoundManager.shared.correctAnswer()
-        } else if quality >= 3 {
-            HapticManager.shared.light()
-        } else {
-            HapticManager.shared.wrongAnswer()
-            SoundManager.shared.wrongAnswer()
-        }
-
-        cardsReviewed += 1
-        if quality >= 3 {
-            score += 1
-            cardManager.recordCorrectAnswer(card)
-        } else {
-            cardManager.recordWrongAnswer(card)
-        }
-
-        // Record spaced rep response
-        cardManager.recordSpacedRepResponse(card: card, quality: quality)
-        statsManager.recordCategoryResult(category: card.contentCategory.rawValue, correct: quality >= 3)
-
-        // Move to next card
-        if currentIndex + 1 >= reviewCards.count {
-            showCelebration = true
-            HapticManager.shared.achievement()
-            SoundManager.shared.celebration()
-        } else {
-            currentIndex += 1
-            showAnswer = false
-        }
-    }
-
-    func resetReview() {
-        HapticManager.shared.buttonTap()
-        saveSession()
-        score = 0
-        cardsReviewed = 0
-        currentIndex = 0
-        showCelebration = false
-        startTime = Date()
-        loadReviewCards()
-    }
-
-    func saveSession() {
-        let timeSpent = Int(Date().timeIntervalSince(startTime))
-        if cardsReviewed > 0 {
-            statsManager.recordSession(cardsStudied: cardsReviewed, correct: score, timeSeconds: timeSpent, mode: "Smart Review")
-            DailyGoalsManager.shared.recordStudySession(cardsStudied: cardsReviewed, correct: score, timeSeconds: timeSpent)
-
-            // Track review cards goal
-            DailyGoalsManager.shared.recordReviewCards(count: cardsReviewed)
-
-            // Track categories studied
-            let categoriesStudied = Set(reviewCards.prefix(currentIndex).map { $0.contentCategory })
-            for category in categoriesStudied {
-                DailyGoalsManager.shared.recordCategoryStudied(category)
-            }
-        }
-
-        // Save progress for resume (only if not completed)
-        if !showCelebration && currentIndex > 0 && currentIndex < reviewCards.count {
-            SessionProgressManager.shared.saveProgress(
-                gameMode: .smartReview,
-                cardIDs: reviewCards.map { $0.id },
-                currentIndex: currentIndex,
-                score: score,
-                cardsReviewed: cardsReviewed
-            )
-        } else {
-            // Clear progress if completed
-            SessionProgressManager.shared.clearProgress(for: .smartReview)
-        }
-    }
-}
-
-struct RatingButton: View {
-    let title: String
-    let subtitle: String
-    let color: Color
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Text(title)
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
-                Text(subtitle)
-                    .font(.system(size: 10, design: .rounded))
-                    .foregroundColor(.white.opacity(0.8))
-            }
-            .foregroundColor(.white)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-            .background(color)
-            .cornerRadius(12)
-        }
-    }
-}
-
-struct NoCardsDueView: View {
-    let action: () -> Void
-
-    var body: some View {
-        VStack(spacing: 16) {
-            Text("🎉").font(.system(size: 60))
-            Text("All Caught Up!")
-                .font(.system(size: 24, weight: .bold, design: .rounded))
-            Text("No cards due for review.\nCome back later or try another study mode!")
-                .font(.system(size: 15, design: .rounded))
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-            Button(action: action) {
-                Text("Back to Menu")
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 30)
-                    .padding(.vertical, 14)
-                    .background(LinearGradient(colors: [.mintGreen, .softLavender], startPoint: .leading, endPoint: .trailing))
-                    .cornerRadius(22)
-            }
-            .padding(.top, 10)
-        }
-        .padding()
-    }
-}
-
-struct SmartReviewCelebration: View {
-    let cardsReviewed: Int
-    let score: Int
-    let onContinue: () -> Void
-
-    var body: some View {
-        VStack(spacing: 20) {
-            Spacer()
-            Text("🧠").font(.system(size: 70))
-            Text("Review Complete!")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-            Text("You reviewed \(cardsReviewed) cards")
-                .font(.system(size: 16, design: .rounded))
-                .foregroundColor(.secondary)
-
-            HStack(spacing: 30) {
-                VStack {
-                    Text("\(score)")
-                        .font(.system(size: 32, weight: .bold, design: .rounded))
-                        .foregroundColor(.mintGreen)
-                    Text("Correct")
-                        .font(.system(size: 13, design: .rounded))
-                        .foregroundColor(.secondary)
-                }
-                VStack {
-                    Text("\(cardsReviewed > 0 ? Int(Double(score) / Double(cardsReviewed) * 100) : 0)%")
-                        .font(.system(size: 32, weight: .bold, design: .rounded))
-                        .foregroundColor(.softLavender)
-                    Text("Accuracy")
-                        .font(.system(size: 13, design: .rounded))
-                        .foregroundColor(.secondary)
-                }
-            }
-            .padding(.vertical)
-
-            Button(action: onContinue) {
-                Text("Continue Studying")
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 35)
-                    .padding(.vertical, 14)
-                    .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
-                    .cornerRadius(22)
-            }
-            Spacer()
-        }
-    }
-}
-
 // MARK: - Cozy Match View
 
 struct CozyMatchView: View {
@@ -15418,51 +16074,96 @@ struct CozyMatchView: View {
     @EnvironmentObject var statsManager: StatsManager
     @State private var tiles: [MatchTile] = []
     @State private var gameCards: [Flashcard] = []
+    @State private var allSessionCards: [Flashcard] = [] // All cards for both rounds
     @State private var selectedTile: MatchTile? = nil
     @State private var matchedPairs = 0
     @State private var moves = 0
+    @State private var totalMoves = 0 // Track moves across rounds
     @State private var showWin = false
     @State private var isProcessing = false
     @State private var startTime = Date()
+    @State private var currentRound = 1
+    @State private var showRoundTransition = false
+
+    private let cardsPerRound = 5
+    private let totalRounds = 2
 
     var availableCards: [Flashcard] { cardManager.getGameCards(isSubscribed: subscriptionManager.hasPremiumAccess) }
 
-    let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
+    // 2 columns for cleaner layout with 10 tiles (5 rows)
+    let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
 
     var body: some View {
         ZStack {
             Color.creamyBackground.ignoresSafeArea()
             VStack(spacing: 16) {
+                // Header
                 HStack {
                     BackButton { saveSession(); appManager.currentScreen = .menu }
                     Spacer()
                     Text("Cozy Match 🧩").font(.system(size: 18, weight: .bold, design: .rounded))
                     Spacer()
-                    Text("Moves: \(moves)").font(.system(size: 14, weight: .bold, design: .rounded)).foregroundColor(.softLavender)
+                    Text("Moves: \(totalMoves + moves)").font(.system(size: 14, weight: .bold, design: .rounded)).foregroundColor(.softLavender)
                 }
                 .padding(.horizontal)
+
+                // Round indicator
+                HStack(spacing: 8) {
+                    ForEach(1...totalRounds, id: \.self) { round in
+                        Circle()
+                            .fill(round <= currentRound ? Color.softLavender : Color.gray.opacity(0.3))
+                            .frame(width: 10, height: 10)
+                    }
+                    Text("Round \(currentRound) of \(totalRounds)")
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
 
                 Text("Match questions with answers!").font(.system(size: 13, design: .rounded)).foregroundColor(.secondary)
 
                 if showWin {
-                    MatchWinView(moves: moves) { resetGame() }
+                    MatchWinView(moves: totalMoves, onPlayAgain: { resetGame() }, onHome: { saveSession(); appManager.currentScreen = .menu })
+                } else if showRoundTransition {
+                    // Round transition screen
+                    Spacer()
+                    VStack(spacing: 20) {
+                        Text("🎉").font(.system(size: 60))
+                        Text("Round \(currentRound - 1) Complete!").font(.system(size: 22, weight: .bold, design: .rounded))
+                        Text("Get ready for Round \(currentRound)").font(.system(size: 15, design: .rounded)).foregroundColor(.secondary)
+
+                        Button(action: {
+                            withAnimation { showRoundTransition = false }
+                        }) {
+                            Text("Continue")
+                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 32)
+                                .padding(.vertical, 14)
+                                .background(Color.softLavender)
+                                .cornerRadius(25)
+                        }
+                        .padding(.top, 10)
+                    }
+                    Spacer()
                 } else if tiles.isEmpty {
                     Spacer()
                     VStack(spacing: 14) {
                         Text("🎉").font(.system(size: 50))
                         Text("Need more cards").font(.system(size: 18, weight: .semibold, design: .rounded))
-                        Text("You need at least 6 unmastered cards").font(.system(size: 13, design: .rounded)).foregroundColor(.secondary)
+                        Text("You need at least \(cardsPerRound * totalRounds) unmastered cards").font(.system(size: 13, design: .rounded)).foregroundColor(.secondary)
                     }
                     Spacer()
                 } else {
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 10) {
-                            ForEach(tiles) { tile in
-                                MatchTileView(tile: tile, isSelected: selectedTile?.id == tile.id) { handleTileTap(tile) }
-                            }
+                    // Game grid
+                    LazyVGrid(columns: columns, spacing: 12) {
+                        ForEach(tiles) { tile in
+                            MatchTileView(tile: tile, isSelected: selectedTile?.id == tile.id) { handleTileTap(tile) }
                         }
-                        .padding()
                     }
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+
+                    Spacer()
 
                     Button(action: resetGame) {
                         HStack { Image(systemName: "arrow.counterclockwise"); Text("New Game") }
@@ -15487,16 +16188,36 @@ struct CozyMatchView: View {
             cardsToUse = availableCards
         }
 
-        guard cardsToUse.count >= 6 else { tiles = []; return }
-        let selected = Array(cardsToUse.shuffled().prefix(6))
-        gameCards = selected
+        let requiredCards = cardsPerRound * totalRounds
+        guard cardsToUse.count >= requiredCards else { tiles = []; return }
+
+        // Store all cards for both rounds
+        allSessionCards = Array(cardsToUse.shuffled().prefix(requiredCards))
+        currentRound = 1
+        totalMoves = 0
+        showRoundTransition = false
+        setupRound()
+    }
+
+    func setupRound() {
+        // Get cards for current round
+        let startIndex = (currentRound - 1) * cardsPerRound
+        let endIndex = min(startIndex + cardsPerRound, allSessionCards.count)
+        let roundCards = Array(allSessionCards[startIndex..<endIndex])
+
+        gameCards = roundCards
         var newTiles: [MatchTile] = []
-        for card in selected {
+        for card in roundCards {
             newTiles.append(MatchTile(cardId: card.id, content: card.question, isQuestion: true))
             newTiles.append(MatchTile(cardId: card.id, content: card.answer, isQuestion: false))
         }
         tiles = newTiles.shuffled()
-        selectedTile = nil; matchedPairs = 0; moves = 0; showWin = false; isProcessing = false; startTime = Date()
+        selectedTile = nil
+        matchedPairs = 0
+        moves = 0
+        showWin = false
+        isProcessing = false
+        if currentRound == 1 { startTime = Date() }
     }
 
     func handleTileTap(_ tile: MatchTile) {
@@ -15519,11 +16240,26 @@ struct CozyMatchView: View {
                     if let idx2 = tiles.firstIndex(where: { $0.id == tile.id }) { tiles[idx2].isMatched = true }
                 }
                 matchedPairs += 1; selectedTile = nil; isProcessing = false
-                if matchedPairs == 6 {
+
+                // Check if round is complete
+                if matchedPairs == cardsPerRound {
+                    totalMoves += moves
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                        showWin = true
-                        HapticManager.shared.achievement()
-                        SoundManager.shared.celebration()
+                        if currentRound < totalRounds {
+                            // Move to next round
+                            currentRound += 1
+                            withAnimation { showRoundTransition = true }
+                            HapticManager.shared.achievement()
+                            // Setup next round after transition
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                setupRound()
+                            }
+                        } else {
+                            // Game complete!
+                            showWin = true
+                            HapticManager.shared.achievement()
+                            SoundManager.shared.celebration()
+                        }
                     }
                 }
             } else {
@@ -15548,18 +16284,19 @@ struct CozyMatchView: View {
 
     func saveSession() {
         let timeSpent = Int(Date().timeIntervalSince(startTime))
-        if matchedPairs > 0 {
-            statsManager.recordSession(cardsStudied: matchedPairs * 2, correct: matchedPairs, timeSeconds: timeSpent, mode: "Match")
-            DailyGoalsManager.shared.recordStudySession(cardsStudied: matchedPairs * 2, correct: matchedPairs, timeSeconds: timeSpent)
+        let totalPairs = (currentRound - 1) * cardsPerRound + matchedPairs // Pairs matched across all rounds
+        if totalPairs > 0 {
+            statsManager.recordSession(cardsStudied: totalPairs * 2, correct: totalPairs, timeSeconds: timeSpent, mode: "Match")
+            DailyGoalsManager.shared.recordStudySession(cardsStudied: totalPairs * 2, correct: totalPairs, timeSeconds: timeSpent)
 
-            // Track categories studied
-            let categoriesStudied = Set(gameCards.map { $0.contentCategory })
+            // Track categories studied from all session cards
+            let categoriesStudied = Set(allSessionCards.map { $0.contentCategory })
             for category in categoriesStudied {
                 DailyGoalsManager.shared.recordCategoryStudied(category)
             }
 
-            // Perfect match game (all 6 pairs matched)
-            if showWin && matchedPairs == 6 {
+            // Perfect match game (all pairs matched in both rounds)
+            if showWin && currentRound == totalRounds && matchedPairs == cardsPerRound {
                 DailyGoalsManager.shared.recordPerfectQuiz()
             }
         }
@@ -15622,6 +16359,7 @@ struct MatchTileView: View {
 struct MatchWinView: View {
     let moves: Int
     let onPlayAgain: () -> Void
+    var onHome: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 18) {
@@ -15634,6 +16372,16 @@ struct MatchWinView: View {
                     .foregroundColor(.white).padding(.horizontal, 35).padding(.vertical, 14)
                     .background(LinearGradient(colors: [.mintGreen, .softLavender], startPoint: .leading, endPoint: .trailing))
                     .cornerRadius(22)
+            }
+            if let onHome {
+                Button(action: onHome) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "house.fill").font(.system(size: 14))
+                        Text("Home").font(.system(size: 16, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 30).padding(.vertical, 12)
+                }
             }
             Spacer()
         }

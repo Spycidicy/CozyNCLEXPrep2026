@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+
 		516C4C042F27EA3E00AB69D1 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 516C4BB92F27EA0100AB69D1 /* GoogleSignIn */; };
 		516C4C052F27EA3E00AB69D1 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 516C4BBA2F27EA0600AB69D1 /* Supabase */; };
 /* End PBXBuildFile section */
@@ -29,6 +30,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		10D4E8F1789DC8126B065A4C /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		516C45712F218F3400AB69D1 /* CozyNCLEXPrep.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CozyNCLEXPrep.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		516C457E2F218F3500AB69D1 /* CozyNCLEXPrepTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CozyNCLEXPrepTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		516C45882F218F3500AB69D1 /* CozyNCLEXPrepUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CozyNCLEXPrepUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -82,6 +84,7 @@
 		516C45682F218F3400AB69D1 = {
 			isa = PBXGroup;
 			children = (
+				10D4E8F1789DC8126B065A4C /* PrivacyInfo.xcprivacy */,
 				516C45732F218F3400AB69D1 /* CozyNCLEXPrep */,
 				516C45812F218F3500AB69D1 /* CozyNCLEXPrepTests */,
 				516C458B2F218F3500AB69D1 /* CozyNCLEXPrepUITests */,
@@ -225,6 +228,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -117,7 +117,7 @@ struct BrowseCardsHomeView: View {
                 .padding(.vertical)
             }
             .background(Color.creamyBackground)
-            .navigationTitle("Study Flashcards")
+            .navigationTitle("Browse Cards")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -323,10 +323,11 @@ struct CardBrowseView: View {
                         CarouselView(
                             cards: filteredCards,
                             currentIndex: $currentCardIndex,
-                            isFlipped: $isFlipped
+                            isFlipped: $isFlipped,
+                            cardManager: cardManager
                         )
                     case .list:
-                        CardListView(cards: filteredCards)
+                        CardListView(cards: filteredCards, cardManager: cardManager)
                     }
                 }
             }
@@ -385,20 +386,52 @@ struct CarouselView: View {
     let cards: [Flashcard]
     @Binding var currentIndex: Int
     @Binding var isFlipped: Bool
+    @ObservedObject var cardManager: CardManager
+    @StateObject private var speechManager = SpeechManager()
+
+    private var currentCard: Flashcard? {
+        currentIndex < cards.count ? cards[currentIndex] : nil
+    }
 
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 16) {
             // Progress indicator
             Text("\(currentIndex + 1) of \(cards.count)")
                 .font(.system(size: 14, weight: .medium, design: .rounded))
                 .foregroundColor(.secondary)
 
             // Card
-            if currentIndex < cards.count {
-                FlippableCardView(card: cards[currentIndex], isFlipped: $isFlipped)
-                    .frame(height: 350)
-                    .padding(.horizontal, 20)
-                    .id(currentIndex) // Force refresh when index changes
+            if let card = currentCard {
+                GeometryReader { cardGeo in
+                    FlippableCardView(card: card, isFlipped: $isFlipped)
+                        .frame(height: min(cardGeo.size.width * 0.9, 350))
+                }
+                .aspectRatio(1.0, contentMode: .fit)
+                .padding(.horizontal, 20)
+                    .id(currentIndex)
+            }
+
+            // Heart + Speaker row
+            if let card = currentCard {
+                HStack(spacing: 24) {
+                    Button(action: {
+                        HapticManager.shared.light()
+                        speechManager.speak(isFlipped ? card.answer : card.question)
+                    }) {
+                        Image(systemName: "speaker.wave.2.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(.secondary)
+                    }
+
+                    Button(action: {
+                        HapticManager.shared.light()
+                        cardManager.toggleSaved(card)
+                    }) {
+                        Image(systemName: cardManager.isSaved(card) ? "heart.fill" : "heart")
+                            .font(.system(size: 22))
+                            .foregroundColor(cardManager.isSaved(card) ? .red : .gray)
+                    }
+                }
             }
 
             // Navigation controls
@@ -410,7 +443,12 @@ struct CarouselView: View {
                 }
                 .disabled(currentIndex == 0)
 
-                Button(action: { isFlipped.toggle() }) {
+                Button(action: {
+                    HapticManager.shared.light()
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                        isFlipped.toggle()
+                    }
+                }) {
                     VStack(spacing: 4) {
                         Image(systemName: "arrow.triangle.2.circlepath")
                             .font(.system(size: 24))
@@ -427,7 +465,7 @@ struct CarouselView: View {
                 }
                 .disabled(currentIndex >= cards.count - 1)
             }
-            .padding(.top, 10)
+            .padding(.top, 6)
 
             // Keyboard hint
             Text("Tap card to flip")
@@ -589,6 +627,7 @@ struct CardFaceView: View {
 
 struct CardListView: View {
     let cards: [Flashcard]
+    @ObservedObject var cardManager: CardManager
     @State private var expandedCardId: UUID?
 
     var body: some View {
@@ -598,6 +637,7 @@ struct CardListView: View {
                     BrowseCardListItem(
                         card: card,
                         isExpanded: expandedCardId == card.id,
+                        isSaved: cardManager.isSaved(card),
                         onTap: {
                             withAnimation(.spring(response: 0.3)) {
                                 if expandedCardId == card.id {
@@ -606,6 +646,10 @@ struct CardListView: View {
                                     expandedCardId = card.id
                                 }
                             }
+                        },
+                        onSaveTap: {
+                            HapticManager.shared.light()
+                            cardManager.toggleSaved(card)
                         }
                     )
                 }
@@ -620,7 +664,10 @@ struct CardListView: View {
 struct BrowseCardListItem: View {
     let card: Flashcard
     let isExpanded: Bool
+    var isSaved: Bool = false
     let onTap: () -> Void
+    var onSaveTap: (() -> Void)? = nil
+    @StateObject private var speechManager = SpeechManager()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -639,6 +686,25 @@ struct BrowseCardListItem: View {
                 .cornerRadius(8)
 
                 Spacer()
+
+                // Speaker
+                Button(action: {
+                    HapticManager.shared.light()
+                    speechManager.speak(isExpanded ? card.answer : card.question)
+                }) {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(.secondary)
+                }
+
+                // Heart
+                if let onSaveTap {
+                    Button(action: onSaveTap) {
+                        Image(systemName: isSaved ? "heart.fill" : "heart")
+                            .font(.system(size: 14))
+                            .foregroundColor(isSaved ? .red : .gray)
+                    }
+                }
 
                 Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                     .font(.system(size: 14))

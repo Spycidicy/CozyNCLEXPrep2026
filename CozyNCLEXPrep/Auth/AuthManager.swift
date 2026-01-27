@@ -102,8 +102,9 @@ class AuthManager: ObservableObject {
                 await createUserProfile(displayName: displayName)
             }
         } catch {
-            authError = AuthError.from(error)
-            throw authError!
+            let mapped = AuthError.from(error)
+            authError = mapped
+            throw mapped
         }
     }
 
@@ -122,8 +123,9 @@ class AuthManager: ObservableObject {
             isAuthenticated = true
             await loadUserProfile()
         } catch {
-            authError = AuthError.from(error)
-            throw authError!
+            let mapped = AuthError.from(error)
+            authError = mapped
+            throw mapped
         }
     }
 
@@ -138,8 +140,9 @@ class AuthManager: ObservableObject {
                 redirectTo: URL(string: "https://spycidicy.github.io/cozynclex-auth-redirect/")
             )
         } catch {
-            authError = AuthError.from(error)
-            throw authError!
+            let mapped = AuthError.from(error)
+            authError = mapped
+            throw mapped
         }
     }
 
@@ -152,8 +155,9 @@ class AuthManager: ObservableObject {
             try await client.auth.update(user: UserAttributes(password: newPassword))
             showPasswordReset = false
         } catch {
-            authError = AuthError.from(error)
-            throw authError!
+            let mapped = AuthError.from(error)
+            authError = mapped
+            throw mapped
         }
     }
 
@@ -229,8 +233,9 @@ class AuthManager: ObservableObject {
                 await loadUserProfile()
             }
         } catch {
-            authError = AuthError.from(error)
-            throw authError!
+            let mapped = AuthError.from(error)
+            authError = mapped
+            throw mapped
         }
     }
 
@@ -255,8 +260,9 @@ class AuthManager: ObservableObject {
             isAuthenticated = true
             await loadUserProfile()
         } catch {
-            authError = AuthError.from(error)
-            throw authError!
+            let mapped = AuthError.from(error)
+            authError = mapped
+            throw mapped
         }
     }
 
@@ -374,8 +380,9 @@ class AuthManager: ObservableObject {
             // Sign out (account deletion requires admin API)
             await signOut()
         } catch {
-            authError = AuthError.from(error)
-            throw authError!
+            let mapped = AuthError.from(error)
+            authError = mapped
+            throw mapped
         }
 
         isLoading = false

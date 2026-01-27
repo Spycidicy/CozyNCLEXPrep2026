@@ -40,7 +40,7 @@ struct DailyMotivationView: View {
                 Image("NurseBear")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 120, height: 120)
+                    .frame(maxWidth: 120, maxHeight: 120)
                     .shadow(color: .black.opacity(0.2), radius: 10, y: 5)
                     .scaleEffect(animateIn ? 1 : 0.5)
                     .opacity(animateIn ? 1 : 0)
@@ -233,18 +233,22 @@ struct MilestoneCelebrationView: View {
             VStack(spacing: 24) {
                 // Animated Star Badge
                 ZStack {
+                    GeometryReader { badgeGeo in
+                    let badgeSize = min(badgeGeo.size.width * 0.3, 120)
+                    let glowSize = badgeSize * 1.33
+                    ZStack {
                     // Glow effect
                     Circle()
                         .fill(milestoneColor.opacity(0.3))
-                        .frame(width: 160, height: 160)
+                        .frame(width: glowSize, height: glowSize)
                         .blur(radius: 20)
 
                     // Rotating rays
                     ForEach(0..<12, id: \.self) { i in
                         Rectangle()
                             .fill(milestoneColor.opacity(0.6))
-                            .frame(width: 4, height: 80)
-                            .offset(y: -60)
+                            .frame(width: 4, height: badgeSize * 0.67)
+                            .offset(y: -badgeSize * 0.5)
                             .rotationEffect(.degrees(Double(i) * 30 + starRotation))
                     }
 
@@ -257,13 +261,17 @@ struct MilestoneCelebrationView: View {
                                 endPoint: .bottomTrailing
                             )
                         )
-                        .frame(width: 120, height: 120)
+                        .frame(width: badgeSize, height: badgeSize)
                         .shadow(color: milestoneColor.opacity(0.5), radius: 15, y: 5)
 
                     // Number
                     Text("\(milestone)")
-                        .font(.system(size: 40, weight: .black, design: .rounded))
+                        .font(.system(size: badgeSize * 0.33, weight: .black, design: .rounded))
                         .foregroundColor(.white)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } // GeometryReader
+                    .frame(height: 180)
                 }
                 .scaleEffect(animateIn ? 1 : 0.3)
                 .opacity(animateIn ? 1 : 0)
@@ -402,7 +410,7 @@ struct ShareMilestoneButton: View {
 
     private func generateAndShare() {
         let cardView = MilestoneShareCard(milestone: milestone)
-            .frame(width: 380)
+            .frame(width: min(UIScreen.main.bounds.width - 20, 380))
 
         let renderer = ImageRenderer(content: cardView)
         renderer.scale = 3.0
@@ -538,7 +546,7 @@ struct MilestoneConfettiView: View {
             let particle = MilestoneParticle(
                 id: i,
                 x: CGFloat.random(in: 0...size.width),
-                color: colors.randomElement()!,
+                color: colors.randomElement() ?? .red,
                 size: CGFloat.random(in: 8...16),
                 delay: Double.random(in: 0...0.8)
             )
@@ -565,7 +573,7 @@ struct MilestoneConfettiPieceView: View {
             .frame(width: particle.size, height: particle.size * 0.6)
             .rotationEffect(.degrees(animate ? Double.random(in: 360...720) : 0))
             .position(x: particle.x + (animate ? CGFloat.random(in: -50...50) : 0),
-                      y: animate ? UIScreen.main.bounds.height + 50 : -20)
+                      y: animate ? 1000 : -20)
             .animation(
                 .easeIn(duration: Double.random(in: 2.5...4))
                 .delay(particle.delay),
@@ -1065,7 +1073,7 @@ struct ShareProgressView: View {
 
     private func generateImage() {
         let cardView = ShareableImageCard(stats: stats)
-            .frame(width: 380)
+            .frame(width: min(UIScreen.main.bounds.width - 20, 380))
 
         let renderer = ImageRenderer(content: cardView)
         renderer.scale = 3.0 // High resolution

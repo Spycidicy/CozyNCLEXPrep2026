@@ -45,15 +45,16 @@ struct IntroOnboardingView: View {
             .ignoresSafeArea()
             .animation(.easeInOut(duration: 0.5), value: currentPage)
 
+            GeometryReader { geo in
             VStack(spacing: 0) {
-                // Fixed top spacing for consistent bear position
-                Spacer().frame(height: 60)
+                // Dynamic top spacing based on screen height
+                Spacer().frame(height: geo.size.height * 0.05)
 
-                // Mascot - fixed position
+                // Mascot - proportional to screen
                 Image("NurseBear")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 160, height: 160)
+                    .frame(width: min(geo.size.width * 0.38, 160), height: min(geo.size.width * 0.38, 160))
                     .shadow(color: .black.opacity(0.1), radius: 10, y: 5)
                     .offset(y: mascotOffset)
                     .opacity(mascotOpacity)
@@ -64,7 +65,7 @@ struct IntroOnboardingView: View {
                         }
                     }
 
-                Spacer().frame(height: 24)
+                Spacer().frame(height: geo.size.height * 0.02)
 
                 // Page content - fixed height container for consistency
                 VStack(spacing: 12) {
@@ -72,10 +73,10 @@ struct IntroOnboardingView: View {
                     ZStack {
                         Circle()
                             .fill(pages[currentPage].color.opacity(0.2))
-                            .frame(width: 70, height: 70)
+                            .frame(width: min(geo.size.width * 0.17, 70), height: min(geo.size.width * 0.17, 70))
 
                         Image(systemName: pages[currentPage].icon)
-                            .font(.system(size: 32))
+                            .font(.system(size: min(geo.size.width * 0.08, 32)))
                             .foregroundColor(pages[currentPage].color)
                     }
                     .scaleEffect(showContent ? 1 : 0.5)
@@ -177,7 +178,7 @@ struct IntroOnboardingView: View {
                             .animation(.spring(response: 0.3), value: currentPage)
                     }
                 }
-                .padding(.bottom, 30)
+                .padding(.bottom, geo.size.height * 0.02)
 
                 // Buttons
                 VStack(spacing: 12) {
@@ -227,8 +228,9 @@ struct IntroOnboardingView: View {
                     }
                 }
                 .padding(.horizontal, 30)
-                .padding(.bottom, 50)
+                .padding(.bottom, geo.size.height * 0.04)
             }
+            } // GeometryReader
         }
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {

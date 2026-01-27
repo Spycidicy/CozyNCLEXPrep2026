@@ -13,12 +13,9 @@ struct CloudKitConfig {
     static let containerIdentifier = "iCloud.com.cozynclex.prep"
 
     // Lazy initialization to avoid crashes when entitlements aren't configured
-    private static var _container: CKContainer?
+    private static let _container = CKContainer(identifier: containerIdentifier)
     static var container: CKContainer {
-        if _container == nil {
-            _container = CKContainer(identifier: containerIdentifier)
-        }
-        return _container!
+        _container
     }
 
     static var privateDatabase: CKDatabase {

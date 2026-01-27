@@ -53,7 +53,7 @@ struct AuthView: View {
                             .font(.system(size: 28, weight: .bold, design: .rounded))
                             .foregroundStyle(
                                 LinearGradient(
-                                    colors: [Color(red: 0.2, green: 0.2, blue: 0.25), Color(red: 0.3, green: 0.3, blue: 0.35)],
+                                    colors: [Color.primary, Color.primary.opacity(0.8)],
                                     startPoint: .leading,
                                     endPoint: .trailing
                                 )
@@ -208,6 +208,11 @@ struct AuthView: View {
         }
         .sheet(isPresented: $showResetPassword) {
             ResetPasswordSheet()
+        }
+        .onAppear {
+            if authManager.isAuthenticated {
+                onAuthenticated?()
+            }
         }
         .onChange(of: authManager.isAuthenticated) { _, isAuthenticated in
             if isAuthenticated {
