@@ -11,6 +11,7 @@ import SwiftUI
 
 enum BrowseFilterMode: String {
     case all = "All Cards"
+    case saved = "Saved Cards"
     case weak = "Weak Cards"
     case mastered = "Mastered"
 }
@@ -41,12 +42,16 @@ struct BrowseCardsHomeView: View {
         }
     }
 
+    var savedCards: [Flashcard] {
+        allCards.filter { cardManager.savedCardIDs.contains($0.id) }
+    }
+
     var masteredCards: [Flashcard] {
         allCards.filter { cardManager.masteredCardIDs.contains($0.id) }
     }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
                     // Header
@@ -62,6 +67,18 @@ struct BrowseCardsHomeView: View {
 
                     // Smart Sections
                     VStack(spacing: 12) {
+                        // Saved Cards Section
+                        BrowseSectionCard(
+                            icon: "heart.fill",
+                            iconColor: .red,
+                            title: "Saved Cards",
+                            subtitle: "Cards you've hearted",
+                            count: savedCards.count,
+                            accentColor: .red
+                        ) {
+                            selectedFilter = .saved
+                        }
+
                         // Weak Cards Section
                         BrowseSectionCard(
                             icon: "exclamationmark.triangle.fill",
@@ -114,6 +131,8 @@ struct BrowseCardsHomeView: View {
                     .cornerRadius(12)
                     .padding(.horizontal)
                 }
+                .frame(maxWidth: 700)
+                .frame(maxWidth: .infinity)
                 .padding(.vertical)
             }
             .background(Color.creamyBackground)
@@ -241,6 +260,8 @@ struct CardBrowseView: View {
         switch filterMode {
         case .all:
             return available
+        case .saved:
+            return available.filter { cardManager.savedCardIDs.contains($0.id) }
         case .weak:
             return available.filter { card in
                 !cardManager.masteredCardIDs.contains(card.id) &&
@@ -269,7 +290,7 @@ struct CardBrowseView: View {
     }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 0) {
                 // Category Filter
                 ScrollView(.horizontal, showsIndicators: false) {

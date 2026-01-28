@@ -15,24 +15,48 @@ struct IntroOnboardingView: View {
     @State private var mascotOffset: CGFloat = 50
     @State private var mascotOpacity: Double = 0
     @State private var categoryAnimationProgress: [Bool] = [false, false, false, false]
+    @State private var typingText: String = ""
+    @State private var bearWiggle: Double = 0
+    @State private var promiseChecks: [Bool] = [false, false, false]
+    @State private var showPromiseButton = false
+    @State private var statsAnimated = false
+    @State private var featureAnimationProgress: [Bool] = [false, false, false, false]
+    @State private var pulseScale: CGFloat = 1.0
 
     enum PageType {
-        case standard
-        case sources
+        case welcome
+        case painPoint
         case categories
+        case sources
+        case features
+        case promise
+        case getStarted
     }
 
     private let pages: [(title: String, subtitle: String, icon: String, color: Color, pageType: PageType)] = [
-        ("Welcome to CozyNCLEX!", "Your cozy companion for NCLEX success", "heart.fill", .pastelPink, .standard),
-        ("Master the NCLEX", "Master all 4 Client Needs categories to pass", "target", .mintGreen, .categories),
+        ("Hey future nurse!", "I'm CozyBear, and I'm here to help you crush the NCLEX", "hand.wave.fill", .pastelPink, .welcome),
+        ("The NCLEX is tough.", "42% of repeat test-takers fail again. But not you.", "exclamationmark.triangle.fill", .softLavender, .painPoint),
+        ("4 Categories to Master", "The NCLEX tests these areas — we cover all of them", "target", .mintGreen, .categories),
         ("Trusted Sources", "Content compiled from leading NCLEX prep resources", "checkmark.seal.fill", .skyBlue, .sources),
-        ("Track Progress", "Watch yourself grow with detailed stats", "chart.line.uptrend.xyaxis", .softLavender, .standard),
-        ("Let's Get Started!", "Create your account to begin your nursing journey", "star.fill", .mintGreen, .standard)
+        ("Study Smarter", "Everything you need, nothing you don't", "sparkles", .skyBlue, .features),
+        ("Make a Promise", "Students who commit to daily practice are 3x more likely to pass", "heart.fill", .pastelPink, .promise),
+        ("You're Ready!", "Let's turn that anxiety into confidence", "star.fill", .mintGreen, .getStarted)
     ]
+
+    private let fullWelcomeText = "I'm CozyBear, and I'm here to help you crush the NCLEX"
+
+    // NCLEX Categories data
+    private var nclexCategories: [(icon: String, name: String, description: String, color: Color)] {
+        [
+            ("shield.checkered", "Safe & Effective Care", "Infection control, safety, legal & ethical", .skyBlue),
+            ("heart.circle", "Health Promotion", "Wellness, prevention & screening", .mintGreen),
+            ("brain.head.profile", "Psychosocial Integrity", "Mental health & coping", .softLavender),
+            ("waveform.path.ecg", "Physiological Integrity", "Body systems & pharmacology", .pastelPink)
+        ]
+    }
 
     var body: some View {
         ZStack {
-            // Animated gradient background
             LinearGradient(
                 colors: [
                     pages[currentPage].color.opacity(0.2),
@@ -47,33 +71,41 @@ struct IntroOnboardingView: View {
 
             GeometryReader { geo in
             VStack(spacing: 0) {
-                // Dynamic top spacing based on screen height
-                Spacer().frame(height: geo.size.height * 0.05)
+                Spacer().frame(height: geo.size.height * 0.04)
 
-                // Mascot - proportional to screen
                 Image("NurseBear")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: min(geo.size.width * 0.38, 160), height: min(geo.size.width * 0.38, 160))
+                    .frame(width: min(geo.size.width * 0.35, 150), height: min(geo.size.width * 0.35, 150))
                     .shadow(color: .black.opacity(0.1), radius: 10, y: 5)
                     .offset(y: mascotOffset)
                     .opacity(mascotOpacity)
+                    .rotationEffect(.degrees(bearWiggle))
                     .onAppear {
                         withAnimation(.spring(response: 0.8, dampingFraction: 0.6).delay(0.2)) {
                             mascotOffset = 0
                             mascotOpacity = 1
                         }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            withAnimation(.easeInOut(duration: 0.1).repeatCount(5, autoreverses: true)) {
+                                bearWiggle = 3
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                withAnimation(.easeInOut(duration: 0.1)) {
+                                    bearWiggle = 0
+                                }
+                            }
+                        }
                     }
 
                 Spacer().frame(height: geo.size.height * 0.02)
 
-                // Page content - fixed height container for consistency
                 VStack(spacing: 12) {
-                    // Icon
                     ZStack {
                         Circle()
                             .fill(pages[currentPage].color.opacity(0.2))
                             .frame(width: min(geo.size.width * 0.17, 70), height: min(geo.size.width * 0.17, 70))
+                            .scaleEffect(pulseScale)
 
                         Image(systemName: pages[currentPage].icon)
                             .font(.system(size: min(geo.size.width * 0.08, 32)))
@@ -82,26 +114,68 @@ struct IntroOnboardingView: View {
                     .scaleEffect(showContent ? 1 : 0.5)
                     .opacity(showContent ? 1 : 0)
 
-                    // Title
                     Text(pages[currentPage].title)
-                        .font(.system(size: 26, weight: .bold, design: .rounded))
+                        .font(.system(size: min(geo.size.width * 0.065, 26), weight: .bold, design: .rounded))
                         .multilineTextAlignment(.center)
                         .offset(y: showContent ? 0 : 20)
                         .opacity(showContent ? 1 : 0)
 
-                    // Subtitle
-                    Text(pages[currentPage].subtitle)
-                        .font(.system(size: 15, design: .rounded))
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 40)
-                        .offset(y: showContent ? 0 : 20)
-                        .opacity(showContent ? 1 : 0)
+                    if pages[currentPage].pageType == .welcome {
+                        Text(typingText)
+                            .font(.system(size: 15, design: .rounded))
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 30)
+                            .frame(minHeight: 40)
+                    } else {
+                        Text(pages[currentPage].subtitle)
+                            .font(.system(size: 15, design: .rounded))
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 30)
+                            .offset(y: showContent ? 0 : 20)
+                            .opacity(showContent ? 1 : 0)
+                    }
 
-                    // Categories page - NCLEX mastery explanation
+                    // MARK: - Pain Point page
+                    if pages[currentPage].pageType == .painPoint {
+                        VStack(spacing: 16) {
+                            HStack(spacing: 20) {
+                                OnboardingStatBubble(value: "400+", label: "Questions", color: .skyBlue, isAnimated: statsAnimated)
+                                OnboardingStatBubble(value: "9", label: "Categories", color: .mintGreen, isAnimated: statsAnimated)
+                                OnboardingStatBubble(value: "24/7", label: "Access", color: .softLavender, isAnimated: statsAnimated)
+                            }
+                            .padding(.top, 8)
+
+                            HStack(spacing: 10) {
+                                Image(systemName: "shield.checkered")
+                                    .font(.system(size: 18))
+                                    .foregroundColor(.mintGreen)
+                                Text("We've got you covered")
+                                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                    .foregroundColor(.primary)
+                            }
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 14)
+                            .background(Color.mintGreen.opacity(0.12))
+                            .cornerRadius(20)
+                            .scaleEffect(statsAnimated ? 1 : 0.8)
+                            .opacity(statsAnimated ? 1 : 0)
+                        }
+                        .offset(y: showContent ? 0 : 30)
+                        .opacity(showContent ? 1 : 0)
+                        .onAppear {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
+                                    statsAnimated = true
+                                }
+                            }
+                        }
+                    }
+
+                    // MARK: - Categories page
                     if pages[currentPage].pageType == .categories {
                         VStack(spacing: 16) {
-                            // Category cards
                             VStack(spacing: 10) {
                                 ForEach(Array(nclexCategories.enumerated()), id: \.offset) { index, category in
                                     OnboardingCategoryCard(
@@ -115,7 +189,6 @@ struct IntroOnboardingView: View {
                             }
                             .padding(.horizontal)
 
-                            // Bottom message
                             HStack(spacing: 8) {
                                 Image(systemName: "checkmark.seal.fill")
                                     .foregroundColor(.mintGreen)
@@ -137,7 +210,7 @@ struct IntroOnboardingView: View {
                         }
                     }
 
-                    // Sources list for credentials page - scrollable if needed
+                    // MARK: - Sources page
                     if pages[currentPage].pageType == .sources {
                         ScrollView {
                             VStack(spacing: 10) {
@@ -153,28 +226,108 @@ struct IntroOnboardingView: View {
                         .offset(y: showContent ? 0 : 30)
                         .opacity(showContent ? 1 : 0)
                     }
+
+                    // MARK: - Features page
+                    if pages[currentPage].pageType == .features {
+                        VStack(spacing: 12) {
+                            OnboardingFeatureRow(icon: "bolt.fill", title: "Quick Study Mode", description: "5-minute sessions that fit your schedule", color: .orange, isAnimated: featureAnimationProgress[0])
+                            OnboardingFeatureRow(icon: "brain.head.profile", title: "Spaced Repetition", description: "Focus on what you get wrong", color: .softLavender, isAnimated: featureAnimationProgress[1])
+                            OnboardingFeatureRow(icon: "checkmark.seal.fill", title: "NCLEX Readiness", description: "Know exactly when you're ready to test", color: .mintGreen, isAnimated: featureAnimationProgress[2])
+                            OnboardingFeatureRow(icon: "chart.line.uptrend.xyaxis", title: "Progress Tracking", description: "Watch your confidence grow daily", color: .skyBlue, isAnimated: featureAnimationProgress[3])
+                        }
+                        .padding(.horizontal)
+                        .offset(y: showContent ? 0 : 30)
+                        .opacity(showContent ? 1 : 0)
+                        .onAppear {
+                            animateFeaturesSequentially()
+                        }
+                    }
+
+                    // MARK: - Promise page
+                    if pages[currentPage].pageType == .promise {
+                        VStack(spacing: 14) {
+                            OnboardingPromiseRow(text: "I'll study a little every day", isChecked: promiseChecks[0], delay: 0) {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { promiseChecks[0] = true }
+                                checkAllPromises()
+                            }
+                            OnboardingPromiseRow(text: "I won't give up when it gets hard", isChecked: promiseChecks[1], delay: 1) {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { promiseChecks[1] = true }
+                                checkAllPromises()
+                            }
+                            OnboardingPromiseRow(text: "I believe I can pass the NCLEX", isChecked: promiseChecks[2], delay: 2) {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { promiseChecks[2] = true }
+                                checkAllPromises()
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                        .offset(y: showContent ? 0 : 30)
+                        .opacity(showContent ? 1 : 0)
+                    }
+
+                    // MARK: - Get Started page
+                    if pages[currentPage].pageType == .getStarted {
+                        VStack(spacing: 12) {
+                            HStack(spacing: 6) {
+                                ForEach(0..<5) { _ in
+                                    Image(systemName: "star.fill")
+                                        .foregroundColor(.yellow)
+                                        .font(.system(size: 16))
+                                }
+                            }
+                            .opacity(showContent ? 1 : 0)
+
+                            Text("\"This app made studying actually fun.\nI passed on my first try!\"")
+                                .font(.system(size: 14, design: .rounded))
+                                .italic()
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 30)
+                                .opacity(showContent ? 1 : 0)
+
+                            Text("— CozyNCLEX Student")
+                                .font(.system(size: 13, weight: .medium, design: .rounded))
+                                .foregroundColor(.primary.opacity(0.6))
+                                .opacity(showContent ? 1 : 0)
+                        }
+                        .padding(.top, 8)
+                    }
                 }
                 .frame(maxHeight: .infinity)
                 .animation(.spring(response: 0.5, dampingFraction: 0.8), value: showContent)
                 .onChange(of: currentPage) { _, _ in
                     showContent = false
                     categoryAnimationProgress = [false, false, false, false]
+                    featureAnimationProgress = [false, false, false, false]
+                    statsAnimated = false
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                         withAnimation { showContent = true }
                         if pages[currentPage].pageType == .categories {
                             animateCategoriesSequentially()
+                        }
+                        if pages[currentPage].pageType == .features {
+                            animateFeaturesSequentially()
+                        }
+                        if pages[currentPage].pageType == .welcome {
+                            startTypingAnimation()
+                        }
+                        if pages[currentPage].pageType == .painPoint {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
+                                    statsAnimated = true
+                                }
+                            }
                         }
                     }
                 }
 
                 Spacer(minLength: 20)
 
-                // Page indicators
-                HStack(spacing: 8) {
+                // Page indicators — progress bar style
+                HStack(spacing: 6) {
                     ForEach(0..<pages.count, id: \.self) { index in
-                        Circle()
-                            .fill(index == currentPage ? pages[currentPage].color : Color.gray.opacity(0.3))
-                            .frame(width: index == currentPage ? 10 : 8, height: index == currentPage ? 10 : 8)
+                        Capsule()
+                            .fill(index <= currentPage ? pages[currentPage].color : Color.gray.opacity(0.25))
+                            .frame(width: index == currentPage ? 24 : 8, height: 8)
                             .animation(.spring(response: 0.3), value: currentPage)
                     }
                 }
@@ -182,7 +335,31 @@ struct IntroOnboardingView: View {
 
                 // Buttons
                 VStack(spacing: 12) {
-                    if currentPage < pages.count - 1 {
+                    if pages[currentPage].pageType == .promise {
+                        Button(action: nextPage) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "heart.fill")
+                                    .font(.system(size: 16))
+                                Text("I Promise")
+                                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 18)
+                            .background(
+                                LinearGradient(
+                                    colors: [.pastelPink, .pastelPink.opacity(0.8)],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .cornerRadius(16)
+                        }
+                        .opacity(showPromiseButton ? 1 : 0.4)
+                        .scaleEffect(showPromiseButton ? 1 : 0.95)
+                        .disabled(!showPromiseButton)
+                        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: showPromiseButton)
+                    } else if currentPage < pages.count - 1 {
                         Button(action: nextPage) {
                             Text("Continue")
                                 .font(.system(size: 18, weight: .bold, design: .rounded))
@@ -198,13 +375,6 @@ struct IntroOnboardingView: View {
                                 )
                                 .cornerRadius(16)
                         }
-
-                        Button(action: { onComplete() }) {
-                            Text("Skip")
-                                .font(.system(size: 15, weight: .medium, design: .rounded))
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(.top, 4)
                     } else {
                         Button(action: { onComplete() }) {
                             HStack {
@@ -224,26 +394,49 @@ struct IntroOnboardingView: View {
                                 )
                             )
                             .cornerRadius(16)
+                            .scaleEffect(pulseScale)
+                            .onAppear {
+                                withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
+                                    pulseScale = 1.03
+                                }
+                            }
                         }
+                    }
+
+                    if currentPage < pages.count - 1 && pages[currentPage].pageType != .promise {
+                        Button(action: { onComplete() }) {
+                            Text("Skip")
+                                .font(.system(size: 15, weight: .medium, design: .rounded))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.top, 4)
                     }
                 }
                 .padding(.horizontal, 30)
                 .padding(.bottom, geo.size.height * 0.04)
             }
+            .frame(maxWidth: 700)
+            .frame(maxWidth: .infinity)
             } // GeometryReader
         }
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 withAnimation { showContent = true }
             }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                startTypingAnimation()
+            }
         }
         .gesture(
             DragGesture()
                 .onEnded { value in
                     if value.translation.width < -50 && currentPage < pages.count - 1 {
+                        if pages[currentPage].pageType == .promise && !showPromiseButton { return }
                         nextPage()
                     } else if value.translation.width > 50 && currentPage > 0 {
-                        previousPage()
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                            currentPage -= 1
+                        }
                     }
                 }
         )
@@ -255,9 +448,13 @@ struct IntroOnboardingView: View {
         }
     }
 
-    private func previousPage() {
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-            currentPage -= 1
+    private func startTypingAnimation() {
+        typingText = ""
+        let characters = Array(fullWelcomeText)
+        for (index, character) in characters.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.03) {
+                typingText += String(character)
+            }
         }
     }
 
@@ -271,14 +468,32 @@ struct IntroOnboardingView: View {
         }
     }
 
-    // NCLEX Categories data
-    private var nclexCategories: [(icon: String, name: String, description: String, color: Color)] {
-        [
-            ("shield.checkered", "Safe & Effective Care", "Infection control, safety, legal & ethical", .skyBlue),
-            ("heart.circle", "Health Promotion", "Wellness, prevention & screening", .mintGreen),
-            ("brain.head.profile", "Psychosocial Integrity", "Mental health & coping", .softLavender),
-            ("waveform.path.ecg", "Physiological Integrity", "Body systems & pharmacology", .pastelPink)
-        ]
+    private func animateFeaturesSequentially() {
+        for index in 0..<4 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.18 + 0.2) {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                    featureAnimationProgress[index] = true
+                }
+            }
+        }
+    }
+
+    private func checkAllPromises() {
+        if promiseChecks.allSatisfy({ $0 }) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) {
+                    showPromiseButton = true
+                }
+                withAnimation(.easeInOut(duration: 0.1).repeatCount(5, autoreverses: true)) {
+                    bearWiggle = 3
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    withAnimation(.easeInOut(duration: 0.1)) {
+                        bearWiggle = 0
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -293,7 +508,6 @@ struct OnboardingCategoryCard: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            // Icon circle
             ZStack {
                 Circle()
                     .fill(color.opacity(0.2))
@@ -304,7 +518,6 @@ struct OnboardingCategoryCard: View {
                     .foregroundColor(color)
             }
 
-            // Text
             VStack(alignment: .leading, spacing: 2) {
                 Text(name)
                     .font(.system(size: 15, weight: .semibold, design: .rounded))
@@ -318,7 +531,6 @@ struct OnboardingCategoryCard: View {
 
             Spacer()
 
-            // Checkmark
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 22))
                 .foregroundColor(color)

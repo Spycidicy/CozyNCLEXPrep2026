@@ -14,6 +14,7 @@ import UserNotifications
 import UIKit
 import AudioToolbox
 import Supabase
+import WidgetKit
 
 // MARK: - Persistence Manager
 
@@ -1182,6 +1183,20 @@ class DailyGoalsManager: ObservableObject {
 
         // Mark XP data for sync
         syncManager.markChanged(CloudKitConfig.RecordType.userXP, id: "main")
+
+        // Update widget data
+        let stats = StatsManager.shared.stats
+        let completedGoals = dailyGoals.filter { $0.isCompleted }.count
+        WidgetDataManager.update(
+            streak: currentStreak, level: currentLevel, levelTitle: levelTitle,
+            totalXP: totalXP, xpProgress: xpProgressPercent,
+            totalCardsStudied: stats.totalCardsStudied,
+            accuracy: stats.overallAccuracy,
+            dailyGoalsCompleted: completedGoals, dailyGoalsTotal: dailyGoals.count,
+            cardOfTheDayQuestion: cardOfTheDay?.question ?? "Start studying to see your Card of the Day!",
+            cardOfTheDayCategory: cardOfTheDay?.contentCategory.rawValue ?? "General"
+        )
+        WidgetCenter.shared.reloadAllTimelines()
     }
 
     /// Resets all in-memory state for a new user (called on logout)
@@ -2256,34 +2271,22 @@ struct MatchTile: Identifiable, Equatable {
 extension Flashcard {
     // FREE CARDS (50) - Available to all users
     static let freeCards: [Flashcard] = [
-        // FUNDAMENTALS - FREE (10)
         Flashcard(
-            question: "What is the FIRST action a nurse should take when a patient falls?",
-            answer: "Assess the patient for injuries",
-            wrongAnswers: ["Call the physician", "Complete an incident report", "Help the patient back to bed"],
-            rationale: "Patient safety is the priority. Before any other action, the nurse must assess for injuries to determine the severity and appropriate interventions. Documentation and notification come after ensuring patient safety.",
+            question: "Which nursing intervention is MOST important for preventing hospital-acquired infections?",
+            answer: "Performing hand hygiene before and after patient contact",
+            wrongAnswers: ["Wearing gloves for all patient interactions", "Isolating all patients with infections", "Administering prophylactic antibiotics"],
+            rationale: "CORRECT: Hand hygiene is THE #1 evidence-based intervention for preventing HAIs per CDC and WHO. Simple, cheap, effective.\n\nWHY OTHER ANSWERS ARE WRONG:\n• Gloves for ALL interactions = Overuse leads to false security; gloves don't replace hand hygiene, and can spread pathogens if not changed\n• Isolating ALL infected patients = Not practical or necessary; isolation is for specific conditions requiring precautions\n• Prophylactic antibiotics = Creates antibiotic resistance; used only for specific surgical situations, not general prevention\n\nTHE 5 MOMENTS FOR HAND HYGIENE (WHO):\n1. Before patient contact\n2. Before aseptic procedure\n3. After body fluid exposure\n4. After patient contact\n5. After touching patient surroundings\n\nNCLEX TIP: Hand hygiene is almost always the correct answer for infection prevention questions.",
             contentCategory: .fundamentals,
             nclexCategory: .safeEffectiveCare,
             difficulty: .easy,
-            questionType: .priority,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which vital sign change indicates a patient may be developing shock?",
-            answer: "Decreased blood pressure with increased heart rate",
-            wrongAnswers: ["Increased blood pressure with decreased heart rate", "Normal blood pressure with normal heart rate", "Decreased blood pressure with decreased heart rate"],
-            rationale: "In early compensatory shock, the body attempts to maintain perfusion by increasing heart rate (tachycardia) as blood pressure drops. This compensatory mechanism is a key early warning sign.",
-            contentCategory: .fundamentals,
-            nclexCategory: .physiological,
-            difficulty: .medium,
             questionType: .standard,
             isPremium: false
         ),
         Flashcard(
-            question: "A nurse is preparing to administer medications. Which action demonstrates proper patient identification?",
-            answer: "Check two patient identifiers and compare with the MAR",
-            wrongAnswers: ["Ask the patient their name only", "Check the room number", "Verify with the patient's family member"],
-            rationale: "The Joint Commission requires two patient identifiers (name and DOB, or name and medical record number) before medication administration. Room numbers should never be used as identifiers.",
+            question: "What does the acronym RACE stand for in fire safety?",
+            answer: "Rescue, Alarm, Contain, Extinguish",
+            wrongAnswers: ["Run, Alert, Call, Evacuate", "Rescue, Alert, Cover, Exit", "Remove, Alarm, Close, Escape"],
+            rationale: "CORRECT: RACE is the standardized fire response protocol used in healthcare facilities.\n\nR - RESCUE patients in immediate danger (closest to fire)\nA - ALARM - pull fire alarm, call switchboard\nC - CONTAIN - close doors to limit fire/smoke spread\nE - EXTINGUISH - only if small, safe, and you're trained (use PASS technique)\n\nWHY OTHER ANSWERS ARE WRONG:\nAll alternatives have incorrect components:\n• \"Run\" - Never run; creates panic, spreads fire\n• \"Call\" - Alarm comes before calling for help\n• \"Exit/Escape\" - Evacuation is last resort, not first step\n• \"Cover\" - Not part of standard protocol\n\nALSO KNOW PASS (Fire Extinguisher):\nP - Pull the pin\nA - Aim at base of fire\nS - Squeeze the handle\nS - Sweep side to side",
             contentCategory: .fundamentals,
             nclexCategory: .safeEffectiveCare,
             difficulty: .easy,
@@ -2294,7 +2297,7 @@ extension Flashcard {
             question: "What is the correct order for performing a physical assessment?",
             answer: "Inspection, palpation, percussion, auscultation",
             wrongAnswers: ["Palpation, inspection, percussion, auscultation", "Auscultation, inspection, palpation, percussion", "Percussion, palpation, auscultation, inspection"],
-            rationale: "The correct sequence is Inspection (visual), Palpation (touch), Percussion (tapping), Auscultation (listening). Exception: For abdominal assessment, auscultate before palpation to avoid altering bowel sounds.",
+            rationale: "CORRECT: IPPA sequence (Inspection, Palpation, Percussion, Auscultation) - systematic head-to-toe approach.\n\nWHY OTHER ANSWERS ARE WRONG:\nAll other orders disrupt the logical sequence:\n• Inspection MUST be first - visual assessment is non-invasive and guides further exam\n• Palpation before inspection means you might miss visible abnormalities\n• Auscultation first can alter findings (especially abdomen)\n\nEXCEPTION: ABDOMINAL ASSESSMENT = Inspection, Auscultation, Percussion, Palpation\nWhy? Palpation and percussion stimulate bowel activity and alter auscultation findings.\n\nMEMORY AID: \"I Properly Perform Assessments\" = Inspection, Palpation, Percussion, Auscultation",
             contentCategory: .fundamentals,
             nclexCategory: .healthPromotion,
             difficulty: .easy,
@@ -2302,21 +2305,10 @@ extension Flashcard {
             isPremium: false
         ),
         Flashcard(
-            question: "A patient has a blood pressure of 88/56 mmHg. Which position should the nurse place the patient in?",
-            answer: "Supine with legs elevated (modified Trendelenburg)",
-            wrongAnswers: ["High Fowler's position", "Prone position", "Left lateral position"],
-            rationale: "For hypotensive patients, elevating the legs helps return blood to the central circulation, improving cardiac output and blood pressure. High Fowler's would worsen hypotension by pooling blood in the lower extremities.",
-            contentCategory: .fundamentals,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which nursing intervention is MOST important for preventing hospital-acquired infections?",
-            answer: "Performing hand hygiene before and after patient contact",
-            wrongAnswers: ["Wearing gloves for all patient interactions", "Isolating all patients with infections", "Administering prophylactic antibiotics"],
-            rationale: "Hand hygiene is the single most effective way to prevent the spread of infections in healthcare settings. The CDC and WHO emphasize hand hygiene as the cornerstone of infection prevention.",
+            question: "What is the FIRST action a nurse should take when a patient falls?",
+            answer: "Assess the patient for injuries",
+            wrongAnswers: ["Call the physician", "Complete an incident report", "Help the patient back to bed"],
+            rationale: "CORRECT: Assess first - patient safety is the priority. You need to determine injury severity before moving the patient (could have spinal injury).\n\nWHY OTHER ANSWERS ARE WRONG:\n• Call the physician - Assessment data needed first; calling without info wastes time\n• Complete incident report - Administrative task, never takes priority over patient care\n• Help patient back to bed - DANGEROUS - could worsen spinal injury; assess first\n\nNCLEX TIP: When you see \"FIRST action,\" think assessment before intervention. ABC (Airway, Breathing, Circulation) and safety always come first.",
             contentCategory: .fundamentals,
             nclexCategory: .safeEffectiveCare,
             difficulty: .easy,
@@ -2324,451 +2316,109 @@ extension Flashcard {
             isPremium: false
         ),
         Flashcard(
-            question: "A patient is NPO for surgery. Which action by the nurse is appropriate?",
-            answer: "Remove the water pitcher and post NPO sign",
-            wrongAnswers: ["Allow ice chips only", "Give medications with a full glass of water", "Permit clear liquids until 2 hours before surgery"],
-            rationale: "NPO means nothing by mouth. Removing access to fluids and posting clear signage prevents accidental intake. Specific pre-operative guidelines should be followed per facility protocol and surgeon orders.",
+            question: "A patient is diagnosed with exocrine pancreatic insufficiency (EPI). Which of the following dietary modifications is MOST important for the nurse to teach the patient?",
+            answer: "Consume a low-fat diet with pancreatic enzyme replacement therapy.",
+            wrongAnswers: ["Prepare the patient for the prescribed diagnostic imaging procedure", "Initiate intravenous fluid therapy as ordered by the healthcare provider", "Apply a cold compress to the area for twenty minutes at a time"],
+            rationale: "Patients with EPI have difficulty digesting fats due to a lack of pancreatic enzymes. A low-fat diet helps reduce symptoms such as steatorrhea (fatty stools), and pancreatic enzyme replacement therapy helps improve digestion and absorption of nutrients. The other options may be helpful in some situations, but the low-fat diet and enzyme replacement are the most crucial components of dietary management for EPI.",
             contentCategory: .fundamentals,
-            nclexCategory: .safeEffectiveCare,
-            difficulty: .easy,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Select ALL interventions that are appropriate for fall prevention:",
-            answer: "Keep bed in lowest position, Ensure call light is within reach, Use non-slip footwear, Keep environment well-lit",
-            wrongAnswers: ["Restrain all high-risk patients"],
-            rationale: "Fall prevention is multifaceted: low bed position reduces injury from falls, accessible call light allows patients to ask for help, non-slip footwear prevents slipping, and good lighting helps patients see obstacles. Restraints are a last resort and can increase fall risk.",
-            contentCategory: .fundamentals,
-            nclexCategory: .safeEffectiveCare,
-            difficulty: .medium,
-            questionType: .sata,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "What does the acronym RACE stand for in fire safety?",
-            answer: "Rescue, Alarm, Contain, Extinguish",
-            wrongAnswers: ["Run, Alert, Call, Evacuate", "Rescue, Alert, Cover, Exit", "Remove, Alarm, Close, Escape"],
-            rationale: "RACE is the fire response protocol: Rescue patients in immediate danger, Activate the Alarm, Contain the fire by closing doors, Extinguish if small and safe to do so. This sequence prioritizes patient safety.",
-            contentCategory: .fundamentals,
-            nclexCategory: .safeEffectiveCare,
-            difficulty: .easy,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A nurse is documenting in the medical record. Which entry is MOST appropriate?",
-            answer: "Patient states 'I feel dizzy when I stand up.' VS: BP 100/60 sitting, 82/50 standing.",
-            wrongAnswers: ["Patient is dizzy, probably dehydrated", "Patient seems to have orthostatic hypotension", "Patient is a poor historian and is confused about symptoms"],
-            rationale: "Documentation should be objective, factual, and include direct patient quotes when relevant. Avoid assumptions, diagnoses (unless within scope), and judgmental language. Include measurable data.",
-            contentCategory: .fundamentals,
-            nclexCategory: .safeEffectiveCare,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-
-        // MED-SURG - FREE (10)
-        Flashcard(
-            question: "A patient with heart failure has gained 3 pounds overnight. What is the nurse's PRIORITY action?",
-            answer: "Assess for edema and lung sounds, then notify the provider",
-            wrongAnswers: ["Restrict fluids immediately", "Administer an extra dose of diuretic", "Encourage increased activity"],
-            rationale: "Rapid weight gain (>2-3 lbs in 24 hours) indicates fluid retention, a sign of worsening heart failure. Assessment confirms the finding, and the provider needs notification for medication adjustments. Nurses cannot independently change medication doses.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .priority,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which finding in a patient with diabetes requires IMMEDIATE intervention?",
-            answer: "Blood glucose of 45 mg/dL with diaphoresis",
-            wrongAnswers: ["Blood glucose of 180 mg/dL before lunch", "Blood glucose of 95 mg/dL fasting", "HbA1c of 7.2%"],
-            rationale: "Hypoglycemia (<70 mg/dL) with symptoms (diaphoresis, confusion, tremors) is a medical emergency requiring immediate treatment with fast-acting glucose. Untreated severe hypoglycemia can lead to seizures, coma, and death.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A patient post-thyroidectomy reports tingling around the mouth. What should the nurse assess for?",
-            answer: "Hypocalcemia (check Chvostek's and Trousseau's signs)",
-            wrongAnswers: ["Hyperkalemia", "Thyroid storm", "Allergic reaction to anesthesia"],
-            rationale: "Parathyroid glands may be damaged during thyroidectomy, causing hypocalcemia. Perioral tingling is an early sign. Chvostek's sign (facial twitch when tapping cheek) and Trousseau's sign (carpopedal spasm with BP cuff) confirm hypocalcemia.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "What is the PRIORITY nursing diagnosis for a patient experiencing an acute asthma attack?",
-            answer: "Impaired gas exchange",
-            wrongAnswers: ["Anxiety", "Activity intolerance", "Deficient knowledge"],
-            rationale: "During an acute asthma attack, bronchospasm and inflammation severely impair oxygen and carbon dioxide exchange. This life-threatening physiological problem takes priority over psychological or educational needs using Maslow's hierarchy.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A patient with COPD has an oxygen saturation of 88%. What is the appropriate oxygen flow rate?",
-            answer: "1-2 L/min via nasal cannula, titrate to SpO2 88-92%",
-            wrongAnswers: ["High-flow oxygen at 15 L/min", "100% oxygen via non-rebreather mask", "No oxygen needed, 88% is acceptable for COPD"],
-            rationale: "COPD patients have chronic CO2 retention and rely on hypoxic drive for breathing. High-flow oxygen can suppress this drive and cause respiratory failure. Target SpO2 of 88-92% balances oxygenation with maintaining respiratory drive.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which assessment finding indicates a patient may be experiencing a stroke?",
-            answer: "Sudden onset of facial drooping, arm weakness, and slurred speech",
-            wrongAnswers: ["Gradual onset of bilateral leg weakness over 2 weeks", "Chronic headaches with normal neurological exam", "Intermittent dizziness when changing positions"],
-            rationale: "FAST (Face drooping, Arm weakness, Speech difficulty, Time to call 911) identifies stroke symptoms. Sudden onset of unilateral neurological deficits is characteristic. Stroke is time-sensitive - 'time is brain.'",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A patient with cirrhosis has a distended abdomen. Which position is BEST for comfort and breathing?",
-            answer: "Semi-Fowler's or high Fowler's position",
-            wrongAnswers: ["Supine flat position", "Trendelenburg position", "Prone position"],
-            rationale: "Ascites (fluid accumulation) in cirrhosis causes abdominal distension that pushes on the diaphragm, making breathing difficult. Elevating the head of bed allows gravity to pull fluid down and gives the diaphragm more room to expand.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "After a cardiac catheterization via femoral artery, which assessment is PRIORITY?",
-            answer: "Check the puncture site for bleeding and assess distal pulses",
-            wrongAnswers: ["Encourage the patient to ambulate immediately", "Assess for pain at the catheter insertion site", "Check blood glucose levels"],
-            rationale: "Femoral artery access creates bleeding risk and potential for hematoma or arterial occlusion. Checking the site for bleeding/hematoma and assessing pedal pulses ensures adequate circulation. The patient must remain on bedrest with the leg straight.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .priority,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A patient with renal failure has a potassium level of 6.8 mEq/L. Which ECG change should the nurse expect?",
-            answer: "Tall, peaked T waves",
-            wrongAnswers: ["Flat T waves", "Prolonged QT interval", "ST segment elevation"],
-            rationale: "Hyperkalemia causes characteristic ECG changes: tall peaked T waves (early), widened QRS, and eventually sine wave pattern and cardiac arrest. K+ >6.0 mEq/L is dangerous and requires immediate treatment.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Select ALL signs and symptoms of left-sided heart failure:",
-            answer: "Dyspnea, Orthopnea, Crackles in lungs, Pink frothy sputum",
-            wrongAnswers: ["Jugular vein distension"],
-            rationale: "Left-sided heart failure causes pulmonary congestion because the left ventricle cannot effectively pump blood forward. Fluid backs up into the lungs causing dyspnea, orthopnea, crackles, and in severe cases, pink frothy sputum (pulmonary edema). JVD is a sign of right-sided failure.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .sata,
-            isPremium: false
-        ),
-
-        // PHARMACOLOGY - FREE (10)
-        Flashcard(
-            question: "A patient is prescribed warfarin. Which lab value should the nurse monitor?",
-            answer: "INR (International Normalized Ratio)",
-            wrongAnswers: ["aPTT (activated Partial Thromboplastin Time)", "Platelet count only", "Hemoglobin and hematocrit only"],
-            rationale: "Warfarin affects vitamin K-dependent clotting factors (II, VII, IX, X). INR monitors warfarin effectiveness. Therapeutic range is usually 2-3 (2.5-3.5 for mechanical heart valves). aPTT monitors heparin, not warfarin.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "What is the antidote for heparin overdose?",
-            answer: "Protamine sulfate",
-            wrongAnswers: ["Vitamin K", "Naloxone", "Flumazenil"],
-            rationale: "Protamine sulfate is a positively charged molecule that binds to negatively charged heparin, neutralizing its anticoagulant effect. Vitamin K reverses warfarin. Naloxone reverses opioids. Flumazenil reverses benzodiazepines.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which medication class ending in '-pril' is used for hypertension and heart failure?",
-            answer: "ACE inhibitors (e.g., lisinopril, enalapril)",
-            wrongAnswers: ["Beta blockers", "Calcium channel blockers", "ARBs"],
-            rationale: "ACE inhibitors end in '-pril' and work by blocking angiotensin-converting enzyme, reducing angiotensin II production. This causes vasodilation and decreased aldosterone, lowering BP. Common side effect is dry cough.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .easy,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A patient on digoxin has a heart rate of 52 bpm. What should the nurse do?",
-            answer: "Hold the medication and notify the provider",
-            wrongAnswers: ["Give the medication as prescribed", "Give half the prescribed dose", "Wait 30 minutes and recheck the heart rate"],
-            rationale: "Digoxin slows heart rate. Hold digoxin if HR <60 bpm (adults) or <70 bpm (children) as this may indicate toxicity. Always check apical pulse for full minute before administration. Notify provider for HR below threshold.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which electrolyte imbalance increases the risk of digoxin toxicity?",
-            answer: "Hypokalemia (low potassium)",
-            wrongAnswers: ["Hyperkalemia", "Hypernatremia", "Hypercalcemia"],
-            rationale: "Digoxin and potassium compete for the same binding sites on the sodium-potassium ATPase pump. Low potassium means more digoxin binds, increasing toxicity risk. Always monitor K+ levels in patients on digoxin.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "What is the antidote for acetaminophen (Tylenol) overdose?",
-            answer: "Acetylcysteine (Mucomyst)",
-            wrongAnswers: ["Naloxone", "Flumazenil", "Protamine sulfate"],
-            rationale: "Acetylcysteine replenishes glutathione stores in the liver, which is depleted by the toxic metabolite of acetaminophen (NAPQI). Most effective within 8 hours of overdose but can be given up to 24 hours.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A patient is starting metformin for type 2 diabetes. Which teaching is ESSENTIAL?",
-            answer: "Hold the medication before procedures using IV contrast dye",
-            wrongAnswers: ["Take on an empty stomach for best absorption", "This medication will cause significant weight gain", "Blood glucose monitoring is not necessary"],
-            rationale: "Metformin combined with IV contrast dye can cause lactic acidosis, a life-threatening condition. Hold metformin 48 hours before and after contrast procedures. Metformin should be taken with food to reduce GI upset and typically causes weight loss or neutrality.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which medication requires the patient to avoid grapefruit juice?",
-            answer: "Statins (e.g., atorvastatin, simvastatin)",
-            wrongAnswers: ["Acetaminophen", "Amoxicillin", "Omeprazole"],
-            rationale: "Grapefruit juice inhibits CYP3A4 enzyme in the intestine, which normally metabolizes statins. This leads to increased statin levels and risk of muscle damage (rhabdomyolysis). Some statins are more affected than others.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Select ALL symptoms of opioid overdose:",
-            answer: "Respiratory depression, Pinpoint pupils, Decreased level of consciousness, Bradycardia",
-            wrongAnswers: ["Dilated pupils"],
-            rationale: "Opioid overdose causes CNS depression: slow/shallow breathing (respiratory depression is the killer), pinpoint (miotic) pupils, decreased LOC/unresponsive, and bradycardia. Dilated pupils suggest stimulant overdose or anticholinergic toxicity.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .sata,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which antibiotic class should be avoided during pregnancy due to effects on fetal teeth and bones?",
-            answer: "Tetracyclines",
-            wrongAnswers: ["Penicillins", "Cephalosporins", "Macrolides"],
-            rationale: "Tetracyclines cross the placenta and deposit in developing teeth and bones, causing permanent tooth discoloration and potential bone growth problems. Contraindicated in pregnancy and children under 8 years.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-
-        // PEDIATRICS - FREE (5)
-        Flashcard(
-            question: "A 2-year-old is admitted with suspected epiglottitis. Which action should the nurse AVOID?",
-            answer: "Inspecting the throat with a tongue depressor",
-            wrongAnswers: ["Keeping the child calm", "Having emergency intubation equipment nearby", "Allowing the child to sit in a position of comfort"],
-            rationale: "In epiglottitis, the airway is severely compromised. Using a tongue depressor can trigger complete airway obstruction and respiratory arrest. Visualize the throat only in a controlled setting with emergency airway equipment ready.",
-            contentCategory: .pediatrics,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "What is the normal respiratory rate for a newborn?",
-            answer: "30-60 breaths per minute",
-            wrongAnswers: ["12-20 breaths per minute", "20-30 breaths per minute", "60-80 breaths per minute"],
-            rationale: "Newborns have faster respiratory rates than adults due to higher metabolic demands and smaller lung capacity. Normal newborn RR is 30-60/min. Rates >60/min (tachypnea) may indicate respiratory distress.",
-            contentCategory: .pediatrics,
             nclexCategory: .healthPromotion,
             difficulty: .easy,
             questionType: .standard,
             isPremium: false
         ),
         Flashcard(
-            question: "A child is diagnosed with Kawasaki disease. Which assessment finding is MOST concerning?",
-            answer: "Coronary artery abnormalities on echocardiogram",
-            wrongAnswers: ["Strawberry tongue", "Peeling skin on fingers", "High fever for 5 days"],
-            rationale: "Kawasaki disease causes systemic vasculitis with the most serious complication being coronary artery aneurysms, which can lead to MI, heart failure, and death. IVIG treatment reduces this risk when given within 10 days of fever onset.",
-            contentCategory: .pediatrics,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "At what age should an infant double their birth weight?",
-            answer: "4-6 months",
-            wrongAnswers: ["1-2 months", "8-10 months", "12 months"],
-            rationale: "Infants typically double birth weight by 4-6 months and triple it by 12 months. This is an important milestone for assessing adequate nutrition and growth. Failure to meet this may indicate feeding problems or underlying illness.",
-            contentCategory: .pediatrics,
+            question: "The nurse is reviewing risk factors for coronary heart disease with a group of patients. Which of the following risk factors is NOT explicitly mentioned in the provided text?",
+            answer: "Hyperlipidemia",
+            wrongAnswers: ["Serum sodium level", "Arterial blood gas", "Troponin level"],
+            rationale: "While the text discusses plaque buildup and narrowing of the arteries, it doesn't explicitly mention hyperlipidemia (high cholesterol) as a risk factor. The text refers to risk factors in general but does not provide a list. Therefore, hyperlipidemia is the answer as it is a risk factor for CHD but is not detailed in the provided content. The other options can be related to symptoms presented in the content (chest pain, shortness of breath, neck pain).",
+            contentCategory: .fundamentals,
             nclexCategory: .healthPromotion,
             difficulty: .easy,
             questionType: .standard,
             isPremium: false
         ),
         Flashcard(
-            question: "Which finding is expected in a child with pyloric stenosis?",
-            answer: "Projectile vomiting after feeding with an olive-shaped mass in the abdomen",
-            wrongAnswers: ["Bile-stained vomiting", "Diarrhea with blood in stool", "Gradual onset of vomiting over several weeks"],
-            rationale: "Pyloric stenosis causes hypertrophy of the pyloric sphincter, obstructing gastric outflow. Classic presentation: non-bilious projectile vomiting, visible peristalsis, palpable 'olive' mass in RUQ, and hungry baby. Usually presents at 2-8 weeks of age.",
-            contentCategory: .pediatrics,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-
-        // MATERNITY - FREE (5)
-        Flashcard(
-            question: "A laboring patient's fetal heart rate shows late decelerations. What is the nurse's PRIORITY action?",
-            answer: "Reposition the patient to left lateral side and administer oxygen",
-            wrongAnswers: ["Continue to monitor without intervention", "Increase the rate of Pitocin", "Prepare for immediate cesarean section"],
-            rationale: "Late decelerations indicate uteroplacental insufficiency (decreased oxygen to fetus). Immediate nursing actions: left lateral position (improves uterine blood flow), oxygen (increases available O2), stop Pitocin if running, IV fluid bolus. Notify provider immediately.",
-            contentCategory: .maternity,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .priority,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "What is the normal fetal heart rate range?",
-            answer: "110-160 beats per minute",
-            wrongAnswers: ["60-100 beats per minute", "100-150 beats per minute", "160-200 beats per minute"],
-            rationale: "Normal fetal heart rate (FHR) baseline is 110-160 bpm. Below 110 (bradycardia) or above 160 (tachycardia) for >10 minutes requires evaluation. Variability and accelerations are signs of fetal well-being.",
-            contentCategory: .maternity,
-            nclexCategory: .healthPromotion,
+            question: "A nurse is preparing to administer medications. Which action demonstrates proper patient identification?",
+            answer: "Check two patient identifiers and compare with the MAR",
+            wrongAnswers: ["Ask the patient their name only", "Check the room number", "Verify with the patient's family member"],
+            rationale: "CORRECT: Two patient identifiers (name + DOB or name + MRN) per The Joint Commission standards. Compare with MAR to ensure right patient.\n\nWHY OTHER ANSWERS ARE WRONG:\n• Ask name only = Only ONE identifier; patients may answer to wrong name if confused\n• Room number = NEVER an identifier; patients change rooms, wrong patient could be in bed\n• Family member = Family can misidentify; always verify with patient or wristband\n\nMEMORY AID: \"Two IDs before the meds\" - Always TWO identifiers.\n\nCLINICAL PEARL: Use open-ended questions: \"What is your name and date of birth?\" NOT \"Are you Mr. Smith?\" (leading question - confused patients may say yes to anything).",
+            contentCategory: .fundamentals,
+            nclexCategory: .safeEffectiveCare,
             difficulty: .easy,
             questionType: .standard,
             isPremium: false
         ),
         Flashcard(
-            question: "A postpartum patient has a boggy uterus and heavy bleeding. What is the FIRST nursing action?",
-            answer: "Massage the uterine fundus",
-            wrongAnswers: ["Administer pain medication", "Call for emergency surgery", "Insert a Foley catheter"],
-            rationale: "Uterine atony (boggy uterus) is the most common cause of postpartum hemorrhage. First action is fundal massage to stimulate uterine contraction. Also empty the bladder (full bladder prevents contraction), administer uterotonics as ordered.",
-            contentCategory: .maternity,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .priority,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which symptom is a warning sign of preeclampsia?",
-            answer: "Severe headache with visual changes and BP of 160/110",
-            wrongAnswers: ["Mild ankle swelling at end of day", "Occasional Braxton Hicks contractions", "Increased urinary frequency"],
-            rationale: "Preeclampsia warning signs: BP ≥140/90, severe headache, visual disturbances (blurring, spots), epigastric pain, sudden edema. Severe preeclampsia (BP ≥160/110) can progress to eclampsia (seizures) and is life-threatening.",
-            contentCategory: .maternity,
+            question: "Which vital sign change indicates a patient may be developing shock?",
+            answer: "Decreased blood pressure with increased heart rate",
+            wrongAnswers: ["Increased blood pressure with decreased heart rate", "Normal blood pressure with normal heart rate", "Decreased blood pressure with decreased heart rate"],
+            rationale: "CORRECT: This is COMPENSATORY SHOCK - the heart beats faster (tachycardia) trying to maintain cardiac output as BP drops.\n\nWHY OTHER ANSWERS ARE WRONG:\n• Increased BP + decreased HR = Cushing triad (increased ICP), not shock\n• Normal VS = No shock present\n• Decreased BP + decreased HR = Late/decompensated shock or other cause (beta-blocker effect)\n\nMEMORY AID: Think of shock like a failing pump - heart works harder (faster) but pressure still drops.\n\nCLINICAL PEARL: Early shock may show NORMAL BP because of compensation. Watch for: tachycardia, narrowing pulse pressure, delayed cap refill, anxiety/restlessness.",
+            contentCategory: .fundamentals,
             nclexCategory: .physiological,
             difficulty: .medium,
             questionType: .standard,
             isPremium: false
         ),
         Flashcard(
-            question: "When should a pregnant patient feel fetal movement (quickening)?",
-            answer: "Primigravida: 18-20 weeks; Multigravida: 16-18 weeks",
-            wrongAnswers: ["8-10 weeks in all pregnancies", "25-28 weeks in all pregnancies", "Only after 30 weeks"],
-            rationale: "Quickening (first maternal perception of fetal movement) occurs earlier in multiparous women who recognize the sensation. It's an important milestone. Decreased fetal movement later in pregnancy warrants evaluation.",
-            contentCategory: .maternity,
-            nclexCategory: .healthPromotion,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-
-        // MENTAL HEALTH - FREE (5)
-        Flashcard(
-            question: "A patient expresses suicidal thoughts. What is the nurse's PRIORITY assessment?",
-            answer: "Ask directly if the patient has a plan and access to means",
-            wrongAnswers: ["Avoid discussing suicide to prevent giving ideas", "Immediately place in physical restraints", "Call family members before talking to patient"],
-            rationale: "Direct questioning about suicide does NOT increase risk - it shows concern and allows intervention. Assess: ideation, plan, means, timeline, and protective factors. A specific plan with accessible means = HIGH RISK requiring immediate intervention.",
-            contentCategory: .mentalHealth,
-            nclexCategory: .psychosocial,
-            difficulty: .medium,
-            questionType: .priority,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which therapeutic communication technique involves restating the patient's message?",
-            answer: "Reflection",
-            wrongAnswers: ["Clarification", "Confrontation", "Summarizing"],
-            rationale: "Reflection mirrors back the patient's feelings or content, showing understanding and encouraging elaboration. Example: Patient: 'I'm so angry at my family.' Nurse: 'You're feeling angry at your family.' This validates feelings.",
-            contentCategory: .mentalHealth,
-            nclexCategory: .psychosocial,
-            difficulty: .easy,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A patient with schizophrenia reports hearing voices telling them to hurt themselves. What type of hallucination is this?",
-            answer: "Command auditory hallucination",
-            wrongAnswers: ["Visual hallucination", "Tactile hallucination", "Olfactory hallucination"],
-            rationale: "Command hallucinations are auditory hallucinations that tell the person to do something, often harmful. These require immediate assessment and safety intervention as patients may act on commands. This is a psychiatric emergency.",
-            contentCategory: .mentalHealth,
-            nclexCategory: .psychosocial,
+            question: "A patient with tuberculosis is being discharged. Which instruction is MOST important for preventing transmission?",
+            answer: "Take all medications exactly as prescribed for the full duration",
+            wrongAnswers: ["Avoid all public places permanently", "Wear a mask at home at all times", "Sleep in a separate house from family"],
+            rationale: "CORRECT: TB treatment requires 6-9 months of multiple drugs. COMPLETING treatment prevents drug resistance and ensures cure. Non-adherence = MDR-TB.\n\nTB TREATMENT (Standard regimen - RIPE):\n• Rifampin - 6 months\n• Isoniazid (INH) - 6 months\n• Pyrazinamide - 2 months\n• Ethambutol - 2 months\n\nWHY COMPLETION IS CRITICAL:\n• Incomplete treatment = surviving bacteria become resistant\n• Drug-resistant TB is extremely difficult to treat\n• Directly Observed Therapy (DOT) recommended\n\nWHY OTHER ANSWERS ARE WRONG:\n• Avoid all public places permanently = Not necessary; becomes non-infectious 2-3 weeks after starting treatment\n• Mask at home always = Only until non-infectious (2-3 weeks)\n• Separate house = Excessive; good ventilation and treatment sufficient\n\nTB TRANSMISSION PREVENTION:\n• Airborne precautions while hospitalized\n• Negative pressure room\n• N95 respirator for staff\n• Patient wears surgical mask during transport\n• After 2-3 weeks of effective treatment = generally non-infectious\n\nMEDICATION SIDE EFFECTS TO MONITOR:\n• Rifampin: Orange body fluids (normal), hepatotoxicity\n• INH: Peripheral neuropathy (give B6), hepatotoxicity\n• Pyrazinamide: Hepatotoxicity, hyperuricemia\n• Ethambutol: Optic neuritis (report vision changes)\n\nTEACHING: Report signs of hepatotoxicity - dark urine, jaundice, RUQ pain, fatigue",
+            contentCategory: .infectionControl,
+            nclexCategory: .safeEffectiveCare,
             difficulty: .medium,
             questionType: .standard,
             isPremium: false
         ),
         Flashcard(
-            question: "Select ALL symptoms of serotonin syndrome:",
-            answer: "Hyperthermia, Agitation, Hyperreflexia, Tremor, Diaphoresis",
-            wrongAnswers: ["Hypothermia"],
-            rationale: "Serotonin syndrome occurs with excessive serotonergic activity, often from drug interactions (SSRIs + MAOIs, SSRIs + triptans). Symptoms: hyperthermia, altered mental status, autonomic instability, neuromuscular abnormalities. Life-threatening emergency.",
-            contentCategory: .mentalHealth,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .sata,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A patient with alcohol use disorder is admitted. When should the nurse expect withdrawal symptoms to begin?",
-            answer: "6-24 hours after last drink",
-            wrongAnswers: ["Immediately upon admission", "3-5 days after last drink", "1-2 weeks after last drink"],
-            rationale: "Alcohol withdrawal timeline: 6-24 hours - tremors, anxiety, tachycardia; 24-48 hours - hallucinations; 48-72 hours - seizures; 3-5 days - delirium tremens (DTs). DTs have 5-15% mortality if untreated.",
-            contentCategory: .mentalHealth,
-            nclexCategory: .physiological,
+            question: "What is the CORRECT order for donning PPE?",
+            answer: "Gown, mask/respirator, goggles/face shield, gloves",
+            wrongAnswers: ["Gloves, gown, mask, goggles", "Mask, gloves, gown, goggles", "Goggles, gloves, mask, gown"],
+            rationale: "CORRECT: Sequence is designed to prevent contamination of clean equipment and ensure proper fit.\n\nDONNING PPE (putting ON):\n1. GOWN first - ties in back, provides base layer\n2. MASK/RESPIRATOR - requires both hands, fit to face\n3. GOGGLES/FACE SHIELD - over mask straps\n4. GLOVES last - over gown cuffs for complete coverage\n\nDOFFING PPE (taking OFF) - Most contaminated first:\n1. GLOVES first (most contaminated)\n2. Hand hygiene\n3. GOWN (contaminated outside)\n4. Hand hygiene\n5. GOGGLES/FACE SHIELD\n6. MASK/RESPIRATOR last (touch only straps)\n7. Hand hygiene\n\nWHY OTHER ANSWERS ARE WRONG:\n• All start with wrong item\n• Gloves should be last on (first off)\n• Mask needs to be on before eye protection\n\nMEMORY AIDS:\n• DONNING: \"Gown, Mask, Goggles, Gloves\" - GMG G\n• DOFFING: \"Gloves off first, Mask off last\"\n\nKEY POINTS:\n• Perform hand hygiene before donning and after doffing\n• Remove PPE at doorway or in anteroom\n• Discard in appropriate waste container\n• Don't touch face during removal\n• If PPE becomes visibly soiled or torn, change it\n\nN95 RESPIRATOR:\n• Must be fit-tested annually\n• Seal check before each use\n• Cannot wear if facial hair prevents seal",
+            contentCategory: .infectionControl,
+            nclexCategory: .safeEffectiveCare,
             difficulty: .medium,
             questionType: .standard,
             isPremium: false
         ),
-
-        // LEADERSHIP - FREE (5)
+        Flashcard(
+            question: "A patient has C. difficile infection. Which precautions are required?",
+            answer: "Contact precautions with hand washing (not alcohol-based sanitizer)",
+            wrongAnswers: ["Droplet precautions only", "Airborne precautions", "Standard precautions only"],
+            rationale: "CORRECT: C. diff spores are NOT killed by alcohol. Must use soap and water for hand hygiene. Contact precautions for gown/gloves.\n\nC. DIFF PRECAUTIONS:\n• CONTACT PRECAUTIONS: Gown and gloves\n• HAND WASHING with soap and water (NOT alcohol gel)\n• Private room or cohorting\n• Dedicated equipment\n• Enhanced environmental cleaning with sporicidal agents (bleach-based)\n\nWHY SOAP AND WATER:\n• C. diff forms SPORES\n• Spores are resistant to alcohol\n• Friction of hand washing physically removes spores\n• Bleach kills spores on surfaces\n\nWHY OTHER ANSWERS ARE WRONG:\n• Droplet = C. diff is spread fecal-oral, not respiratory\n• Airborne = Not an airborne pathogen\n• Standard only = Inadequate; increased transmission risk\n\nC. DIFF FACTS:\n• Usually caused by antibiotic use (disrupts normal gut flora)\n• Symptoms: Watery diarrhea, fever, abdominal pain\n• Diagnosis: Stool toxin test\n• Treatment: Stop offending antibiotic, start oral vancomycin or fidaxomicin\n• Complications: Toxic megacolon, perforation\n\nPREVENTION:\n• Antibiotic stewardship (appropriate use only)\n• Contact precautions for infected patients\n• Hand hygiene with soap and water\n• Environmental cleaning with bleach\n• Probiotics may help prevent",
+            contentCategory: .infectionControl,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "Which isolation precaution is required for a patient with tuberculosis?",
+            answer: "Airborne precautions with N95 respirator",
+            wrongAnswers: ["Contact precautions only", "Droplet precautions with surgical mask", "Standard precautions only"],
+            rationale: "CORRECT: TB spreads via airborne droplet nuclei (<5 microns) that remain suspended in air for hours. Requires special precautions.\n\nAIRBORNE PRECAUTIONS:\n• N95 respirator (fit-tested annually)\n• Private room with negative pressure\n• Door must remain closed\n• 6-12 air changes per hour\n• HEPA filtration or exhaust to outside\n• Patient wears surgical mask during transport\n\nAIRBORNE DISEASES (memory aid - MTV):\n• Measles\n• Tuberculosis\n• Varicella (chickenpox) + Disseminated zoster\n\nWHY OTHER ANSWERS ARE WRONG:\n• Contact precautions = For infections spread by touch (MRSA, C. diff)\n• Droplet with surgical mask = For large droplets (flu, pertussis, meningococcal) - surgical mask sufficient\n• Standard precautions = Base level for all patients but inadequate for TB\n\nCOMPARISON OF PRECAUTIONS:\n| Type | Particle Size | Examples | Mask Type |\n|------|---------------|----------|-----------|\n| Airborne | <5 microns | TB, measles, varicella | N95 |\n| Droplet | >5 microns | Flu, pertussis, mumps | Surgical |\n| Contact | N/A (touch) | MRSA, C. diff, scabies | None specific |\n\nTB-SPECIFIC CARE:\n• Patient on airborne precautions until 3 negative sputum smears\n• TB skin test annually for healthcare workers\n• TB prophylaxis if positive PPD without active disease\n• Multi-drug regimen for active TB (6-9 months)",
+            contentCategory: .infectionControl,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "What is the nurse's responsibility when receiving an unclear or potentially harmful order?",
+            answer: "Clarify the order with the prescriber before acting",
+            wrongAnswers: ["Carry out the order as written", "Ignore the order", "Have another nurse carry out the order"],
+            rationale: "CORRECT: Nurses are legally and ethically obligated to QUESTION unclear, incomplete, or potentially harmful orders. You are accountable for your actions.\n\nWHEN TO CLARIFY ORDERS:\n• Order is illegible or unclear\n• Dose seems incorrect (too high or too low)\n• Medication is contraindicated for this patient\n• Order conflicts with other orders\n• Order doesn't match patient's condition\n• You're unfamiliar with the medication/procedure\n• Order seems to violate policy or standards\n\nWHY OTHER ANSWERS ARE WRONG:\n• Carry out as written = \"Following orders\" is not a defense; nurse is accountable\n• Ignore the order = Patient may be harmed by not receiving needed treatment\n• Have another nurse do it = Passing the problem doesn't resolve it; still your responsibility\n\nCHAIN OF COMMAND:\n1. Contact prescriber directly, clarify concerns\n2. If prescriber refuses to change, contact supervisor\n3. If still unresolved, escalate up chain of command\n4. Document all communication\n\nREFUSING AN ORDER:\n• You have the RIGHT to refuse an order you believe is harmful\n• Document your concerns and who you notified\n• Continue to advocate for patient safety\n\nDOCUMENTATION:\n\"Clarified order with Dr. X regarding [concern]. New order received: [details].\"\nOR\n\"Expressed concern to Dr. X about [order]. Dr. X stated [response]. Notified charge nurse.\"",
+            contentCategory: .leadership,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
         Flashcard(
             question: "Which task is appropriate to delegate to a UAP (unlicensed assistive personnel)?",
             answer: "Taking vital signs on a stable patient",
             wrongAnswers: ["Assessing a new patient's pain level", "Administering oral medications", "Teaching a patient about new medications"],
-            rationale: "UAPs can perform tasks that are routine, standard, and do not require nursing judgment: vital signs, ADLs, ambulation, I&O, feeding stable patients. Assessment, teaching, and medication administration require RN/LPN licensure.",
+            rationale: "CORRECT: UAPs can perform tasks that are routine, standard, low-risk, and require no nursing judgment. Vital signs on STABLE patients fit this criteria.\n\nTHE 5 RIGHTS OF DELEGATION:\n1. Right TASK (routine, standard procedure)\n2. Right CIRCUMSTANCE (stable patient, predictable outcome)\n3. Right PERSON (competent UAP, within their training)\n4. Right DIRECTION (clear, specific instructions)\n5. Right SUPERVISION (RN monitors and evaluates)\n\nWHAT UAPs CAN DO:\n✓ Vital signs (stable patients)\n✓ ADLs (bathing, feeding, toileting)\n✓ Ambulation\n✓ I&O measurement\n✓ Specimen collection (not invasive)\n✓ Transport\n✓ CPR (if trained)\n\nWHAT UAPs CANNOT DO:\n✗ Assessment (any form)\n✗ Teaching\n✗ Medication administration\n✗ Care planning\n✗ Evaluation of outcomes\n✗ Unstable patients\n✗ Initial or comprehensive assessments\n\nWHY OTHER ANSWERS ARE WRONG:\n• Assessing pain = ASSESSMENT requires RN; UAP can ask and report, but not assess\n• Administering medications = ALWAYS requires licensed nurse (RN or LPN depending on state)\n• Teaching = Requires RN; UAP can reinforce but not teach new content\n\nNCLEX TIP: When \"stable\" appears with a task, it's often delegable. When assessment, teaching, or evaluation is involved, it requires an RN.",
             contentCategory: .leadership,
             nclexCategory: .safeEffectiveCare,
             difficulty: .medium,
@@ -2779,47 +2429,400 @@ extension Flashcard {
             question: "A nurse receives report on four patients. Which patient should be assessed FIRST?",
             answer: "Post-op patient with increasing restlessness and blood pressure dropping",
             wrongAnswers: ["Diabetic patient due for morning insulin", "Patient requesting pain medication", "Patient scheduled for discharge teaching"],
-            rationale: "Using ABCs and prioritization: the post-op patient with restlessness and dropping BP may be hemorrhaging (shock). This is life-threatening and requires immediate assessment. The other patients are important but stable.",
+            rationale: "CORRECT: This patient shows signs of SHOCK (restlessness = early sign of hypoxia, dropping BP = inadequate perfusion). Post-op bleeding is likely. This is life-threatening.\n\nPRIORITIZATION FRAMEWORKS:\n1. ABCs: Airway, Breathing, Circulation\n2. Maslow's Hierarchy: Physiological needs first\n3. Acute vs Chronic: Acute/changing conditions first\n4. Actual vs Potential: Actual problems before risk for problems\n\nANALYZING THIS QUESTION:\n• Post-op + restlessness + dropping BP = ACTUAL airway/circulation problem (hemorrhagic shock)\n• Insulin due = Scheduled, can wait briefly, patient is stable\n• Pain medication = Important but not life-threatening\n• Discharge teaching = Can definitely wait\n\nWHY OTHER ANSWERS ARE WRONG:\n• Diabetic/insulin = Scheduled task, patient presumably stable; come back to this\n• Pain medication = Comfort need, not life-threatening; return after emergency\n• Discharge teaching = Lowest priority; psychosocial/educational need\n\nNCLEX PRIORITIZATION TIPS:\n• \"Unstable\" and \"changing\" are red flags = see first\n• New onset symptoms > chronic symptoms\n• Assessment findings suggesting shock, bleeding, airway compromise = EMERGENCY\n• Scheduled tasks can wait (briefly) for emergencies\n• Teaching and comfort needs are lower priority than survival needs",
             contentCategory: .leadership,
             nclexCategory: .safeEffectiveCare,
             difficulty: .medium,
-            questionType: .priority,
+            questionType: .standard,
             isPremium: false
         ),
         Flashcard(
             question: "A nurse makes a medication error. What is the FIRST action?",
             answer: "Assess the patient for adverse effects",
             wrongAnswers: ["Complete an incident report before telling anyone", "Notify the nurse manager", "Call the pharmacy"],
-            rationale: "Patient safety is always first. Assess for adverse effects and intervene as needed. Then notify the provider, document objectively in the chart, and complete an incident report. Never delay patient assessment for administrative tasks.",
+            rationale: "CORRECT: PATIENT SAFETY FIRST. Always assess for harm before any administrative actions. The patient may need immediate intervention.\n\nMEDICATION ERROR RESPONSE SEQUENCE:\n1. ASSESS the patient immediately (Are they okay? Signs of adverse reaction?)\n2. INTERVENE if needed (antidotes, supportive care, call rapid response)\n3. NOTIFY the provider (they need to know to manage patient care)\n4. DOCUMENT objectively in the medical record (what happened, patient assessment, interventions)\n5. COMPLETE incident report (for quality improvement, NOT in medical record)\n6. NOTIFY manager per facility policy\n\nWHY OTHER ANSWERS ARE WRONG:\n• Incident report first = Administrative task never before patient care\n• Notify manager = Important but after patient assessment and provider notification\n• Call pharmacy = May be needed later but patient comes first\n\nDOCUMENTATION OF ERRORS:\n• DO document: What happened, patient assessment, interventions, provider notification\n• DON'T document: \"Error made,\" \"Incident report filed,\" speculation, blame\n\nINCIDENT REPORTS:\n• Quality improvement tool, not punitive (in most systems)\n• NOT part of medical record\n• Don't reference in chart notes\n• Identifies system issues and patterns\n\nNCLEX TIP: Patient assessment and safety ALWAYS come first. Administrative tasks are important but never take priority over patient care.",
             contentCategory: .leadership,
             nclexCategory: .safeEffectiveCare,
             difficulty: .medium,
-            questionType: .priority,
+            questionType: .standard,
             isPremium: false
         ),
         Flashcard(
-            question: "What is the purpose of an incident report?",
-            answer: "To identify patterns and improve systems to prevent future occurrences",
-            wrongAnswers: ["To punish the nurse who made the error", "To document in the patient's medical record", "To report the nurse to the state board"],
-            rationale: "Incident reports are quality improvement tools, not punitive. They identify system issues and patterns to prevent future errors. They are NOT part of the medical record and should not be referenced in charting.",
+            question: "A 68-year-old African American male is admitted with worsening symptoms of heart failure. The nurse understands that this population is at higher risk for heart failure. What intervention should the nurse prioritize when providing care?",
+            answer: "Strict adherence to prescribed medication regimen and dietary restrictions.",
+            wrongAnswers: ["Delegate the task to a licensed practical nurse under appropriate supervision", "Notify the charge nurse and document the situation in the patient's chart", "Assign the most experienced nurse to the patient requiring complex care"],
+            rationale: "African Americans tend to develop heart failure earlier and have more severe cases, partly due to higher rates of hypertension and other contributing factors. Therefore, ensuring strict adherence to the medication regimen and dietary restrictions (such as low sodium) is crucial for managing the condition and preventing further complications. While the other options are important aspects of care, medication adherence is most critical for this patient population.",
             contentCategory: .leadership,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "What is the normal fetal heart rate range?",
+            answer: "110-160 beats per minute",
+            wrongAnswers: ["60-100 beats per minute", "100-150 beats per minute", "160-200 beats per minute"],
+            rationale: "CORRECT: Normal FHR baseline is 110-160 bpm, measured between contractions over a 10-minute period.\n\nFHR BASELINE CATEGORIES:\n• Bradycardia: <110 bpm for >10 minutes\n• Normal: 110-160 bpm\n• Tachycardia: >160 bpm for >10 minutes\n\nWHY OTHER ANSWERS ARE WRONG:\n• 60-100 = Adult heart rate; would be severe fetal bradycardia\n• 100-150 = Lower limit too low\n• 160-200 = Would be fetal tachycardia\n\nCAUSES OF FETAL BRADYCARDIA:\n• Fetal hypoxia (late sign)\n• Maternal hypotension\n• Cord compression\n• Maternal medication (beta-blockers)\n• Prolonged pushing\n\nCAUSES OF FETAL TACHYCARDIA:\n• Maternal fever/infection\n• Fetal anemia\n• Fetal hypoxia (early sign)\n• Medications (terbutaline)\n• Fetal arrhythmia\n\nREASSURING FHR CHARACTERISTICS:\n• Baseline 110-160 bpm\n• Moderate variability (6-25 bpm fluctuation)\n• Accelerations present (increase ≥15 bpm for ≥15 seconds)\n• No late or variable decelerations\n\nNON-REASSURING SIGNS:\n• Absent or minimal variability\n• Recurrent late decelerations\n• Recurrent severe variable decelerations\n• Prolonged decelerations\n• Sinusoidal pattern",
+            contentCategory: .maternity,
+            nclexCategory: .healthPromotion,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "What is the expected fundal height at 20 weeks gestation?",
+            answer: "At the level of the umbilicus",
+            wrongAnswers: ["Just above the symphysis pubis", "Halfway between umbilicus and xiphoid", "At the xiphoid process"],
+            rationale: "CORRECT: McDonald's rule: Fundal height in cm ≈ gestational age in weeks. At 20 weeks, fundus is at umbilicus.\n\nFUNDAL HEIGHT LANDMARKS:\n• 12 weeks: Just above symphysis pubis\n• 16 weeks: Halfway between symphysis and umbilicus\n• 20 weeks: At umbilicus\n• 36 weeks: At xiphoid process (highest point)\n• 38-40 weeks: May drop as baby engages (lightening)\n\nWHY OTHER ANSWERS ARE WRONG:\n• Above symphysis = 12 weeks (too early)\n• Between umbilicus and xiphoid = 28-32 weeks\n• At xiphoid = 36 weeks (too late)\n\nFUNDAL HEIGHT ASSESSMENT:\n• Measure from top of symphysis to top of fundus\n• Use non-elastic tape measure\n• Patient should empty bladder first\n• After 20 weeks: Discrepancy of >2-3 cm warrants investigation\n\nCAUSES OF FUNDAL HEIGHT DISCREPANCY:\nTOO LARGE:\n• Wrong dates\n• Multiple gestation\n• Polyhydramnios\n• Macrosomia\n• Fibroids\n\nTOO SMALL:\n• Wrong dates\n• IUGR\n• Oligohydramnios\n• Fetal demise\n\nMEMORY AID: \"At 20 weeks, fundus is at the belly button (umbilicus).\"",
+            contentCategory: .maternity,
+            nclexCategory: .healthPromotion,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A postpartum patient has a boggy uterus and heavy bleeding. What is the FIRST nursing action?",
+            answer: "Massage the uterine fundus",
+            wrongAnswers: ["Administer pain medication", "Call for emergency surgery", "Insert a Foley catheter"],
+            rationale: "CORRECT: Boggy uterus = UTERINE ATONY, the #1 cause of postpartum hemorrhage. Fundal massage is the immediate first intervention - stimulates uterine contraction to control bleeding.\n\nPOSTPARTUM HEMORRHAGE (PPH) CAUSES - \"The 4 T's\":\n1. TONE (atony) - 70-80% of cases - boggy, soft uterus\n2. TRAUMA - lacerations, hematoma, uterine rupture\n3. TISSUE - retained placenta or clots\n4. THROMBIN - coagulation disorders\n\nWHY OTHER ANSWERS ARE WRONG:\n• Pain medication = Does not address the emergency bleeding\n• Emergency surgery = May be needed but try less invasive measures first\n• Foley catheter = A full bladder CAN prevent uterine contraction, but massage first while preparing to empty bladder\n\nPPH MANAGEMENT SEQUENCE:\n1. Fundal massage (FIRST - immediate, noninvasive)\n2. Empty bladder (Foley if needed)\n3. Uterotonics: Oxytocin, Methylergonovine, Carboprost, Misoprostol\n4. Bimanual compression if above fail\n5. Surgical intervention (B-Lynch suture, hysterectomy) as last resort\n\nPPH DEFINITION: >500 mL for vaginal birth, >1000 mL for cesarean\n\nFUNDAL MASSAGE TECHNIQUE: One hand on fundus, massage firmly in circular motion. Other hand supports lower uterus to prevent uterine inversion.",
+            contentCategory: .maternity,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A pregnant patient at 28 weeks has Rh-negative blood. When should RhoGAM be administered?",
+            answer: "At 28 weeks gestation and within 72 hours after delivery if baby is Rh-positive",
+            wrongAnswers: ["Only after delivery", "Only if antibodies are present", "At every prenatal visit"],
+            rationale: "CORRECT: RhoGAM (Rh immune globulin) prevents Rh sensitization in Rh-negative mothers carrying Rh-positive babies.\n\nRhoGAM TIMING:\n• 28 weeks gestation (routine antepartum dose)\n• Within 72 hours after delivery (if baby is Rh-positive)\n• After any event with risk of fetal-maternal hemorrhage\n\nADDITIONAL INDICATIONS FOR RhoGAM:\n• Miscarriage or elective abortion\n• Ectopic pregnancy\n• Amniocentesis, CVS\n• Abdominal trauma during pregnancy\n• Placental abruption or previa with bleeding\n• External cephalic version\n\nWHY OTHER ANSWERS ARE WRONG:\n• Only after delivery = Need prenatal dose at 28 weeks (fetal cells may cross in 3rd trimester)\n• Only if antibodies present = Once antibodies form, RhoGAM won't help; it PREVENTS sensitization\n• Every visit = Not necessary; specific timing is important\n\nRh SENSITIZATION EXPLAINED:\n• Rh-negative mother + Rh-positive baby = Risk of sensitization\n• Fetal RBCs enter maternal circulation → mother makes anti-Rh antibodies\n• FIRST pregnancy usually okay (sensitization occurs at delivery)\n• SUBSEQUENT pregnancies: Antibodies cross placenta → attack fetal RBCs → hemolytic disease\n\nRhoGAM contains anti-D antibodies that destroy any Rh-positive fetal cells before mother can make her own antibodies.\n\nDOSE: 300 mcg IM covers up to 30 mL of fetal blood exposure.",
+            contentCategory: .maternity,
+            nclexCategory: .healthPromotion,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "When should a pregnant patient feel fetal movement (quickening)?",
+            answer: "Primigravida: 18-20 weeks; Multigravida: 16-18 weeks",
+            wrongAnswers: ["8-10 weeks in all pregnancies", "25-28 weeks in all pregnancies", "Only after 30 weeks"],
+            rationale: "CORRECT: Multiparous women feel movement earlier because they recognize the sensation from previous pregnancies.\n\nQUICKENING EXPLAINED:\n• First maternal perception of fetal movement\n• Described as \"fluttering,\" \"butterflies,\" or \"gas bubbles\"\n• Multigravida feel it earlier (experienced, know what to expect)\n• Movement present earlier but not felt until quickening\n\nWHY OTHER ANSWERS ARE WRONG:\n• 8-10 weeks = Too early; fetus moves but too small to feel\n• 25-28 weeks = Too late; quickening occurs earlier\n• After 30 weeks = Much too late\n\nFETAL MOVEMENT COUNTING:\n• Third trimester: Count kicks (fetal kick counts)\n• Cardiff method: Count to 10 movements; should reach 10 within 2 hours\n• If <10 movements in 2 hours after eating and lying on side: Contact provider\n\nDECREASED FETAL MOVEMENT:\n• May indicate fetal compromise\n• Warrants evaluation (NST, BPP)\n• Assess for: maternal medications, fetal sleep cycle, anterior placenta (muffles movement)\n\nIMPORTANT MILESTONES:\n• Quickening: 16-20 weeks\n• Audible FHR with Doppler: 10-12 weeks\n• FHR audible with fetoscope: 18-20 weeks\n• Fetus viable: ~24 weeks\n\nPATIENT TEACHING: Report decreased fetal movement; it may indicate fetal distress.",
+            contentCategory: .maternity,
+            nclexCategory: .healthPromotion,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with acute kidney injury has a urine output of 200 mL in 24 hours. What phase of AKI is the patient in?",
+            answer: "Oliguric phase",
+            wrongAnswers: ["Initiation phase", "Diuretic phase", "Recovery phase"],
+            rationale: "CORRECT: OLIGURIA = urine output <400 mL/day. This patient with 200 mL/24hr is in oliguric phase - the most dangerous phase with highest mortality.\n\nAKI PHASES:\n\n1. INITIATION (Onset):\n• Begins with insult (ischemia, toxin, obstruction)\n• Hours to days\n• May be preventable if caught early\n\n2. OLIGURIC/ANURIC PHASE:\n• Urine output <400 mL/day (oliguria) or <100 mL/day (anuria)\n• Lasts 1-3 weeks\n• Highest mortality\n• Fluid overload, hyperkalemia, uremia\n\n3. DIURETIC PHASE:\n• Urine output increases (may be >3-5 L/day)\n• Kidneys recovering\n• Risk of dehydration and electrolyte loss\n• Lasts 1-3 weeks\n\n4. RECOVERY PHASE:\n• GFR and urine output normalize\n• May take up to 12 months\n• Some patients have permanent damage\n\nWHY OTHER ANSWERS ARE WRONG:\n• Initiation = Very early phase before oliguria develops\n• Diuretic = HIGH urine output (opposite of this patient)\n• Recovery = Normal or near-normal output\n\nOLIGURIA MANAGEMENT:\n• Fluid restriction\n• Monitor electrolytes (especially K+)\n• Dialysis if indicated\n• Avoid nephrotoxic drugs\n• Daily weights\n• Strict I&O",
+            contentCategory: .medSurg,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with anemia has hemoglobin of 7.0 g/dL. Which assessment finding does the nurse expect?",
+            answer: "Fatigue and pallor",
+            wrongAnswers: ["Ruddy complexion", "Increased energy", "Bradycardia"],
+            rationale: "CORRECT: Low Hgb = decreased oxygen-carrying capacity = tissue hypoxia = FATIGUE. Pallor from decreased red blood cells in circulation.\n\nNORMAL HEMOGLOBIN:\n• Males: 14-18 g/dL\n• Females: 12-16 g/dL\n• Hgb 7.0 = SEVERE anemia\n\nANEMIA SYMPTOMS:\n• Fatigue, weakness (most common)\n• Pallor (skin, mucous membranes, conjunctivae, nail beds)\n• Tachycardia (heart compensates for low O2)\n• Dyspnea on exertion\n• Dizziness\n• Headache\n• Cold intolerance\n\nCOMPENSATORY MECHANISMS:\n• Increased heart rate (deliver more blood)\n• Increased respiratory rate\n• Shift of oxyhemoglobin curve\n\nWHY OTHER ANSWERS ARE WRONG:\n• Ruddy complexion = Seen in polycythemia (too many RBCs)\n• Increased energy = Opposite - fatigue is hallmark\n• Bradycardia = Would expect TACHYCARDIA as compensation\n\nANEMIA TYPES:\nMICROCYTIC (small RBCs):\n• Iron deficiency (most common)\n• Thalassemia\n\nNORMOCYTIC (normal size):\n• Acute blood loss\n• Chronic disease\n\nMACROCYTIC (large RBCs):\n• B12 deficiency\n• Folate deficiency\n\nTREATMENT DEPENDS ON CAUSE:\n• Iron deficiency: iron supplements\n• B12 deficiency: B12 injections\n• Severe anemia: blood transfusion\n• Chronic kidney disease: erythropoietin",
+            contentCategory: .medSurg,
+            nclexCategory: .physiological,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with a urinary catheter develops cloudy, foul-smelling urine with sediment. What should the nurse suspect?",
+            answer: "Urinary tract infection",
+            wrongAnswers: ["Normal catheter drainage", "Dehydration", "Kidney stones"],
+            rationale: "CORRECT: Cloudy, foul-smelling urine with sediment = classic UTI signs. Catheters are a major risk factor for UTI.\n\nUTI SIGNS AND SYMPTOMS:\n• Cloudy urine\n• Foul odor\n• Sediment\n• Hematuria (blood)\n• Fever\n• Suprapubic pain/tenderness\n• Confusion in elderly (may be only sign)\n\nCATHETER-ASSOCIATED UTI (CAUTI):\n• Most common healthcare-associated infection\n• Risk increases with duration of catheterization\n• Remove catheter ASAP when no longer needed\n\nWHY OTHER ANSWERS ARE WRONG:\n• Normal drainage = Normal urine is clear, amber, no strong odor\n• Dehydration = Would cause concentrated (darker) urine, not cloudy/foul\n• Kidney stones = Would cause hematuria, pain, but not typically foul smell\n\nCAUTI PREVENTION:\n• Insert only when necessary\n• Remove as soon as possible\n• Maintain closed drainage system\n• Keep bag below bladder level\n• Secure catheter to prevent pulling\n• Meatal care (soap and water)\n• Hand hygiene before/after handling\n• Empty bag when 2/3 full\n\nNURSING INTERVENTIONS:\n• Obtain urine culture before antibiotics\n• Administer antibiotics as ordered\n• Encourage fluids (if not contraindicated)\n• Monitor temperature\n• Assess for sepsis signs",
+            contentCategory: .medSurg,
+            nclexCategory: .physiological,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with suspected stroke arrives at the ED. What is the MOST critical information to obtain?",
+            answer: "Time of symptom onset",
+            wrongAnswers: ["Patients medical history", "List of current medications", "Patients age"],
+            rationale: "CORRECT: TIME IS BRAIN! tPA (alteplase) can only be given within 4.5 hours of symptom onset. Need exact time to determine eligibility for treatment.\n\nWHY TIME IS CRITICAL:\n• tPA (tissue plasminogen activator) dissolves clots\n• Window: within 4.5 hours of symptom onset\n• Earlier treatment = better outcomes\n• \"Last known well\" time is used if onset unknown\n\nISCHEMIC STROKE TREATMENT TIMELINE:\n• Door-to-physician: 10 minutes\n• Door-to-CT: 25 minutes\n• Door-to-CT interpretation: 45 minutes\n• Door-to-needle (tPA): 60 minutes\n\nWHY OTHER ANSWERS ARE WRONG:\n• Medical history = Important but doesnt determine immediate treatment eligibility\n• Medications = Important for tPA contraindications but TIME is priority\n• Age = Not as critical as symptom onset time\n\ntPA CONTRAINDICATIONS:\n• >4.5 hours from symptom onset\n• Recent surgery or trauma\n• Active bleeding\n• Bleeding disorders\n• Recent stroke\n• Uncontrolled hypertension\n• INR >1.7\n\nSTROKE TYPES:\nISCHEMIC (87%):\n• Blocked blood vessel\n• Treatment: tPA, thrombectomy\n• Time-sensitive\n\nHEMORRHAGIC (13%):\n• Bleeding in brain\n• NO tPA (would worsen bleeding)\n• Treatment: control BP, surgery if needed",
+            contentCategory: .medSurg,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient is scheduled for a colonoscopy. Which finding indicates the bowel prep was effective?",
+            answer: "Clear, yellow liquid stool",
+            wrongAnswers: ["Brown formed stool", "Small amount of solid stool", "No stool output in 6 hours"],
+            rationale: "CORRECT: Clear yellow liquid = bowel is clean. Visualization requires empty colon. Any solid material or brown color means inadequate prep.\n\nCOLONOSCOPY BOWEL PREP:\n• Clear liquid diet 1-2 days before\n• Bowel prep solution (polyethylene glycol/GoLYTELY, etc.)\n• Large volume of fluid to flush colon\n• Expected: Multiple watery stools becoming clear\n\nADEQUATE PREP INDICATORS:\n• Watery stool\n• Clear to light yellow color\n• No solid particles\n• Able to see through fluid\n\nWHY OTHER ANSWERS ARE WRONG:\n• Brown formed stool = Inadequate prep; needs more prep solution\n• Small solid stool = Inadequate; procedure may be cancelled/rescheduled\n• No output = May indicate obstruction or non-compliance\n\nPATIENT TEACHING:\n• Begin clear liquid diet as instructed\n• Drink all of prep solution (even if difficult)\n• Stay near bathroom\n• Use barrier cream for skin protection\n• Stay hydrated\n• Stop certain medications as instructed (anticoagulants, iron)\n\nCOLONOSCOPY POST-PROCEDURE:\n• May have cramping and gas (air introduced during procedure)\n• Monitor for bleeding (small amount normal, large amount report)\n• Watch for signs of perforation (severe pain, fever, distention)\n• Can resume regular diet after recovery\n• Sedation - no driving for 24 hours",
+            contentCategory: .medSurg,
             nclexCategory: .safeEffectiveCare,
             difficulty: .easy,
             questionType: .standard,
             isPremium: false
         ),
         Flashcard(
-            question: "Which patient can the RN safely assign to an LPN/LVN?",
-            answer: "Stable patient with a chronic condition requiring routine care",
-            wrongAnswers: ["New admission requiring comprehensive assessment", "Patient requiring blood transfusion", "Unstable patient requiring frequent reassessment"],
-            rationale: "LPN/LVNs work under RN supervision and can care for stable, predictable patients. They can administer most medications (varies by state), perform treatments, and reinforce teaching. New admissions, unstable patients, and blood transfusions require RN assessment skills.",
-            contentCategory: .leadership,
+            question: "A patient has a tracheostomy. What is the nurses priority intervention?",
+            answer: "Maintain a patent airway",
+            wrongAnswers: ["Document tube size", "Assess nutritional status", "Teach patient to write notes"],
+            rationale: "CORRECT: Airway is ALWAYS the priority with tracheostomy. A blocked trach = no airway = death. Keep suction equipment at bedside.\n\nTRACHEOSTOMY PRIORITIES (ABCs):\n• Airway patency is #1\n• Keep suction equipment at bedside (always!)\n• Keep spare trach tube at bedside (same size AND one size smaller)\n• Keep obturator at bedside\n\nWHY OTHER ANSWERS ARE WRONG:\n• Document tube size = Important but not priority over airway\n• Nutritional status = Important long-term but not immediate priority\n• Writing notes = Communication is important but airway first\n\nTRACHEOSTOMY CARE:\n• Suction as needed (not routinely - irritates mucosa)\n• Clean inner cannula q8h or as needed\n• Change trach ties when soiled (two-person technique)\n• Keep stoma clean and dry\n• Humidified oxygen (trach bypasses natural humidification)\n\nTRACH SUCTIONING:\n• Preoxygenate with 100% O2\n• Sterile technique\n• Insert catheter WITHOUT suction (to carina, then pull back 1 cm)\n• Apply suction only while withdrawing\n• Maximum 10 seconds per pass\n• Allow recovery between passes\n\nEMERGENCY EQUIPMENT AT BEDSIDE:\n• Suction catheter and suction source\n• Spare tracheostomy tubes (same size + one smaller)\n• Obturator\n• Manual resuscitation bag\n• Oxygen source",
+            contentCategory: .medSurg,
             nclexCategory: .safeEffectiveCare,
             difficulty: .medium,
             questionType: .standard,
             isPremium: false
-        )
+        ),
+        Flashcard(
+            question: "A patient post-lumbar puncture reports a severe headache. What position should the nurse place the patient in?",
+            answer: "Flat supine position",
+            wrongAnswers: ["Fowlers position", "Side-lying with HOB elevated", "Prone with head turned"],
+            rationale: "CORRECT: Post-LP headache is from CSF leakage. Lying FLAT reduces pressure on puncture site and helps seal. Also increase fluids.\n\nPOST-LUMBAR PUNCTURE HEADACHE:\n• Occurs in 10-30% of patients\n• Due to CSF leakage through dural puncture site\n• Worse when upright (gravity pulls CSF down)\n• Better when lying flat\n\nSYMPTOMS:\n• Severe headache (positional)\n• Worsens sitting/standing\n• Improves lying down\n• May have nausea, dizziness, neck stiffness\n\nWHY OTHER ANSWERS ARE WRONG:\n• Fowlers = Head elevated increases CSF pressure at site\n• Side-lying with HOB elevated = Still elevated, still problematic\n• Prone with head turned = Not necessary; supine is sufficient\n\nNURSING INTERVENTIONS:\n• Flat position for 4-6 hours (or longer if headache)\n• Increase fluid intake (oral and IV)\n• Caffeine may help (causes vasoconstriction)\n• Pain medication as ordered\n• Avoid straining (increases CSF pressure)\n\nBLOOD PATCH:\n• For severe or persistent headaches\n• Anesthesiologist injects patients blood at puncture site\n• Blood clots and seals the leak\n• Usually provides relief within hours\n\nLUMBAR PUNCTURE NURSING CARE:\n• Pre: empty bladder, explain procedure\n• During: fetal position or sitting bent over\n• Post: flat position, monitor neuro status\n• Check puncture site for bleeding/hematoma\n• Monitor for signs of infection",
+            contentCategory: .medSurg,
+            nclexCategory: .physiological,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with GERD asks how to reduce symptoms. Which instruction should the nurse provide?",
+            answer: "Avoid lying down for 2-3 hours after eating",
+            wrongAnswers: ["Eat large meals to reduce frequency of eating", "Lie down after meals to aid digestion", "Drink plenty of fluids with meals"],
+            rationale: "CORRECT: Staying upright allows gravity to keep stomach contents down. Lying down promotes reflux of acid into esophagus.\n\nGERD LIFESTYLE MODIFICATIONS:\n• Remain upright 2-3 hours after eating\n• Elevate head of bed 6-8 inches (blocks, not pillows)\n• Eat small, frequent meals\n• Avoid tight clothing\n• Lose weight if overweight\n• Avoid eating before bedtime\n\nWHY OTHER ANSWERS ARE WRONG:\n• Large meals = Increase gastric distention, worsen reflux\n• Lie down after meals = Promotes reflux; gravity works against you\n• Fluids with meals = Increases gastric volume; drink between meals instead\n\nFOODS TO AVOID:\n• Fatty/fried foods (slow emptying)\n• Citrus, tomatoes (acidic)\n• Chocolate, peppermint (relax LES)\n• Caffeine, alcohol\n• Carbonated beverages\n• Spicy foods\n\nMEDICATIONS FOR GERD:\n• Antacids (quick relief)\n• H2 blockers (famotidine) - reduce acid production\n• PPIs (omeprazole, pantoprazole) - most effective\n• Prokinetic agents (metoclopramide) - speed emptying\n\nWHEN TO SEEK MEDICAL ATTENTION:\n• Difficulty swallowing\n• Painful swallowing\n• Unintentional weight loss\n• GI bleeding\n• Symptoms not controlled with OTC medications\n\nCOMPLICATIONS OF UNTREATED GERD:\n• Esophagitis\n• Barretts esophagus (precancerous)\n• Strictures\n• Esophageal cancer",
+            contentCategory: .medSurg,
+            nclexCategory: .healthPromotion,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with schizophrenia reports hearing voices telling them to hurt themselves. What type of hallucination is this?",
+            answer: "Command auditory hallucination",
+            wrongAnswers: ["Visual hallucination", "Tactile hallucination", "Olfactory hallucination"],
+            rationale: "CORRECT: Command hallucinations are auditory hallucinations that direct the person to take specific action, often harmful. This is a PSYCHIATRIC EMERGENCY.\n\nTYPES OF HALLUCINATIONS:\n| Type | Sense | Examples | Common in |\n|------|-------|----------|-----------|\n| Auditory | Hearing | Voices, commands | Schizophrenia (#1 type) |\n| Visual | Seeing | People, objects | Delirium, substance use |\n| Tactile | Touch | Bugs crawling | Alcohol withdrawal, cocaine |\n| Olfactory | Smell | Burning, foul odors | Seizures, brain tumors |\n| Gustatory | Taste | Strange tastes | Seizures, brain lesions |\n\nWHY OTHER ANSWERS ARE WRONG:\n• Visual = Would be seeing things, not hearing\n• Tactile = Would involve feeling sensations on body\n• Olfactory = Would involve smelling something not there\n\nCOMMAND HALLUCINATION NURSING CARE:\n1. ASSESS content: What do the voices say? Do they tell you to hurt yourself or others?\n2. SAFETY: Implement precautions if commands are dangerous\n3. DON'T argue about reality but don't validate hallucination either\n4. DISTRACT with reality-based activities\n5. MEDICATION: Ensure antipsychotic compliance\n\nTHERAPEUTIC RESPONSE: \"I understand the voices feel real to you. I don't hear them, but I want to help you feel safe. What are the voices saying?\"",
+            contentCategory: .mentalHealth,
+            nclexCategory: .psychosocial,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "Which defense mechanism is demonstrated when a patient diagnosed with cancer says \"The lab must have made a mistake\"?",
+            answer: "Denial",
+            wrongAnswers: ["Projection", "Rationalization", "Displacement"],
+            rationale: "CORRECT: Denial is refusing to acknowledge reality as a way to cope with overwhelming, threatening information.\n\nDENIAL:\n• Definition: Unconscious refusal to accept reality\n• Purpose: Protects ego from overwhelming threat\n• Example: \"There must be some mistake with my diagnosis.\"\n• Normal initially; becomes problematic if prevents treatment\n\nWHY OTHER ANSWERS ARE WRONG:\n• Projection = Attributing your unacceptable feelings to someone else\n  Example: \"The nurse is angry at me\" (when you're actually angry)\n• Rationalization = Making excuses to justify behavior\n  Example: \"I smoked because I was stressed, not because I'm addicted\"\n• Displacement = Redirecting feelings to a safer target\n  Example: Yelling at spouse after bad day at work\n\nCOMMON DEFENSE MECHANISMS:\n| Mechanism | Definition | Example |\n|-----------|------------|---------|\n| Denial | Refusing reality | \"This can't be happening\" |\n| Repression | Unconsciously forgetting | No memory of trauma |\n| Suppression | Consciously pushing away | \"I'll think about it later\" |\n| Projection | Blaming others for own feelings | \"She hates me\" |\n| Displacement | Shifting feelings to safer target | Kicking dog after bad day |\n| Rationalization | Making excuses | \"I deserved that drink\" |\n| Sublimation | Channeling into acceptable outlet | Exercising when angry |\n| Regression | Returning to earlier behavior | Adult throwing tantrum |\n\nNURSING RESPONSE TO DENIAL: Initially allow (protective), but gently reality-orient over time. Offer support and information when ready.",
+            contentCategory: .mentalHealth,
+            nclexCategory: .psychosocial,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "Which therapeutic communication technique involves restating the patient's message?",
+            answer: "Reflection",
+            wrongAnswers: ["Clarification", "Confrontation", "Summarizing"],
+            rationale: "CORRECT: Reflection mirrors back the patient's feelings or content, showing understanding and encouraging further expression.\n\nREFLECTION:\n• Mirrors content or feelings back to patient\n• Shows you're listening and understanding\n• Encourages elaboration\n• Example: Patient: \"I'm so frustrated with my treatment.\"\n  Nurse: \"You're feeling frustrated with your treatment.\"\n\nWHY OTHER ANSWERS ARE WRONG:\n• Clarification = Asking for more information to understand better\n  Example: \"What do you mean when you say frustrated?\"\n• Confrontation = Pointing out discrepancies (use carefully, therapeutically)\n  Example: \"You say you're fine, but you look upset.\"\n• Summarizing = Condensing main points at end of interaction\n  Example: \"So today we discussed your medication concerns and family visit.\"\n\nTHERAPEUTIC COMMUNICATION TECHNIQUES:\n| Technique | Definition | Example |\n|-----------|------------|---------|\n| Open-ended questions | Encourage elaboration | \"How are you feeling?\" |\n| Reflection | Mirror feelings | \"You seem sad.\" |\n| Clarification | Seek understanding | \"Can you explain more?\" |\n| Silence | Allow processing | Simply being present |\n| Validation | Acknowledge feelings | \"It's understandable to feel that way.\" |\n| Focusing | Direct to important topic | \"Let's talk more about...\" |\n| Summarizing | Review main points | \"To summarize...\" |\n\nNON-THERAPEUTIC TECHNIQUES (AVOID):\n• Giving advice\n• False reassurance\n• Asking \"why\"\n• Changing the subject\n• Judging/moralizing\n• Disagreeing/arguing",
+            contentCategory: .mentalHealth,
+            nclexCategory: .psychosocial,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with alcohol use disorder is admitted. When should the nurse expect withdrawal symptoms to begin?",
+            answer: "6-24 hours after last drink",
+            wrongAnswers: ["Immediately upon admission", "3-5 days after last drink", "1-2 weeks after last drink"],
+            rationale: "CORRECT: Alcohol withdrawal follows a predictable timeline. Symptoms begin 6-24 hours after last drink.\n\nALCOHOL WITHDRAWAL TIMELINE:\n| Time | Symptoms |\n|------|----------|\n| 6-24 hrs | Tremors, anxiety, insomnia, tachycardia, diaphoresis, N/V |\n| 24-48 hrs | Hallucinations (usually visual - \"seeing bugs\") |\n| 48-72 hrs | SEIZURES (grand mal) - highest risk period |\n| 3-5 days | DELIRIUM TREMENS (DTs) - confused, agitated, fever, severe autonomic instability |\n\nWHY OTHER ANSWERS ARE WRONG:\n• Immediately = Too early; need time for blood alcohol to drop\n• 3-5 days = This is when DTs occur, not initial symptoms\n• 1-2 weeks = Withdrawal is acute; would be resolved or fatal by then\n\nDELIRIUM TREMENS (DTs):\n• Most serious complication\n• 5-15% mortality if untreated\n• Symptoms: Severe confusion, hallucinations, fever, hypertension, tachycardia, diaphoresis, tremors\n\nCIWA-Ar SCALE: Clinical Institute Withdrawal Assessment - used to monitor severity and guide benzodiazepine dosing (score >8-10 typically requires treatment)\n\nTREATMENT:\n• Benzodiazepines (lorazepam, chlordiazepoxide) - prevent seizures and DTs\n• Thiamine (B1) - prevent Wernicke encephalopathy\n• Fluids, electrolytes, nutrition\n• Multivitamins, folate",
+            contentCategory: .mentalHealth,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient expresses suicidal thoughts. What is the nurse's PRIORITY assessment?",
+            answer: "Ask directly if the patient has a plan and access to means",
+            wrongAnswers: ["Avoid discussing suicide to prevent giving ideas", "Immediately place in physical restraints", "Call family members before talking to patient"],
+            rationale: "CORRECT: DIRECT QUESTIONING is essential. Research proves asking about suicide does NOT increase risk - it provides opportunity for intervention and shows the nurse cares.\n\nSUICIDE ASSESSMENT - Ask Directly:\n• Ideation: \"Are you thinking about killing yourself?\"\n• Plan: \"Do you have a plan for how you would do it?\"\n• Means: \"Do you have access to [method mentioned]?\"\n• Timeline: \"When are you thinking of doing this?\"\n• Protective factors: \"What has stopped you from acting on these thoughts?\"\n\nSUICIDE RISK LEVELS:\n• LOW: Vague ideation, no plan, future orientation, good support\n• MODERATE: Frequent thoughts, vague plan, some risk factors\n• HIGH: Specific plan, available means, recent attempt, giving away possessions, hopelessness\n\nWHY OTHER ANSWERS ARE WRONG:\n• Avoid discussing = MYTH! Silence increases isolation; asking reduces risk\n• Restraints = Excessive and inappropriate initial response; may traumatize patient\n• Call family first = Breaches confidentiality; assess patient first, then involve family appropriately\n\nNURSING INTERVENTIONS FOR SUICIDAL PATIENT:\n1. Ensure safety (remove means, 1:1 observation)\n2. Therapeutic communication (nonjudgmental)\n3. Establish safety plan/no-harm contract\n4. Notify provider for psychiatric evaluation\n5. Document thoroughly",
+            contentCategory: .mentalHealth,
+            nclexCategory: .psychosocial,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A toddler with acute otitis media is prescribed amoxicillin. What should the nurse teach the parents?",
+            answer: "Complete the full course of antibiotics even if symptoms improve",
+            wrongAnswers: ["Stop when ear pain resolves", "Give only when fever is present", "Skip doses if child seems better"],
+            rationale: "CORRECT: Incomplete antibiotic courses lead to resistant bacteria and recurrent infection. Complete full 10-day course regardless of symptom improvement.\n\nANTIBIOTIC COMPLIANCE TEACHING:\n\nWHY COMPLETE THE COURSE:\n• Bacteria not fully eliminated if stopped early\n• Surviving bacteria may become resistant\n• Infection can recur (often worse)\n• Full course needed to eradicate infection\n\nOTITIS MEDIA TREATMENT:\n• First-line: Amoxicillin 80-90 mg/kg/day\n• Duration: 10 days (under age 2)\n• Duration: 5-7 days (over age 2, mild)\n• If allergic: azithromycin or cephalosporin\n\nWHY OTHER ANSWERS ARE WRONG:\n• Stop when pain resolves = Symptoms improve before bacteria eliminated\n• Give only with fever = Need consistent dosing, not PRN\n• Skip doses = Inconsistent levels allow bacterial survival\n\nADMINISTRATION TIPS:\n• Give at same times daily\n• Complete entire prescription\n• Store properly (refrigerate if liquid)\n• Use measuring device (not household spoons)\n• Can give with food if GI upset\n\nSIGNS OF COMPLICATIONS (Report to provider):\n• Fever persisting >48-72 hours on antibiotics\n• Worsening pain\n• Swelling behind ear\n• Drainage from ear\n• Hearing changes\n• Balance problems\n\nPREVENTION:\n• Breastfeeding (protective)\n• Avoid bottle propping\n• Avoid secondhand smoke\n• Pneumococcal vaccine\n• Influenza vaccine",
+            contentCategory: .pediatrics,
+            nclexCategory: .healthPromotion,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A child with cystic fibrosis is prescribed pancreatic enzymes. When should these be given?",
+            answer: "With meals and snacks",
+            wrongAnswers: ["Only at bedtime", "2 hours before meals", "Only when experiencing symptoms"],
+            rationale: "CORRECT: Pancreatic enzymes MUST be taken with ALL food to digest it. Without enzymes, fats and proteins pass through undigested.\n\nCYSTIC FIBROSIS PATHOPHYSIOLOGY:\n• Defective CFTR gene → thick, sticky mucus\n• Affects: lungs, pancreas, liver, intestines, sweat glands\n• Pancreatic insufficiency in 85-90% of CF patients\n\nPANCREATIC ENZYME (PANCRELIPASE) ADMINISTRATION:\n• Take with EVERY meal and snack\n• Swallow capsules whole or sprinkle on acidic food (applesauce)\n• Never crush or chew beads\n• Don't mix with hot food or milk (destroys enzymes)\n• Dose adjusted based on fat intake and stool character\n\nWHY OTHER ANSWERS ARE WRONG:\n• Bedtime only = Food needs to be present for digestion\n• 2 hours before = Enzymes only work when food is present\n• Only with symptoms = Too late; need consistent use with all food\n\nSIGNS OF INADEQUATE ENZYME REPLACEMENT:\n• Steatorrhea (fatty, foul-smelling, floating stools)\n• Abdominal pain, bloating\n• Poor weight gain\n• Increased flatus\n\nOTHER CF MANAGEMENT:\n• Airway clearance techniques (chest physiotherapy)\n• Bronchodilators, mucolytics (dornase alfa)\n• CFTR modulators (ivacaftor, lumacaftor) - for specific mutations\n• High-calorie, high-fat diet\n• Fat-soluble vitamin supplements (A, D, E, K)\n• Salt replacement (especially in hot weather)",
+            contentCategory: .pediatrics,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "At what age should an infant double their birth weight?",
+            answer: "4-6 months",
+            wrongAnswers: ["1-2 months", "8-10 months", "12 months"],
+            rationale: "CORRECT: Growth milestones for weight are: double by 4-6 months, triple by 12 months.\n\nINFANT GROWTH MILESTONES:\n| Time | Weight Milestone |\n|------|------------------|\n| 4-6 months | DOUBLE birth weight |\n| 12 months | TRIPLE birth weight |\n| 2 years | QUADRUPLE birth weight |\n\nEXPECTED WEIGHT GAIN:\n• First 6 months: ~1 oz (30g) per day, 1.5 lb per month\n• 6-12 months: ~0.5 oz (15g) per day, 1 lb per month\n\nWHY OTHER ANSWERS ARE WRONG:\n• 1-2 months = Too early; infants may lose up to 10% birth weight in first week\n• 8-10 months = Too late; suggests possible failure to thrive\n• 12 months = Time to TRIPLE, not double\n\nOTHER IMPORTANT MILESTONES:\n• Birth: Average 7.5 lbs (3.4 kg)\n• Length doubles by 4 years\n• Head circumference: Rapid growth first 2 years (brain growth)\n\nFAILURE TO THRIVE (FTT): Weight <5th percentile or weight drops 2 major percentiles. Warrants investigation for feeding issues, underlying illness, or psychosocial factors.",
+            contentCategory: .pediatrics,
+            nclexCategory: .healthPromotion,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "What finding in a newborn requires IMMEDIATE intervention?",
+            answer: "Central cyanosis",
+            wrongAnswers: ["Acrocyanosis of hands and feet", "Mottled skin", "Mild jaundice at 3 days"],
+            rationale: "CORRECT: CENTRAL cyanosis (blue lips, tongue, trunk) = inadequate oxygenation = EMERGENCY. Requires immediate assessment and intervention.\n\nCENTRAL VS PERIPHERAL CYANOSIS:\n\nCENTRAL CYANOSIS (Emergency):\n• Blue lips, tongue, mucous membranes\n• Blue trunk/torso\n• Indicates systemic hypoxia\n• Requires immediate action\n\nPERIPHERAL CYANOSIS/ACROCYANOSIS (Normal in newborns):\n• Blue hands and feet only\n• Central areas PINK\n• Normal in first 24-48 hours\n• Due to immature circulation\n\nWHY OTHER ANSWERS ARE WRONG:\n• Acrocyanosis = Normal in newborns up to 48 hours\n• Mottled skin = Can be normal with cold or normal circulation changes\n• Mild jaundice day 3 = Physiologic jaundice peaks day 3-5; monitor but not emergency\n\nCAUSES OF CENTRAL CYANOSIS IN NEWBORNS:\n• Congenital heart defects\n• Respiratory distress syndrome\n• Pneumonia\n• Meconium aspiration\n• Persistent pulmonary hypertension\n• Airway obstruction\n\nIMMEDIATE ACTIONS:\n• Stimulate breathing if needed\n• Clear airway\n• Provide oxygen\n• Assess respiratory effort\n• Check heart rate\n• Call for help\n• Consider resuscitation\n\nAPGAR SCORING (Color component):\n0 = Blue/pale all over\n1 = Body pink, extremities blue (acrocyanosis)\n2 = Completely pink",
+            contentCategory: .pediatrics,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A child with suspected appendicitis has sudden relief of pain. What does this indicate?",
+            answer: "Possible perforation of the appendix",
+            wrongAnswers: ["The appendicitis has resolved", "Medication is working", "Normal variation in pain"],
+            rationale: "CORRECT: SUDDEN PAIN RELIEF in appendicitis = PERFORATION. The stretched, inflamed appendix has ruptured, temporarily relieving pressure. Medical emergency!\n\nAPPENDICITIS PROGRESSION:\n\nCLASSIC PRESENTATION:\n• Periumbilical pain → localizes to RLQ (McBurney point)\n• Anorexia\n• Nausea/vomiting (after pain starts)\n• Low-grade fever\n• Rebound tenderness\n• Guarding\n\nPERFORATION SIGNS:\n• Sudden relief of pain (concerning!)\n• Followed by increasing generalized abdominal pain\n• Rigid abdomen\n• High fever\n• Signs of peritonitis\n• Tachycardia\n• Altered mental status\n\nWHY OTHER ANSWERS ARE WRONG:\n• Resolved = Appendicitis does not spontaneously resolve\n• Medication working = Pain relief this sudden is pathological\n• Normal variation = Sudden relief is ominous sign\n\nNURSING ACTIONS IF PERFORATION SUSPECTED:\n• NPO\n• IV fluids\n• Antibiotics\n• Prepare for emergency surgery\n• Monitor for sepsis\n• Pain management\n\nPEDIATRIC CONSIDERATIONS:\n• Children often have atypical presentation\n• May not localize pain to RLQ\n• Perforation rate higher in young children (cant communicate symptoms)\n• Higher index of suspicion needed\n\nASSESSMENT TECHNIQUES:\n• Rebound tenderness (Blumberg sign)\n• Rovsing sign (RLQ pain with LLQ palpation)\n• Psoas sign (pain with hip extension)\n• Obturator sign (pain with internal rotation of hip)",
+            contentCategory: .pediatrics,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient is prescribed warfarin. Which lab value should the nurse monitor?",
+            answer: "INR (International Normalized Ratio)",
+            wrongAnswers: ["aPTT (activated Partial Thromboplastin Time)", "Platelet count only", "Hemoglobin and hematocrit only"],
+            rationale: "CORRECT: Warfarin affects vitamin K-dependent clotting factors (II, VII, IX, X). INR measures this pathway.\n\nTHERAPEUTIC INR RANGES:\n• Standard (DVT, PE, A-fib): 2.0-3.0\n• Mechanical heart valve: 2.5-3.5\n\nWHY OTHER ANSWERS ARE WRONG:\n• aPTT = Monitors HEPARIN, not warfarin (different pathway - intrinsic)\n• Platelet count only = Warfarin doesn't affect platelet count; it affects clotting factors\n• H&H only = Important for detecting bleeding but doesn't monitor anticoagulation level\n\nWARFARIN TEACHING POINTS:\n• Takes 3-5 days to reach therapeutic level (overlap with heparin initially)\n• Vitamin K is antidote (reverses effect)\n• Consistent vitamin K intake (don't suddenly change green leafy vegetable consumption)\n• Many drug interactions (check all new meds)\n• Avoid NSAIDs, aspirin (increase bleeding risk)\n\nMEMORY AID: \"War(farin) needs INR\" - also remember PT (prothrombin time) is part of INR.\n\nMNEMONIC for Warfarin factors: \"1972\" = factors 10, 9, 7, 2",
+            contentCategory: .pharmacology,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with rheumatoid arthritis asks when to take prescribed ibuprofen. What is the best instruction?",
+            answer: "Take with food to reduce GI irritation",
+            wrongAnswers: ["Take on an empty stomach for faster absorption", "Take at bedtime only", "Take only when pain is severe"],
+            rationale: "CORRECT: NSAIDs like ibuprofen irritate GI mucosa. Taking with food or milk reduces this irritation and risk of ulcers.\n\nNSAID GI EFFECTS:\n• Inhibit prostaglandins (including protective ones in stomach)\n• Reduce mucus production\n• Decrease blood flow to stomach lining\n• Risk: gastritis, ulcers, GI bleeding\n\nWHY OTHER ANSWERS ARE WRONG:\n• Empty stomach = Increases GI irritation, despite faster absorption\n• Bedtime only = Should be taken regularly for RA inflammation\n• Only when severe = RA needs consistent anti-inflammatory treatment\n\nNSAID TEACHING:\n• Take with food, milk, or antacids\n• Take regularly as prescribed (not just PRN for RA)\n• Watch for signs of GI bleeding (black tarry stools, abdominal pain)\n• Avoid alcohol (increases GI risk)\n• Report unusual bleeding or bruising\n\nOTHER NSAID SIDE EFFECTS:\n• Renal impairment (avoid in kidney disease)\n• Cardiovascular risk (especially with long-term use)\n• Platelet inhibition (bleeding risk)\n• Hypersensitivity reactions\n• Fluid retention\n\nRHEUMATOID ARTHRITIS TREATMENT:\n• NSAIDs (symptom relief, not disease-modifying)\n• DMARDs (methotrexate - slows disease progression)\n• Biologics (TNF inhibitors, etc.)\n• Corticosteroids (flares)\n• Physical therapy\n• Joint protection\n\nRA CHARACTERISTICS:\n• Autoimmune, systemic\n• Morning stiffness >1 hour\n• Symmetric joint involvement\n• Small joints first (hands, wrists)\n• Eventually larger joints",
+            contentCategory: .pharmacology,
+            nclexCategory: .healthPromotion,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with hypertension is prescribed lisinopril. Which assessment finding requires the nurse to hold the medication?",
+            answer: "Potassium level of 5.8 mEq/L",
+            wrongAnswers: ["Blood pressure of 138/88 mmHg", "Sodium level of 140 mEq/L", "Heart rate of 72 bpm"],
+            rationale: "CORRECT: Lisinopril is an ACE inhibitor. ACE inhibitors RETAIN potassium (block aldosterone). K+ of 5.8 is HYPERKALEMIA - hold the med!\n\nACE INHIBITOR FACTS (-pril drugs):\n• Block conversion of angiotensin I to angiotensin II\n• Cause vasodilation (lower BP)\n• Reduce aldosterone (retain K+, excrete Na+)\n• Cardioprotective and renoprotective\n• First-line for HTN with diabetes or HF\n\nWHY OTHER ANSWERS ARE WRONG:\n• BP 138/88 = Still elevated but not contraindication; med is needed\n• Na+ 140 = Normal (135-145 mEq/L)\n• HR 72 = Normal; ACE inhibitors dont significantly affect HR\n\nNORMAL POTASSIUM: 3.5-5.0 mEq/L\n• >5.0 = Hyperkalemia\n• >6.0 = Dangerous - cardiac arrhythmia risk\n• >6.5 = Medical emergency\n\nACE INHIBITOR SIDE EFFECTS:\n• DRY COUGH (most common - bradykinin accumulation)\n• Hyperkalemia\n• First-dose hypotension\n• Angioedema (rare but serious)\n\nTEACHING POINTS:\n• Avoid potassium supplements and K+-sparing diuretics\n• Avoid salt substitutes (contain KCl)\n• Report persistent dry cough (may switch to ARB)\n• Report swelling of lips/tongue (angioedema - stop immediately)",
+            contentCategory: .pharmacology,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with a new diagnosis of type 2 diabetes is prescribed metformin. Which side effect should the nurse teach the patient to expect?",
+            answer: "GI upset including diarrhea",
+            wrongAnswers: ["Significant weight gain", "Hypoglycemia when used alone", "Increased appetite"],
+            rationale: "CORRECT: Metformin commonly causes GI side effects (nausea, diarrhea, abdominal discomfort). Usually improves with time. Take with food to reduce.\n\nMETFORMIN FACTS:\n• First-line oral medication for type 2 diabetes\n• Biguanide class\n• Decreases hepatic glucose production\n• Improves insulin sensitivity\n• Does NOT cause hypoglycemia when used alone\n\nWHY OTHER ANSWERS ARE WRONG:\n• Weight gain = Metformin is WEIGHT NEUTRAL or causes slight weight loss\n• Hypoglycemia alone = Does not stimulate insulin; wont cause hypo alone\n• Increased appetite = Opposite - may decrease appetite slightly\n\nMETFORMIN BENEFITS:\n• Weight neutral/slight loss\n• No hypoglycemia risk alone\n• Cardiovascular benefits\n• Inexpensive\n• Well-studied\n\nSIDE EFFECTS:\n• GI: nausea, diarrhea, metallic taste (most common)\n• B12 deficiency (long-term)\n• Lactic acidosis (rare but serious)\n\nLACTIC ACIDOSIS RISK:\n• Rare but can be fatal\n• Risk factors: renal impairment, contrast dye, hypoxia\n• Hold for 48 hours around contrast procedures\n\nCONTRAINDICATIONS:\n• Significant renal impairment (eGFR <30)\n• Active liver disease\n• Conditions causing hypoxia\n• Heavy alcohol use\n\nPATIENT TEACHING:\n• Take with meals (reduces GI effects)\n• GI effects usually temporary\n• Not holding before contrast procedures\n• Monitor B12 levels annually",
+            contentCategory: .pharmacology,
+            nclexCategory: .physiological,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "Which antibiotic class should be avoided during pregnancy due to effects on fetal teeth and bones?",
+            answer: "Tetracyclines",
+            wrongAnswers: ["Penicillins", "Cephalosporins", "Macrolides"],
+            rationale: "CORRECT: Tetracyclines cross placenta and deposit in developing teeth and bones, causing permanent tooth discoloration (yellow-brown) and potential bone growth issues.\n\nTETRACYCLINE EFFECTS ON FETUS:\n• Tooth enamel hypoplasia and discoloration\n• Bone growth inhibition\n• Risk highest in 2nd and 3rd trimesters\n• Also contraindicated in children <8 years (same reasons)\n\nTETRACYCLINE EXAMPLES:\n• Tetracycline\n• Doxycycline\n• Minocycline\n\nWHY OTHER ANSWERS ARE WRONG - These are generally SAFE in pregnancy:\n• Penicillins = Category B, safe, first-line for many infections\n• Cephalosporins = Category B, safe\n• Macrolides = Erythromycin and azithromycin are Category B\n\nANTIBIOTICS TO AVOID IN PREGNANCY:\n• Tetracyclines - teeth and bone effects\n• Fluoroquinolones - cartilage damage\n• Aminoglycosides - ototoxicity, nephrotoxicity\n• Sulfonamides (near term) - kernicterus risk\n• Metronidazole (first trimester) - potential teratogen\n\nSAFE ANTIBIOTICS IN PREGNANCY (generally):\n• Penicillins\n• Cephalosporins\n• Erythromycin (not estolate form)\n• Azithromycin\n• Nitrofurantoin (avoid near term)\n\nFDA PREGNANCY CATEGORIES (old system):\nA = Safe | B = Probably safe | C = Weigh risks | D = Evidence of risk | X = Contraindicated",
+            contentCategory: .pharmacology,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient receiving chemotherapy develops nausea and vomiting. When should antiemetics be most effective?",
+            answer: "Before chemotherapy administration",
+            wrongAnswers: ["After vomiting begins", "Only if nausea is severe", "24 hours after treatment"],
+            rationale: "CORRECT: PROPHYLACTIC antiemetics work best. Give 30-60 minutes BEFORE chemo to prevent nausea/vomiting rather than treat after it starts.\n\nCHEMOTHERAPY-INDUCED NAUSEA AND VOMITING (CINV):\n• Very common (up to 80% of patients)\n• Major cause of treatment discontinuation\n• Prevention is more effective than treatment\n\nTIMING OF CINV:\nACUTE: Within 24 hours of treatment\nDELAYED: 24 hours to several days after\nANTICIPATORY: Before treatment (conditioned response)\nBREAKTHROUGH: Despite prophylaxis\n\nWHY OTHER ANSWERS ARE WRONG:\n• After vomiting = Once vomiting starts, harder to control\n• Only if severe = Should be prevented, not just treated\n• 24 hours after = Misses acute phase\n\nANTIEMETIC MEDICATIONS:\n\n5-HT3 ANTAGONISTS (ondansetron, granisetron):\n• Block serotonin receptors\n• Given before chemo\n• Very effective\n\nNK1 ANTAGONISTS (aprepitant):\n• For highly emetogenic chemo\n• Given with steroids and 5-HT3\n\nCORTICOSTEROIDS (dexamethasone):\n• Enhance other antiemetics\n• Reduce inflammation\n\nBENZODIAZEPINES (lorazepam):\n• Help with anticipatory nausea\n• Reduce anxiety\n\nNURSING TEACHING:\n• Take antiemetics as prescribed (even if not nauseous)\n• Small, frequent meals\n• Avoid strong odors\n• Stay hydrated\n• Rest after treatment\n• Ginger may help some patients",
+            contentCategory: .pharmacology,
+            nclexCategory: .physiological,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient has an order for albuterol and ipratropium nebulizer treatments. Which medication should be administered first?",
+            answer: "Albuterol first, then ipratropium",
+            wrongAnswers: ["Ipratropium first, then albuterol", "Both medications mixed together", "Either order is acceptable"],
+            rationale: "CORRECT: Give short-acting BETA-AGONIST (albuterol) FIRST. It opens airways fast, allowing ipratropium to reach deeper into lungs.\n\nBRONCHODILATOR ORDER:\n1. Short-acting beta-agonist (albuterol) - works in 5 minutes\n2. Anticholinergic (ipratropium) - works in 15-20 minutes\n3. Corticosteroid inhaler (if prescribed) - last\n\nWHY ALBUTEROL FIRST:\n• Fastest onset (5 minutes)\n• Opens airways quickly\n• Allows subsequent medications better distribution\n• \"Open the door before you walk through\"\n\nWHY OTHER ANSWERS ARE WRONG:\n• Ipratropium first = Slower onset, less effective delivery\n• Mixed together = Can be done with DuoNeb, but if separate, order matters\n• Either order = Not optimal; albuterol first is preferred\n\nMEDICATION CLASSES:\nSABA (Short-Acting Beta-Agonist):\n• Albuterol (Proventil, Ventolin)\n• Rescue medication\n• Works quickly, lasts 4-6 hours\n\nSAMA (Short-Acting Muscarinic Antagonist):\n• Ipratropium (Atrovent)\n• Blocks acetylcholine\n• Slower onset but longer duration\n\nINHALER TECHNIQUE TEACHING:\n• Shake well (MDI)\n• Exhale completely\n• Inhale slowly and deeply\n• Hold breath 10 seconds\n• Wait 1 minute between puffs\n• Rinse mouth after corticosteroids",
+            contentCategory: .pharmacology,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A nurse is teaching a client about preventing fungal infections. Which of the following instructions should the nurse include?",
+            answer: "Maintain good personal hygiene, including keeping skin clean and dry.",
+            wrongAnswers: ["Activate the rapid response team if the patient's condition deteriorates", "Ensure the patient's identification band is verified before any procedure", "Use two patient identifiers before administering medications or treatments"],
+            rationale: "Maintaining good personal hygiene, including keeping the skin clean and dry, is essential for preventing fungal infections. Fungi thrive in warm, moist environments, so minimizing moisture and practicing good hygiene can reduce the risk of infection. While a balanced diet and avoiding crowds are generally good health practices, they are not specifically related to preventing fungal infections. Sharing personal items increases the risk of spreading infections.",
+            contentCategory: .safety,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient is receiving PCA morphine. Which assessment indicates potential oversedation?",
+            answer: "Respiratory rate of 8 and difficult to arouse",
+            wrongAnswers: ["Pain rating of 3/10", "Drowsy but easily arousable", "Requesting increased PCA dose"],
+            rationale: "CORRECT: RR <10 and decreased arousability are DANGER SIGNS indicating opioid overdose. Sedation precedes respiratory depression.\n\nPASERO OPIOID-INDUCED SEDATION SCALE:\nS = Sleep, easy to arouse - ACCEPTABLE\n1 = Awake and alert - ACCEPTABLE\n2 = Slightly drowsy, easily aroused - ACCEPTABLE\n3 = Frequently drowsy, arousable, drifts off - UNACCEPTABLE (hold opioid, monitor)\n4 = Somnolent, minimal response - UNACCEPTABLE (stop opioid, stimulate, naloxone)\n\nWHY OTHER ANSWERS ARE WRONG:\n• Pain 3/10 = Acceptable pain level; PCA is working\n• Drowsy but arousable = Normal with opioids; easily aroused is key\n• Requesting increase = May indicate inadequate pain control; requires assessment\n\nIMMEDIATE INTERVENTIONS FOR OVERSEDATION:\n1. Stop PCA\n2. Stimulate patient (call name, sternal rub)\n3. Maintain airway\n4. Apply oxygen\n5. Administer naloxone as ordered\n6. Stay with patient\n7. Notify provider\n\nPCA SAFETY:\n• Only patient should push button (no family dosing)\n• Lockout interval prevents overdose\n• Continuous monitoring (especially high-risk patients)\n• Assess sedation level before pain level\n\nNALOXONE (NARCAN):\n• Opioid antagonist\n• May need repeated doses (short half-life)\n• Can precipitate withdrawal in dependent patients\n• Titrate to respiratory rate, not consciousness",
+            contentCategory: .safety,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient is scheduled for a lumbar MRI to investigate suspected Tarlov cysts. What is the priority nursing intervention following the procedure?",
+            answer: "Monitor the puncture site for bleeding or CSF leakage.",
+            wrongAnswers: ["Educate the patient on the proper use of the nurse call system", "Implement contact isolation precautions for the patient immediately", "Place the patient on continuous fall precaution monitoring"],
+            rationale: "Following a lumbar puncture, whether for MRI contrast injection or diagnostic sampling, the priority is to monitor for complications such as bleeding, CSF leakage, or infection at the puncture site. This ensures early detection and management of potential adverse events. While assessing pain, encouraging fluids, and reviewing the MRI results are important, they are secondary to ensuring immediate post-procedure safety.",
+            contentCategory: .safety,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
     ]
+
 
     // PREMIUM CARDS (450 more) - Available to subscribers
     static let premiumCards: [Flashcard] = [
@@ -8975,6 +8978,20 @@ class StatsManager: ObservableObject {
     func save() {
         persistence.saveUserStats(stats)
         syncManager.markChanged(CloudKitConfig.RecordType.userStats, id: "main")
+
+        // Update widget data
+        let goals = DailyGoalsManager.shared
+        let completedGoals = goals.dailyGoals.filter { $0.isCompleted }.count
+        WidgetDataManager.update(
+            streak: goals.currentStreak, level: goals.currentLevel, levelTitle: goals.levelTitle,
+            totalXP: goals.totalXP, xpProgress: goals.xpProgressPercent,
+            totalCardsStudied: stats.totalCardsStudied,
+            accuracy: stats.overallAccuracy,
+            dailyGoalsCompleted: completedGoals, dailyGoalsTotal: goals.dailyGoals.count,
+            cardOfTheDayQuestion: goals.cardOfTheDay?.question ?? "Start studying to see your Card of the Day!",
+            cardOfTheDayCategory: goals.cardOfTheDay?.contentCategory.rawValue ?? "General"
+        )
+        WidgetCenter.shared.reloadAllTimelines()
     }
 
     /// Resets all in-memory state for a new user (called on logout)
@@ -9277,19 +9294,33 @@ struct OnboardingView: View {
     @State private var mascotOffset: CGFloat = 50
     @State private var mascotOpacity: Double = 0
     @State private var categoryAnimationProgress: [Bool] = [false, false, false, false]
+    @State private var typingText: String = ""
+    @State private var bearWiggle: Double = 0
+    @State private var promiseChecks: [Bool] = [false, false, false]
+    @State private var showPromiseButton = false
+    @State private var statCounters: [Int] = [0, 0, 0]
+    @State private var statsAnimated = false
+    @State private var featureAnimationProgress: [Bool] = [false, false, false, false]
+    @State private var pulseScale: CGFloat = 1.0
 
     enum PageType {
-        case standard
-        case sources
+        case welcome
+        case painPoint
         case categories
+        case sources
+        case features
+        case promise
+        case getStarted
     }
 
     private let pages: [(title: String, subtitle: String, icon: String, color: Color, pageType: PageType)] = [
-        ("Welcome to CozyNCLEX!", "Your cozy companion for NCLEX success", "heart.fill", .pastelPink, .standard),
-        ("Master the NCLEX", "Master all 4 Client Needs categories to pass", "target", .mintGreen, .categories),
+        ("Hey future nurse!", "I'm CozyBear, and I'm here to help you crush the NCLEX", "hand.wave.fill", .pastelPink, .welcome),
+        ("The NCLEX is tough.", "42% of repeat test-takers fail again. But not you.", "exclamationmark.triangle.fill", .softLavender, .painPoint),
+        ("4 Categories to Master", "The NCLEX tests these areas — we cover all of them", "target", .mintGreen, .categories),
         ("Trusted Sources", "Content compiled from leading NCLEX prep resources", "checkmark.seal.fill", .skyBlue, .sources),
-        ("Track Progress", "Watch yourself grow with detailed stats", "chart.line.uptrend.xyaxis", .softLavender, .standard),
-        ("Let's Get Started!", "Your nursing journey begins now", "star.fill", .mintGreen, .standard)
+        ("Study Smarter", "Everything you need, nothing you don't", "sparkles", .skyBlue, .features),
+        ("Make a Promise", "Students who commit to daily practice are 3x more likely to pass", "heart.fill", .pastelPink, .promise),
+        ("You're Ready!", "Let's turn that anxiety into confidence", "star.fill", .mintGreen, .getStarted)
     ]
 
     // NCLEX Categories data
@@ -9301,6 +9332,8 @@ struct OnboardingView: View {
             ("waveform.path.ecg", "Physiological Integrity", "Body systems & pharmacology", .pastelPink)
         ]
     }
+
+    private let fullWelcomeText = "I'm CozyBear, and I'm here to help you crush the NCLEX"
 
     var body: some View {
         ZStack {
@@ -9320,32 +9353,45 @@ struct OnboardingView: View {
             GeometryReader { geo in
             VStack(spacing: 0) {
                 // Dynamic top spacing based on screen height
-                Spacer().frame(height: geo.size.height * 0.05)
+                Spacer().frame(height: geo.size.height * 0.04)
 
-                // Mascot - proportional to screen
+                // Mascot - proportional to screen, with wiggle on welcome
                 Image("NurseBear")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: min(geo.size.width * 0.38, 160), height: min(geo.size.width * 0.38, 160))
+                    .frame(width: min(geo.size.width * 0.35, 150), height: min(geo.size.width * 0.35, 150))
                     .shadow(color: .black.opacity(0.1), radius: 10, y: 5)
                     .offset(y: mascotOffset)
                     .opacity(mascotOpacity)
+                    .rotationEffect(.degrees(bearWiggle))
                     .onAppear {
                         withAnimation(.spring(response: 0.8, dampingFraction: 0.6).delay(0.2)) {
                             mascotOffset = 0
                             mascotOpacity = 1
                         }
+                        // Wiggle after landing
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            withAnimation(.easeInOut(duration: 0.1).repeatCount(5, autoreverses: true)) {
+                                bearWiggle = 3
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                withAnimation(.easeInOut(duration: 0.1)) {
+                                    bearWiggle = 0
+                                }
+                            }
+                        }
                     }
 
                 Spacer().frame(height: geo.size.height * 0.02)
 
-                // Page content - fixed height container for consistency
+                // Page content
                 VStack(spacing: 12) {
                     // Icon
                     ZStack {
                         Circle()
                             .fill(pages[currentPage].color.opacity(0.2))
                             .frame(width: min(geo.size.width * 0.17, 70), height: min(geo.size.width * 0.17, 70))
+                            .scaleEffect(pulseScale)
 
                         Image(systemName: pages[currentPage].icon)
                             .font(.system(size: min(geo.size.width * 0.08, 32)))
@@ -9361,19 +9407,80 @@ struct OnboardingView: View {
                         .offset(y: showContent ? 0 : 20)
                         .opacity(showContent ? 1 : 0)
 
-                    // Subtitle
-                    Text(pages[currentPage].subtitle)
-                        .font(.system(size: 15, design: .rounded))
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 30)
-                        .offset(y: showContent ? 0 : 20)
-                        .opacity(showContent ? 1 : 0)
+                    // Subtitle — typing effect on welcome page
+                    if pages[currentPage].pageType == .welcome {
+                        Text(typingText)
+                            .font(.system(size: 15, design: .rounded))
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 30)
+                            .frame(minHeight: 40)
+                    } else {
+                        Text(pages[currentPage].subtitle)
+                            .font(.system(size: 15, design: .rounded))
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 30)
+                            .offset(y: showContent ? 0 : 20)
+                            .opacity(showContent ? 1 : 0)
+                    }
 
-                    // Categories page - NCLEX mastery explanation
+                    // MARK: - Pain Point page
+                    if pages[currentPage].pageType == .painPoint {
+                        VStack(spacing: 16) {
+                            // Animated stat counters
+                            HStack(spacing: 20) {
+                                OnboardingStatBubble(
+                                    value: "400+",
+                                    label: "Questions",
+                                    color: .skyBlue,
+                                    isAnimated: statsAnimated
+                                )
+                                OnboardingStatBubble(
+                                    value: "9",
+                                    label: "Categories",
+                                    color: .mintGreen,
+                                    isAnimated: statsAnimated
+                                )
+                                OnboardingStatBubble(
+                                    value: "24/7",
+                                    label: "Access",
+                                    color: .softLavender,
+                                    isAnimated: statsAnimated
+                                )
+                            }
+                            .padding(.top, 8)
+
+                            // Reassurance message
+                            HStack(spacing: 10) {
+                                Image(systemName: "shield.checkered")
+                                    .font(.system(size: 18))
+                                    .foregroundColor(.mintGreen)
+                                Text("We've got you covered")
+                                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                    .foregroundColor(.primary)
+                            }
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 14)
+                            .background(Color.mintGreen.opacity(0.12))
+                            .cornerRadius(20)
+                            .scaleEffect(statsAnimated ? 1 : 0.8)
+                            .opacity(statsAnimated ? 1 : 0)
+                        }
+                        .offset(y: showContent ? 0 : 30)
+                        .opacity(showContent ? 1 : 0)
+                        .onAppear {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
+                                    statsAnimated = true
+                                }
+                            }
+                        }
+                    }
+
+                    // MARK: - Categories page
                     if pages[currentPage].pageType == .categories {
                         VStack(spacing: 16) {
-                            // Category cards
                             VStack(spacing: 10) {
                                 ForEach(Array(nclexCategories.enumerated()), id: \.offset) { index, category in
                                     OnboardingCategoryCardInline(
@@ -9387,7 +9494,6 @@ struct OnboardingView: View {
                             }
                             .padding(.horizontal)
 
-                            // Bottom message
                             HStack(spacing: 8) {
                                 Image(systemName: "checkmark.seal.fill")
                                     .foregroundColor(.mintGreen)
@@ -9409,7 +9515,7 @@ struct OnboardingView: View {
                         }
                     }
 
-                    // Sources list for credentials page - scrollable if needed
+                    // MARK: - Sources page
                     if pages[currentPage].pageType == .sources {
                         ScrollView {
                             VStack(spacing: 10) {
@@ -9425,28 +9531,152 @@ struct OnboardingView: View {
                         .offset(y: showContent ? 0 : 30)
                         .opacity(showContent ? 1 : 0)
                     }
+
+                    // MARK: - Features page
+                    if pages[currentPage].pageType == .features {
+                        VStack(spacing: 12) {
+                            OnboardingFeatureRow(
+                                icon: "bolt.fill",
+                                title: "Quick Study Mode",
+                                description: "5-minute sessions that fit your schedule",
+                                color: .orange,
+                                isAnimated: featureAnimationProgress[0]
+                            )
+                            OnboardingFeatureRow(
+                                icon: "brain.head.profile",
+                                title: "Spaced Repetition",
+                                description: "Focus on what you get wrong",
+                                color: .softLavender,
+                                isAnimated: featureAnimationProgress[1]
+                            )
+                            OnboardingFeatureRow(
+                                icon: "checkmark.seal.fill",
+                                title: "NCLEX Readiness",
+                                description: "Know exactly when you're ready to test",
+                                color: .mintGreen,
+                                isAnimated: featureAnimationProgress[2]
+                            )
+                            OnboardingFeatureRow(
+                                icon: "chart.line.uptrend.xyaxis",
+                                title: "Progress Tracking",
+                                description: "Watch your confidence grow daily",
+                                color: .skyBlue,
+                                isAnimated: featureAnimationProgress[3]
+                            )
+                        }
+                        .padding(.horizontal)
+                        .offset(y: showContent ? 0 : 30)
+                        .opacity(showContent ? 1 : 0)
+                        .onAppear {
+                            animateFeaturesSequentially()
+                        }
+                    }
+
+                    // MARK: - Promise page
+                    if pages[currentPage].pageType == .promise {
+                        VStack(spacing: 14) {
+                            OnboardingPromiseRow(
+                                text: "I'll study a little every day",
+                                isChecked: promiseChecks[0],
+                                delay: 0
+                            ) {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                                    promiseChecks[0] = true
+                                }
+                                checkAllPromises()
+                            }
+
+                            OnboardingPromiseRow(
+                                text: "I won't give up when it gets hard",
+                                isChecked: promiseChecks[1],
+                                delay: 1
+                            ) {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                                    promiseChecks[1] = true
+                                }
+                                checkAllPromises()
+                            }
+
+                            OnboardingPromiseRow(
+                                text: "I believe I can pass the NCLEX",
+                                isChecked: promiseChecks[2],
+                                delay: 2
+                            ) {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                                    promiseChecks[2] = true
+                                }
+                                checkAllPromises()
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                        .offset(y: showContent ? 0 : 30)
+                        .opacity(showContent ? 1 : 0)
+                    }
+
+                    // MARK: - Get Started page
+                    if pages[currentPage].pageType == .getStarted {
+                        VStack(spacing: 12) {
+                            HStack(spacing: 6) {
+                                ForEach(0..<5) { _ in
+                                    Image(systemName: "star.fill")
+                                        .foregroundColor(.yellow)
+                                        .font(.system(size: 16))
+                                }
+                            }
+                            .opacity(showContent ? 1 : 0)
+
+                            Text("\"This app made studying actually fun.\nI passed on my first try!\"")
+                                .font(.system(size: 14, design: .rounded))
+                                .italic()
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 30)
+                                .opacity(showContent ? 1 : 0)
+
+                            Text("— CozyNCLEX Student")
+                                .font(.system(size: 13, weight: .medium, design: .rounded))
+                                .foregroundColor(.primary.opacity(0.6))
+                                .opacity(showContent ? 1 : 0)
+                        }
+                        .padding(.top, 8)
+                    }
                 }
                 .frame(maxHeight: .infinity)
                 .animation(.spring(response: 0.5, dampingFraction: 0.8), value: showContent)
                 .onChange(of: currentPage) { _, _ in
                     showContent = false
                     categoryAnimationProgress = [false, false, false, false]
+                    featureAnimationProgress = [false, false, false, false]
+                    statsAnimated = false
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                         withAnimation { showContent = true }
                         if pages[currentPage].pageType == .categories {
                             animateCategoriesSequentially()
+                        }
+                        if pages[currentPage].pageType == .features {
+                            animateFeaturesSequentially()
+                        }
+                        if pages[currentPage].pageType == .welcome {
+                            startTypingAnimation()
+                        }
+                        if pages[currentPage].pageType == .painPoint {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
+                                    statsAnimated = true
+                                }
+                            }
                         }
                     }
                 }
 
                 Spacer(minLength: 20)
 
-                // Page indicators
-                HStack(spacing: 8) {
+                // Page indicators — progress bar style
+                HStack(spacing: 6) {
                     ForEach(0..<pages.count, id: \.self) { index in
-                        Circle()
-                            .fill(index == currentPage ? pages[currentPage].color : Color.gray.opacity(0.3))
-                            .frame(width: index == currentPage ? 10 : 8, height: index == currentPage ? 10 : 8)
+                        Capsule()
+                            .fill(index <= currentPage ? pages[currentPage].color : Color.gray.opacity(0.25))
+                            .frame(width: index == currentPage ? 24 : 8, height: 8)
                             .animation(.spring(response: 0.3), value: currentPage)
                     }
                 }
@@ -9454,7 +9684,32 @@ struct OnboardingView: View {
 
                 // Buttons
                 VStack(spacing: 12) {
-                    if currentPage < pages.count - 1 {
+                    if pages[currentPage].pageType == .promise {
+                        // Promise page: show "I Promise" only after all checks
+                        Button(action: nextPage) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "heart.fill")
+                                    .font(.system(size: 16))
+                                Text("I Promise")
+                                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 18)
+                            .background(
+                                LinearGradient(
+                                    colors: [.pastelPink, .pastelPink.opacity(0.8)],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .cornerRadius(16)
+                        }
+                        .opacity(showPromiseButton ? 1 : 0.4)
+                        .scaleEffect(showPromiseButton ? 1 : 0.95)
+                        .disabled(!showPromiseButton)
+                        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: showPromiseButton)
+                    } else if currentPage < pages.count - 1 {
                         Button(action: nextPage) {
                             Text("Continue")
                                 .font(.system(size: 18, weight: .bold, design: .rounded))
@@ -9470,17 +9725,10 @@ struct OnboardingView: View {
                                 )
                                 .cornerRadius(16)
                         }
-
-                        Button(action: { appManager.completeOnboarding() }) {
-                            Text("Skip")
-                                .font(.system(size: 15, weight: .medium, design: .rounded))
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(.top, 4)
                     } else {
                         Button(action: { appManager.completeOnboarding() }) {
                             HStack {
-                                Text("Start Studying")
+                                Text("Let's Do This")
                                     .font(.system(size: 18, weight: .bold, design: .rounded))
                                 Image(systemName: "arrow.right")
                                     .font(.system(size: 16, weight: .bold))
@@ -9496,7 +9744,22 @@ struct OnboardingView: View {
                                 )
                             )
                             .cornerRadius(16)
+                            .scaleEffect(pulseScale)
+                            .onAppear {
+                                withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
+                                    pulseScale = 1.03
+                                }
+                            }
                         }
+                    }
+
+                    if currentPage < pages.count - 1 && pages[currentPage].pageType != .promise {
+                        Button(action: { appManager.completeOnboarding() }) {
+                            Text("Skip")
+                                .font(.system(size: 15, weight: .medium, design: .rounded))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.top, 4)
                     }
                 }
                 .padding(.horizontal, 30)
@@ -9508,11 +9771,16 @@ struct OnboardingView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 withAnimation { showContent = true }
             }
+            // Start typing animation on first page
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                startTypingAnimation()
+            }
         }
         .gesture(
             DragGesture()
                 .onEnded { value in
                     if value.translation.width < -50 && currentPage < pages.count - 1 {
+                        if pages[currentPage].pageType == .promise && !showPromiseButton { return }
                         nextPage()
                     } else if value.translation.width > 50 && currentPage > 0 {
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
@@ -9529,6 +9797,16 @@ struct OnboardingView: View {
         }
     }
 
+    private func startTypingAnimation() {
+        typingText = ""
+        let characters = Array(fullWelcomeText)
+        for (index, character) in characters.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.03) {
+                typingText += String(character)
+            }
+        }
+    }
+
     private func animateCategoriesSequentially() {
         for index in 0..<4 {
             DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.15 + 0.2) {
@@ -9537,6 +9815,147 @@ struct OnboardingView: View {
                 }
             }
         }
+    }
+
+    private func animateFeaturesSequentially() {
+        for index in 0..<4 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.18 + 0.2) {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                    featureAnimationProgress[index] = true
+                }
+            }
+        }
+    }
+
+    private func checkAllPromises() {
+        if promiseChecks.allSatisfy({ $0 }) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) {
+                    showPromiseButton = true
+                }
+                // Wiggle the bear when all promises checked
+                withAnimation(.easeInOut(duration: 0.1).repeatCount(5, autoreverses: true)) {
+                    bearWiggle = 3
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    withAnimation(.easeInOut(duration: 0.1)) {
+                        bearWiggle = 0
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Onboarding Stat Bubble
+
+struct OnboardingStatBubble: View {
+    let value: String
+    let label: String
+    let color: Color
+    let isAnimated: Bool
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Text(value)
+                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .foregroundColor(color)
+            Text(label)
+                .font(.system(size: 12, design: .rounded))
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 16)
+        .background(Color.adaptiveWhite)
+        .cornerRadius(14)
+        .shadow(color: .black.opacity(0.05), radius: 5, y: 2)
+        .scaleEffect(isAnimated ? 1 : 0.7)
+        .opacity(isAnimated ? 1 : 0)
+    }
+}
+
+// MARK: - Onboarding Feature Row
+
+struct OnboardingFeatureRow: View {
+    let icon: String
+    let title: String
+    let description: String
+    let color: Color
+    let isAnimated: Bool
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(color.opacity(0.2))
+                    .frame(width: 44, height: 44)
+                Image(systemName: icon)
+                    .font(.system(size: 20))
+                    .foregroundColor(color)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundColor(.primary)
+                Text(description)
+                    .font(.system(size: 12, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(Color.adaptiveWhite)
+        .cornerRadius(14)
+        .shadow(color: .black.opacity(0.05), radius: 5, y: 2)
+        .scaleEffect(isAnimated ? 1 : 0.9)
+        .opacity(isAnimated ? 1 : 0.3)
+    }
+}
+
+// MARK: - Onboarding Promise Row
+
+struct OnboardingPromiseRow: View {
+    let text: String
+    let isChecked: Bool
+    let delay: Int
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: {
+            if !isChecked { onTap() }
+        }) {
+            HStack(spacing: 14) {
+                ZStack {
+                    Circle()
+                        .strokeBorder(isChecked ? Color.mintGreen : Color.gray.opacity(0.3), lineWidth: 2)
+                        .frame(width: 32, height: 32)
+
+                    if isChecked {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.mintGreen)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
+
+                Text(text)
+                    .font(.system(size: 16, weight: .medium, design: .rounded))
+                    .foregroundColor(isChecked ? .primary : .secondary)
+                    .strikethrough(false)
+
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .background(isChecked ? Color.mintGreen.opacity(0.08) : Color.adaptiveWhite)
+            .cornerRadius(14)
+            .shadow(color: .black.opacity(0.05), radius: 5, y: 2)
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -9625,6 +10044,7 @@ struct MainMenuView: View {
     @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
     @StateObject private var coachMarkManager = CoachMarkManager.shared
     @ObservedObject var authManager = AuthManager.shared
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showSubscriptionSheet = false
     @State private var showCategoryFilter = false
     @State private var showCardOfTheDay = false
@@ -9636,8 +10056,292 @@ struct MainMenuView: View {
     @State private var selectedGameMode: GameMode?
     @State private var showResumePrompt = false
     @State private var pendingGameMode: GameMode?
+    @State private var sidebarSelection: SidebarItem? = .studyModes
+
+    enum SidebarItem: String, Hashable, CaseIterable {
+        case studyModes = "Study Modes"
+        case browseCards = "Browse Cards"
+        case createCard = "Create Card"
+        case studySets = "Study Sets"
+        case stats = "Stats"
+        case progress = "Progress"
+        case dailyGoals = "Daily Goals"
+        case nclexReadiness = "NCLEX Readiness"
+        case settings = "Settings"
+
+        var icon: String {
+            switch self {
+            case .studyModes: return "graduationcap.fill"
+            case .browseCards: return "rectangle.stack.fill"
+            case .createCard: return "plus.circle.fill"
+            case .studySets: return "folder.fill"
+            case .stats: return "chart.bar.fill"
+            case .progress: return "star.fill"
+            case .dailyGoals: return "target"
+            case .nclexReadiness: return "checkmark.seal.fill"
+            case .settings: return "gearshape.fill"
+            }
+        }
+
+        var color: Color {
+            switch self {
+            case .studyModes: return .mintGreen
+            case .browseCards: return .blue
+            case .createCard: return .mintGreen
+            case .studySets: return .peachOrange
+            case .stats: return .softLavender
+            case .progress: return .pastelPink
+            case .dailyGoals: return .mintGreen
+            case .nclexReadiness: return .green
+            case .settings: return .gray
+            }
+        }
+
+        static var studyItems: [SidebarItem] { [.studyModes, .browseCards, .createCard, .studySets] }
+        static var progressItems: [SidebarItem] { [.progress, .stats, .nclexReadiness] }
+    }
 
     var body: some View {
+        Group {
+            if horizontalSizeClass == .regular {
+                iPadLayout
+            } else {
+                iPhoneLayout
+            }
+        }
+        .sheet(isPresented: $showSubscriptionSheet) {
+            SubscriptionSheet()
+        }
+        .sheet(isPresented: $showCategoryFilter) {
+            CategoryFilterSheet()
+        }
+        .sheet(isPresented: $dailyGoalsManager.showLevelUpCelebration) {
+            LevelUpCelebrationView()
+        }
+        .sheet(isPresented: $showShareProgress) {
+            ShareProgressView(stats: ShareableStats(
+                level: dailyGoalsManager.currentLevel,
+                levelTitle: dailyGoalsManager.levelTitle,
+                totalXP: dailyGoalsManager.totalXP,
+                masteredCards: cardManager.validMasteredCount,
+                currentStreak: dailyGoalsManager.currentStreak,
+                accuracy: statsManager.stats.overallAccuracy / 100.0
+            ))
+        }
+        .sheet(isPresented: $showDailyMotivation) {
+            DailyMotivationView {
+                markMotivationSeen()
+            }
+        }
+        .sheet(isPresented: $dailyGoalsManager.showMilestoneCelebration) {
+            MilestoneCelebrationView(milestone: dailyGoalsManager.milestoneCelebrationValue) {
+                dailyGoalsManager.showMilestoneCelebration = false
+            }
+        }
+        .sheet(isPresented: $showCardBrowse) {
+            BrowseCardsHomeView()
+        }
+        .sheet(item: $selectedGameMode) { mode in
+            StudySessionSetupView(gameMode: mode) { selectedCards in
+                startGameMode(mode, with: selectedCards)
+            }
+        }
+        .alert("Continue Session?", isPresented: $showResumePrompt) {
+            Button("Resume", role: nil) {
+                if let mode = pendingGameMode {
+                    resumeGameMode(mode)
+                }
+                pendingGameMode = nil
+            }
+            Button("Start New", role: .destructive) {
+                if let mode = pendingGameMode {
+                    SessionProgressManager.shared.clearProgress(for: mode)
+                    selectedGameMode = mode
+                }
+                pendingGameMode = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingGameMode = nil
+            }
+        } message: {
+            if let mode = pendingGameMode,
+               let progress = SessionProgressManager.shared.loadProgress(for: mode) {
+                if mode == .learn {
+                    let learned = progress.currentIndex
+                    let remaining = progress.cardIDs.count
+                    Text("You have \(learned) terms learned with \(remaining) remaining. Would you like to continue?")
+                } else {
+                    Text("You have a saved session with \(progress.currentIndex) of \(progress.cardIDs.count) cards completed. Would you like to continue?")
+                }
+            } else {
+                Text("Would you like to continue your previous session?")
+            }
+        }
+        .onAppear {
+            let cards = cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess)
+            dailyGoalsManager.selectCardOfTheDay(from: cards)
+            dailyGoalsManager.checkAndResetDailyGoals()
+            dailyGoalsManager.checkMilestone(masteredCount: cardManager.validMasteredCount)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                let seenToday = hasSeenMotivationToday()
+                let otherModalActive = dailyGoalsManager.showMilestoneCelebration || dailyGoalsManager.showLevelUpCelebration
+                if !seenToday && !otherModalActive {
+                    showDailyMotivation = true
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                if coachMarkManager.isFirstTime && !dailyGoalsManager.showMilestoneCelebration && !dailyGoalsManager.showLevelUpCelebration && !showDailyMotivation {
+                    coachMarkManager.showIfNeeded(.studyTab)
+                }
+            }
+        }
+        .overlay {
+            CoachMarkOverlay()
+        }
+        .onOpenURL { url in
+            if url.scheme == "cozynclex" && url.host == "cardoftheday" {
+                if dailyGoalsManager.cardOfTheDay != nil {
+                    appManager.currentScreen = .flashcardsGame
+                }
+            }
+        }
+    }
+
+    // MARK: - iPad Layout (NavigationSplitView)
+
+    private var iPadLayout: some View {
+        NavigationSplitView {
+            List(selection: $sidebarSelection) {
+                Section("Study") {
+                    ForEach(SidebarItem.studyItems, id: \.self) { item in
+                        Label {
+                            Text(item.rawValue)
+                        } icon: {
+                            Image(systemName: item.icon)
+                                .foregroundColor(item.color)
+                        }
+                    }
+                }
+                Section("Progress") {
+                    ForEach(SidebarItem.progressItems, id: \.self) { item in
+                        Label {
+                            Text(item.rawValue)
+                        } icon: {
+                            Image(systemName: item.icon)
+                                .foregroundColor(item.color)
+                        }
+                    }
+                }
+                Section {
+                    Label(SidebarItem.settings.rawValue, systemImage: SidebarItem.settings.icon)
+                        .tag(SidebarItem.settings)
+                }
+            }
+            .navigationTitle("CozyNCLEX")
+            .listStyle(.sidebar)
+        } detail: {
+            iPadDetailView
+        }
+        .background(Color.creamyBackground)
+    }
+
+    @ViewBuilder
+    private var iPadDetailView: some View {
+        switch sidebarSelection {
+        case .studyModes:
+            ScrollView {
+                VStack(spacing: 16) {
+                    CompactHeaderView(showCategoryFilter: $showCategoryFilter)
+
+                    if !subscriptionManager.hasPremiumAccess && !(authManager.userProfile?.isPremium ?? false) {
+                        SubscribeButton(showSheet: $showSubscriptionSheet, totalCardCount: cardManager.getAvailableCards(isSubscribed: true).count)
+                    }
+
+                    GameModesGridSection(
+                        showSubscriptionSheet: $showSubscriptionSheet,
+                        selectedGameMode: $selectedGameMode,
+                        showResumePrompt: $showResumePrompt,
+                        pendingGameMode: $pendingGameMode
+                    )
+
+                    QuickActionsSection(showCardBrowse: $showCardBrowse)
+                    CategoryFilterBadge(showCategoryFilter: $showCategoryFilter)
+                }
+                .padding()
+                .frame(maxWidth: 700)
+                .frame(maxWidth: .infinity)
+            }
+            .background(Color.creamyBackground)
+        case .browseCards:
+            BrowseCardsHomeView()
+        case .createCard:
+            CreateCardView()
+        case .studySets:
+            StudySetsView()
+        case .stats:
+            StatsView()
+        case .progress, .dailyGoals:
+            ScrollView {
+                VStack(spacing: 16) {
+                    LevelProgressSection()
+                    StreakBanner()
+                    DailyGoalsSection()
+
+                    Button(action: {
+                        HapticManager.shared.light()
+                        showShareProgress = true
+                    }) {
+                        HStack {
+                            Image(systemName: "square.and.arrow.up")
+                            Text("Share My Progress")
+                                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(
+                            LinearGradient(colors: [.blue, .purple], startPoint: .leading, endPoint: .trailing)
+                        )
+                        .cornerRadius(20)
+                    }
+
+                    CardOfTheDaySection(showCard: $showCardOfTheDay, isFlipped: $cardOfTheDayFlipped)
+                    CategoryProgressSection(categoryProgress: calculateCategoryProgress())
+                }
+                .padding()
+                .frame(maxWidth: 700)
+                .frame(maxWidth: .infinity)
+            }
+            .background(Color.creamyBackground)
+        case .nclexReadiness:
+            ScrollView {
+                NCLEXReadinessView(
+                    masteredCount: cardManager.validMasteredCount,
+                    totalCards: cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess).count,
+                    categoryProgress: calculateCategoryProgress(),
+                    averageAccuracy: statsManager.stats.overallAccuracy / 100.0,
+                    isPremium: subscriptionManager.hasPremiumAccess || (authManager.userProfile?.isPremium ?? false),
+                    onUpgradeTapped: { showSubscriptionSheet = true }
+                )
+                .padding()
+                .frame(maxWidth: 700)
+                .frame(maxWidth: .infinity)
+            }
+            .background(Color.creamyBackground)
+        case .settings:
+            NavigationStack {
+                SyncSettingsView()
+            }
+        case .none:
+            Text("Select an item from the sidebar")
+                .font(.system(size: 18, design: .rounded))
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: - iPhone Layout (existing TabView)
+
+    private var iPhoneLayout: some View {
         VStack(spacing: 0) {
             // Header with compact stats
             CompactHeaderView(showCategoryFilter: $showCategoryFilter)
@@ -9738,108 +10442,6 @@ struct MainMenuView: View {
             .tabViewStyle(.page(indexDisplayMode: .never))
         }
         .background(Color.creamyBackground)
-        .sheet(isPresented: $showSubscriptionSheet) {
-            SubscriptionSheet()
-        }
-        .sheet(isPresented: $showCategoryFilter) {
-            CategoryFilterSheet()
-        }
-        .sheet(isPresented: $dailyGoalsManager.showLevelUpCelebration) {
-            LevelUpCelebrationView()
-        }
-        .sheet(isPresented: $showShareProgress) {
-            ShareProgressView(stats: ShareableStats(
-                level: dailyGoalsManager.currentLevel,
-                levelTitle: dailyGoalsManager.levelTitle,
-                totalXP: dailyGoalsManager.totalXP,
-                masteredCards: cardManager.validMasteredCount,
-                currentStreak: dailyGoalsManager.currentStreak,
-                accuracy: statsManager.stats.overallAccuracy / 100.0
-            ))
-        }
-        .fullScreenCover(isPresented: $showDailyMotivation) {
-            DailyMotivationView {
-                markMotivationSeen()
-            }
-        }
-        .fullScreenCover(isPresented: $dailyGoalsManager.showMilestoneCelebration) {
-            MilestoneCelebrationView(milestone: dailyGoalsManager.milestoneCelebrationValue) {
-                dailyGoalsManager.showMilestoneCelebration = false
-            }
-        }
-        .sheet(isPresented: $showCardBrowse) {
-            BrowseCardsHomeView()
-        }
-        .sheet(item: $selectedGameMode) { mode in
-            StudySessionSetupView(gameMode: mode) { selectedCards in
-                // Navigate to the appropriate game screen with selected cards
-                startGameMode(mode, with: selectedCards)
-            }
-        }
-        .alert("Continue Session?", isPresented: $showResumePrompt) {
-            Button("Resume", role: nil) {
-                if let mode = pendingGameMode {
-                    // Go directly to game mode with saved progress
-                    resumeGameMode(mode)
-                }
-                pendingGameMode = nil
-            }
-            Button("Start New", role: .destructive) {
-                if let mode = pendingGameMode {
-                    // Clear saved progress and show setup sheet
-                    SessionProgressManager.shared.clearProgress(for: mode)
-                    selectedGameMode = mode
-                }
-                pendingGameMode = nil
-            }
-            Button("Cancel", role: .cancel) {
-                pendingGameMode = nil
-            }
-        } message: {
-            if let mode = pendingGameMode,
-               let progress = SessionProgressManager.shared.loadProgress(for: mode) {
-                if mode == .learn {
-                    // For Bear Learn: currentIndex = learnedCount, cardsReviewed = totalCards
-                    let learned = progress.currentIndex
-                    let remaining = progress.cardIDs.count
-                    Text("You have \(learned) terms learned with \(remaining) remaining. Would you like to continue?")
-                } else {
-                    Text("You have a saved session with \(progress.currentIndex) of \(progress.cardIDs.count) cards completed. Would you like to continue?")
-                }
-            } else {
-                Text("Would you like to continue your previous session?")
-            }
-        }
-        .onAppear {
-            let cards = cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess)
-            dailyGoalsManager.selectCardOfTheDay(from: cards)
-            dailyGoalsManager.checkAndResetDailyGoals()
-
-            // Check for milestone celebration
-            dailyGoalsManager.checkMilestone(masteredCount: cardManager.validMasteredCount)
-
-            // Show daily motivation if not seen today
-            // Delay to allow milestone checks to complete first
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                let seenToday = hasSeenMotivationToday()
-                // Only show if not seen today AND no other fullScreenCover is active
-                let otherModalActive = dailyGoalsManager.showMilestoneCelebration || dailyGoalsManager.showLevelUpCelebration
-                if !seenToday && !otherModalActive {
-                    showDailyMotivation = true
-                    // Note: markMotivationSeen() is called in DailyMotivationView's onDismiss
-                }
-            }
-
-            // Show first-time coach marks after a delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                if coachMarkManager.isFirstTime && !dailyGoalsManager.showMilestoneCelebration && !dailyGoalsManager.showLevelUpCelebration && !showDailyMotivation {
-                    coachMarkManager.showIfNeeded(.studyTab)
-                }
-            }
-        }
-        .overlay {
-            CoachMarkOverlay()
-        }
     }
 
     private func calculateCategoryProgress() -> [ContentCategory: Double] {
@@ -10050,12 +10652,16 @@ struct CompactHeaderView: View {
 struct GameModesGridSection: View {
     @EnvironmentObject var appManager: AppManager
     @EnvironmentObject var subscriptionManager: SubscriptionManager
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Binding var showSubscriptionSheet: Bool
     @Binding var selectedGameMode: GameMode?
     @Binding var showResumePrompt: Bool
     @Binding var pendingGameMode: GameMode?
 
-    let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+    var columns: [GridItem] {
+        let count = horizontalSizeClass == .regular ? 3 : 2
+        return Array(repeating: GridItem(.flexible(), spacing: 12), count: count)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -15449,6 +16055,7 @@ struct TestModeView: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var testCards: [Flashcard] = []
     @State private var shuffledAnswers: [UUID: [String]] = [:] // Pre-shuffled answers
     @State private var currentIndex = 0
@@ -15704,6 +16311,8 @@ struct TestModeView: View {
                             }
                         }
                         .padding()
+                        .frame(maxWidth: 700)
+                        .frame(maxWidth: .infinity)
                     }
                 }
             }
@@ -16072,6 +16681,7 @@ struct CozyMatchView: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var tiles: [MatchTile] = []
     @State private var gameCards: [Flashcard] = []
     @State private var allSessionCards: [Flashcard] = [] // All cards for both rounds
@@ -16090,8 +16700,7 @@ struct CozyMatchView: View {
 
     var availableCards: [Flashcard] { cardManager.getGameCards(isSubscribed: subscriptionManager.hasPremiumAccess) }
 
-    // 2 columns for cleaner layout with 10 tiles (5 rows)
-    let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+    let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
 
     var body: some View {
         ZStack {
@@ -16155,15 +16764,17 @@ struct CozyMatchView: View {
                     Spacer()
                 } else {
                     // Game grid
-                    LazyVGrid(columns: columns, spacing: 12) {
-                        ForEach(tiles) { tile in
-                            MatchTileView(tile: tile, isSelected: selectedTile?.id == tile.id) { handleTileTap(tile) }
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: 16) {
+                            ForEach(tiles) { tile in
+                                MatchTileView(tile: tile, isSelected: selectedTile?.id == tile.id, isIPad: horizontalSizeClass == .regular) { handleTileTap(tile) }
+                            }
                         }
+                        .padding(.horizontal, horizontalSizeClass == .regular ? 40 : 16)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: 700)
+                        .frame(maxWidth: .infinity)
                     }
-                    .padding(.horizontal)
-                    .padding(.vertical, 8)
-
-                    Spacer()
 
                     Button(action: resetGame) {
                         HStack { Image(systemName: "arrow.counterclockwise"); Text("New Game") }
@@ -16306,13 +16917,14 @@ struct CozyMatchView: View {
 struct MatchTileView: View {
     let tile: MatchTile
     let isSelected: Bool
+    var isIPad: Bool = false
     let action: () -> Void
 
     var bgColor: Color {
         if tile.isMatched { return .green.opacity(0.3) }
         if tile.showError { return .red.opacity(0.3) }
         if isSelected { return .softLavender.opacity(0.3) }
-        return .white
+        return .cardBackground
     }
 
     var borderColor: Color {
@@ -16324,30 +16936,30 @@ struct MatchTileView: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 6) {
+            VStack(spacing: isIPad ? 10 : 6) {
                 // Badge showing Q or A
                 Text(tile.isQuestion ? "Q" : "A")
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .font(.system(size: isIPad ? 14 : 12, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
+                    .padding(.horizontal, isIPad ? 12 : 8)
+                    .padding(.vertical, isIPad ? 5 : 3)
                     .background(tile.isQuestion ? Color.mintGreen : Color.pastelPink)
                     .cornerRadius(8)
 
                 // Content text - larger and more readable
                 Text(tile.content)
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .font(.system(size: isIPad ? 16 : 13, weight: .medium, design: .rounded))
                     .foregroundColor(.primary)
                     .multilineTextAlignment(.center)
-                    .lineLimit(5)
+                    .lineLimit(6)
                     .minimumScaleFactor(0.6)
             }
-            .padding(10)
-            .frame(height: 120)
+            .padding(isIPad ? 16 : 10)
+            .frame(minHeight: isIPad ? 160 : 120)
             .frame(maxWidth: .infinity)
             .background(bgColor)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(borderColor, lineWidth: 2))
+            .cornerRadius(isIPad ? 16 : 12)
+            .overlay(RoundedRectangle(cornerRadius: isIPad ? 16 : 12).stroke(borderColor, lineWidth: 2))
             .shadow(color: isSelected ? borderColor.opacity(0.3) : .clear, radius: 4)
             .opacity(tile.isMatched ? 0 : 1)
             .scaleEffect(tile.isMatched ? 0.5 : 1)

@@ -11,6 +11,7 @@ import SwiftUI
 
 struct StudySessionSetupView: View {
     @Environment(\.dismiss) var dismiss
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var appManager: AppManager
@@ -71,12 +72,22 @@ struct StudySessionSetupView: View {
     }
 
     var availableCards: [Flashcard] {
-        // Use getGameCards which filters out mastered cards and prioritizes weak cards
-        var cards = cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed)
+        // Get all available cards based on subscription (bypassing global category filter)
+        var cards = cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess)
 
-        // Filter by category if selected
+        // Filter out mastered cards (they've already been learned)
+        cards = cards.filter { !cardManager.masteredCardIDs.contains($0.id) }
+
+        // Filter by category if selected in this setup view
         if let category = selectedCategory {
             cards = cards.filter { $0.contentCategory == category }
+        }
+
+        // Sort by weakness (cards with lower consecutive correct come first)
+        cards.sort { card1, card2 in
+            let streak1 = cardManager.consecutiveCorrect[card1.id] ?? 0
+            let streak2 = cardManager.consecutiveCorrect[card2.id] ?? 0
+            return streak1 < streak2
         }
 
         return cards
@@ -89,6 +100,10 @@ struct StudySessionSetupView: View {
         // Only shuffle if user explicitly wants randomization
         if shuffleCards {
             cards = cards.shuffled()
+        }
+
+        if gameMode == .blocks {
+            return cards
         }
 
         if selectedCardCount != .all {
@@ -104,7 +119,7 @@ struct StudySessionSetupView: View {
     }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 0) {
                 // Fixed Header with Start Button
                 VStack(spacing: 16) {
@@ -176,25 +191,27 @@ struct StudySessionSetupView: View {
                 // Scrollable Options
                 ScrollView {
                     VStack(spacing: 24) {
-                        // Card Count Selection
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("How many cards?")
-                                .font(.system(size: 18, weight: .bold, design: .rounded))
+                        // Card Count Selection (hidden for blocks mode)
+                        if gameMode != .blocks {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("How many cards?")
+                                    .font(.system(size: 18, weight: .bold, design: .rounded))
 
-                            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                                ForEach(CardCount.allCases, id: \.self) { count in
-                                    CardCountOption(
-                                        count: count,
-                                        isSelected: selectedCardCount == count,
-                                        availableCount: availableCards.count
-                                    ) {
-                                        HapticManager.shared.light()
-                                        selectedCardCount = count
+                                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: horizontalSizeClass == .regular ? 3 : 2), spacing: 12) {
+                                    ForEach(CardCount.allCases, id: \.self) { count in
+                                        CardCountOption(
+                                            count: count,
+                                            isSelected: selectedCardCount == count,
+                                            availableCount: availableCards.count
+                                        ) {
+                                            HapticManager.shared.light()
+                                            selectedCardCount = count
+                                        }
                                     }
                                 }
                             }
+                            .padding(.horizontal)
                         }
-                        .padding(.horizontal)
 
                         // Category Filter
                         VStack(alignment: .leading, spacing: 12) {
@@ -258,6 +275,7 @@ struct StudySessionSetupView: View {
                         .cornerRadius(12)
                         .padding(.horizontal)
                     }
+                    .frame(maxWidth: 700).frame(maxWidth: .infinity)
                     .padding(.vertical)
                 }
             }
@@ -367,23 +385,23 @@ struct CardCountOption: View {
 extension GameMode {
     var color: Color {
         switch self {
-        case .swipe: return .mintGreen
-        case .quiz: return .pastelPink
-        case .smartReview: return .softLavender
+        case .flashcards: return .mintGreen
+        case .learn: return .softLavender
         case .match: return .peachOrange
         case .write: return .skyBlue
         case .test: return .coralPink
+        case .blocks: return .peachOrange
         }
     }
 
     var description: String {
         switch self {
-        case .swipe: return "Swipe through flashcards"
-        case .quiz: return "Multiple choice questions"
-        case .smartReview: return "Spaced repetition learning"
+        case .flashcards: return "Sort flashcards into Know and Still Learning"
+        case .learn: return "Adaptive learning with card mastery"
         case .match: return "Match questions to answers"
         case .write: return "Type your answers"
         case .test: return "Simulated NCLEX test"
+        case .blocks: return "Block puzzle with flashcard questions"
         }
     }
 }
@@ -391,7 +409,7 @@ extension GameMode {
 // MARK: - Preview
 
 #Preview {
-    StudySessionSetupView(gameMode: .swipe) { cards in
+    StudySessionSetupView(gameMode: .flashcards) { cards in
         print("Starting with \(cards.count) cards")
     }
     .environmentObject(CardManager.shared)

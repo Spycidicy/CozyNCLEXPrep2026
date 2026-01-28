@@ -123,81 +123,26 @@ struct MotivationalQuote {
     let color: Color
 
     static let quotes: [MotivationalQuote] = [
-        MotivationalQuote(
-            text: "The expert in anything was once a beginner.",
-            author: "Helen Hayes",
-            color: .mintGreen
-        ),
-        MotivationalQuote(
-            text: "Your future patients are counting on you. Every card you study brings you closer to saving lives.",
-            author: nil,
-            color: .blue
-        ),
-        MotivationalQuote(
-            text: "Success is not final, failure is not fatal: it is the courage to continue that counts.",
-            author: "Winston Churchill",
-            color: .purple
-        ),
-        MotivationalQuote(
-            text: "The best time to plant a tree was 20 years ago. The second best time is now.",
-            author: "Chinese Proverb",
-            color: .green
-        ),
-        MotivationalQuote(
-            text: "You're not just studying for an exam. You're preparing to make a difference in people's lives.",
-            author: nil,
-            color: .orange
-        ),
-        MotivationalQuote(
-            text: "Small daily improvements are the key to staggering long-term results.",
-            author: nil,
-            color: .pink
-        ),
-        MotivationalQuote(
-            text: "Believe you can and you're halfway there.",
-            author: "Theodore Roosevelt",
-            color: .teal
-        ),
-        MotivationalQuote(
-            text: "The pain of studying is temporary. The pride of passing is forever.",
-            author: nil,
-            color: .indigo
-        ),
-        MotivationalQuote(
-            text: "Every nurse was once a student who refused to give up.",
-            author: nil,
-            color: .mint
-        ),
-        MotivationalQuote(
-            text: "You don't have to be great to start, but you have to start to be great.",
-            author: "Zig Ziglar",
-            color: .cyan
-        ),
-        MotivationalQuote(
-            text: "The only way to do great work is to love what you do.",
-            author: "Steve Jobs",
-            color: .red
-        ),
-        MotivationalQuote(
-            text: "Your hardest times often lead to the greatest moments of your life.",
-            author: nil,
-            color: .purple
-        ),
-        MotivationalQuote(
-            text: "Nursing is not just a career, it's a calling. Answer it with preparation.",
-            author: nil,
-            color: .blue
-        ),
-        MotivationalQuote(
-            text: "Don't watch the clock; do what it does. Keep going.",
-            author: "Sam Levenson",
-            color: .green
-        ),
-        MotivationalQuote(
-            text: "One card at a time. One day at a time. You've got this!",
-            author: nil,
-            color: .orange
-        ),
+        MotivationalQuote(text: "You are going to pass the NCLEX. Believe it.", author: "CozyBear", color: .mintGreen),
+        MotivationalQuote(text: "Every card you study brings you closer to your RN.", author: "CozyBear", color: .blue),
+        MotivationalQuote(text: "You didn't come this far to only come this far.", author: "CozyBear", color: .purple),
+        MotivationalQuote(text: "Future nurses don't quit. Neither will you.", author: "CozyBear", color: .green),
+        MotivationalQuote(text: "Your patients are waiting for you. Keep going.", author: "CozyBear", color: .orange),
+        MotivationalQuote(text: "Difficult roads lead to beautiful destinations \u{2014} like your nursing career.", author: "CozyBear", color: .pink),
+        MotivationalQuote(text: "You are more prepared than you think.", author: "CozyBear", color: .teal),
+        MotivationalQuote(text: "One question at a time. One day at a time. You've got this.", author: "CozyBear", color: .indigo),
+        MotivationalQuote(text: "The NCLEX is just one test. You are a whole nurse.", author: "CozyBear", color: .mint),
+        MotivationalQuote(text: "Your dedication today is tomorrow's confidence.", author: "CozyBear", color: .cyan),
+        MotivationalQuote(text: "Nursing school didn't break you. The NCLEX won't either.", author: "CozyBear", color: .red),
+        MotivationalQuote(text: "You're not just studying \u{2014} you're building a career that saves lives.", author: "CozyBear", color: .purple),
+        MotivationalQuote(text: "Every expert was once a beginner. You're almost there.", author: "CozyBear", color: .blue),
+        MotivationalQuote(text: "Trust your preparation. Trust yourself.", author: "CozyBear", color: .green),
+        MotivationalQuote(text: "You are capable of hard things \u{2014} and passing the NCLEX is one of them.", author: "CozyBear", color: .orange),
+        MotivationalQuote(text: "The world needs more nurses like you.", author: "CozyBear", color: .pink),
+        MotivationalQuote(text: "Progress, not perfection. You're doing great.", author: "CozyBear", color: .teal),
+        MotivationalQuote(text: "This time next year, you'll be glad you didn't give up today.", author: "CozyBear", color: .indigo),
+        MotivationalQuote(text: "You have the knowledge. You have the heart. You will pass.", author: "CozyBear", color: .mint),
+        MotivationalQuote(text: "CozyBear believes in you. Now believe in yourself.", author: "CozyBear", color: .mintGreen),
     ]
 
     static func randomForToday() -> MotivationalQuote {
@@ -1003,7 +948,7 @@ struct ShareProgressView: View {
     @State private var isGeneratingImage = true
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 24) {
                 // Preview Card
                 if let image = renderedImage {
@@ -1057,6 +1002,7 @@ struct ShareProgressView: View {
 
                 Spacer()
             }
+            .frame(maxWidth: 700).frame(maxWidth: .infinity)
             .padding(.top, 20)
             .navigationTitle("Share Progress")
             .navigationBarTitleDisplayMode(.inline)
@@ -1176,7 +1122,8 @@ struct ShareableImageCard: View {
                     .frame(height: 12)
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 20)
+                .frame(maxWidth: 700).frame(maxWidth: .infinity)
+            .padding(.top, 20)
 
                 // Stats Grid
                 HStack(spacing: 12) {
@@ -1261,6 +1208,7 @@ struct ShareImageStatBox: View {
 struct ShareableProgressCard: View {
     let stats: ShareableStats
 
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     var body: some View {
         VStack(spacing: 16) {
             // Header
@@ -1293,7 +1241,7 @@ struct ShareableProgressCard: View {
             Divider()
 
             // Stats Grid
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: horizontalSizeClass == .regular ? 4 : 2), spacing: 12) {
                 ShareStatItem(icon: "star.fill", value: "\(stats.totalXP)", label: "Total XP", color: .yellow)
                 ShareStatItem(icon: "checkmark.seal.fill", value: "\(stats.masteredCards)", label: "Mastered", color: .mintGreen)
                 ShareStatItem(icon: "flame.fill", value: "\(stats.currentStreak)", label: "Day Streak", color: .orange)
