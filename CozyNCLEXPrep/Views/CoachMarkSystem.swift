@@ -18,6 +18,13 @@ class CoachMarkManager: ObservableObject {
     @Published var isShowingCoachMark = false
     @Published var highlightFrames: [CoachMarkType: CGRect] = [:]
 
+    /// Navigation action the host view should perform (e.g. switch tab)
+    @Published var pendingNavigation: CoachNavigation?
+
+    enum CoachNavigation: Equatable {
+        case switchToTab(Int)
+    }
+
     private let shownMarksKey = "shownCoachMarks"
 
     private init() {}
@@ -27,16 +34,13 @@ class CoachMarkManager: ObservableObject {
         highlightFrames[mark] = frame
     }
 
-    // All coach marks in order
+    // Simplified tour: Hub → Flashcards → Progress tab (no upsells)
     private let coachMarkSequence: [CoachMarkType] = [
         .studyTab,
         .flashcards,
-        .quickQuiz,
-        .testYourself,
         .progressTab,
         .xpAndLevel,
-        .streaks,
-        .settingsTab
+        .streaks
     ]
 
     // Check if a specific coach mark has been shown
@@ -78,11 +82,35 @@ class CoachMarkManager: ObservableObject {
             currentCoachMark = nil
         }
 
-        // Show next coach mark in sequence if applicable
-        if showNext, let nextMark = getNextCoachMark(after: current) {
+        guard showNext else { return }
+
+        // Check if we need to navigate to a different tab first
+        if let navigation = navigationNeeded(after: current) {
+            // Navigate first, then show next coach mark after the view settles
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                self.pendingNavigation = navigation
+            }
+            // The host view will observe pendingNavigation, switch tabs,
+            // and then call showIfNeeded for the next mark
+            return
+        }
+
+        // Otherwise auto-advance within the same tab
+        if let nextMark = getNextCoachMark(after: current) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 self.showIfNeeded(nextMark)
             }
+        }
+    }
+
+    /// Returns a navigation action if the next coach mark is on a different tab
+    private func navigationNeeded(after mark: CoachMarkType) -> CoachNavigation? {
+        switch mark {
+        case .flashcards:
+            // After showing flashcards on Study tab, switch to Progress tab
+            return .switchToTab(1)
+        default:
+            return nil
         }
     }
 
@@ -94,15 +122,12 @@ class CoachMarkManager: ObservableObject {
 
         let nextMark = coachMarkSequence[currentIndex + 1]
 
-        // Only return if it's contextually appropriate
-        // (e.g., don't show progressTab marks while on studyTab)
+        // Only auto-advance within the same context (no cross-tab)
         switch nextMark {
-        case .flashcards, .quickQuiz, .testYourself:
-            return nextMark // These follow studyTab
+        case .flashcards:
+            return nextMark // Follows studyTab on same tab
         case .xpAndLevel, .streaks:
-            return nil // These should be triggered when viewing progress tab
-        case .settingsTab:
-            return nil // Triggered when user taps settings
+            return nextMark // Follows progressTab on same tab
         default:
             return nil
         }
@@ -138,14 +163,14 @@ enum CoachMarkType: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .studyTab: return "Welcome to Study!"
-        case .flashcards: return "Flashcards"
+        case .studyTab: return "I've Set Up Your Desk!"
+        case .flashcards: return "Start Here"
         case .quickQuiz: return "Quick Quiz"
         case .testYourself: return "Practice Tests"
         case .browseCards: return "Browse Cards"
-        case .progressTab: return "Your Progress"
-        case .xpAndLevel: return "XP & Levels"
-        case .streaks: return "Daily Streaks"
+        case .progressTab: return "Your Progress Hub"
+        case .xpAndLevel: return "You Earn XP Here"
+        case .streaks: return "Keep the Streak Alive"
         case .masteryProgress: return "Mastery Progress"
         case .settingsTab: return "Settings"
         }
@@ -154,21 +179,21 @@ enum CoachMarkType: String, CaseIterable {
     var message: String {
         switch self {
         case .studyTab:
-            return "This is your study hub! Choose a study mode below to start mastering NCLEX content."
+            return "Everything you need is right here. Flashcards, games, and quizzes."
         case .flashcards:
-            return "Swipe through flashcards to learn. Get 3 correct in a row to master each card."
+            return "Swipe through a few cards to build your streak. It only takes 2 minutes."
         case .quickQuiz:
             return "Test your knowledge with quick 10-question quizzes. Great for daily practice!"
         case .testYourself:
-            return "Take full-length NCLEX practice tests to simulate the real exam experience. Upgrade to Premium to unlock this feature!"
+            return "Take full-length NCLEX practice tests to simulate the real exam experience."
         case .browseCards:
             return "Browse all cards by category. Great for targeted studying."
         case .progressTab:
-            return "Track your study progress, stats, and achievements here."
+            return "I'll track everything for you here. Your stats, your streaks, your growth."
         case .xpAndLevel:
-            return "Earn XP by studying! Level up as you master more content."
+            return "Every card you study earns XP. Level up and watch yourself grow!"
         case .streaks:
-            return "Study daily to build your streak. Consistency is key to NCLEX success!"
+            return "Study every day and I'll keep count. Even 2 minutes keeps it alive!"
         case .masteryProgress:
             return "See how many cards you've mastered in each category."
         case .settingsTab:
@@ -194,7 +219,7 @@ enum CoachMarkType: String, CaseIterable {
     var color: Color {
         switch self {
         case .studyTab: return .mintGreen
-        case .flashcards: return .skyBlue
+        case .flashcards: return .mintGreen
         case .quickQuiz: return .orange
         case .testYourself: return .purple
         case .browseCards: return .pink
@@ -209,17 +234,17 @@ enum CoachMarkType: String, CaseIterable {
     var arrowDirection: ArrowDirection {
         switch self {
         case .studyTab:
-            return .none // No arrow for welcome
+            return .none
         case .flashcards:
-            return .up // Points up to flashcards card
+            return .up
         case .quickQuiz:
-            return .up // Points up to quick quiz card
+            return .up
         case .testYourself:
-            return .up // Points up to test yourself card
+            return .up
         case .browseCards:
             return .up
         case .progressTab:
-            return .none // No arrow for tab switch
+            return .none
         case .xpAndLevel, .streaks, .masteryProgress:
             return .up
         case .settingsTab:
@@ -231,13 +256,13 @@ enum CoachMarkType: String, CaseIterable {
     var verticalOffset: CGFloat {
         switch self {
         case .studyTab:
-            return -50 // Center-ish, slightly up
+            return -50
         case .flashcards:
-            return -180 // Above the flashcards card
+            return -180
         case .quickQuiz:
-            return -80 // Above quick quiz card
+            return -80
         case .testYourself:
-            return 20 // Near test yourself card
+            return 20
         case .browseCards:
             return 100
         case .progressTab:
@@ -260,6 +285,17 @@ enum CoachMarkType: String, CaseIterable {
             return true
         default:
             return false
+        }
+    }
+
+    var buttonLabel: String {
+        switch self {
+        case .studyTab: return "Show Me Around"
+        case .flashcards: return "Let's Go"
+        case .progressTab: return "Got it!"
+        case .xpAndLevel: return "Nice!"
+        case .streaks: return "I'm Ready!"
+        default: return "Got it!"
         }
     }
 }
@@ -353,23 +389,19 @@ struct CoachMarkTooltip: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            // Icon and title row
+            // Bear avatar + title row
             HStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(mark.color.opacity(0.2))
-                        .frame(width: 44, height: 44)
-
-                    Image(systemName: mark.icon)
-                        .font(.system(size: 20))
-                        .foregroundColor(mark.color)
-                }
+                Image("NurseBear")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 44, height: 44)
+                    .clipShape(Circle())
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(mark.title)
                         .font(.system(size: 18, weight: .bold, design: .rounded))
 
-                    // Premium badge
+                    // Premium badge (only for marks still in the enum but not in tour)
                     if mark.isPremiumFeature {
                         HStack(spacing: 4) {
                             Image(systemName: "crown.fill")
@@ -390,12 +422,12 @@ struct CoachMarkTooltip: View {
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            // Got it button
+            // Action button with contextual label
             Button(action: {
                 HapticManager.shared.light()
                 manager.dismiss()
             }) {
-                Text("Got it!")
+                Text(mark.buttonLabel)
                     .font(.system(size: 16, weight: .semibold, design: .rounded))
                     .foregroundColor(.white)
                     .frame(maxWidth: .infinity)
@@ -405,7 +437,7 @@ struct CoachMarkTooltip: View {
             }
         }
         .padding(20)
-        .background(Color.adaptiveWhite)
+        .background(Color.creamyBackground)
         .cornerRadius(20)
         .shadow(color: .black.opacity(0.2), radius: 20, y: 10)
         .padding(.horizontal, 30)

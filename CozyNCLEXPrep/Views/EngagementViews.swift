@@ -569,8 +569,8 @@ struct NCLEXReadinessView: View {
                             .frame(width: 70, height: 70)
 
                         Circle()
-                            .trim(from: 0, to: isPremium ? overallReadiness : 0.65)
-                            .stroke(isPremium ? readinessColor : Color.gray.opacity(0.4), style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                            .trim(from: 0, to: isPremium ? overallReadiness : 0.42)
+                            .stroke(isPremium ? readinessColor : Color.orange.opacity(0.4), style: StrokeStyle(lineWidth: 8, lineCap: .round))
                             .frame(width: 70, height: 70)
                             .rotationEffect(.degrees(-90))
 
@@ -579,9 +579,27 @@ struct NCLEXReadinessView: View {
                                 .font(.system(size: 16, weight: .black, design: .rounded))
                                 .foregroundColor(readinessColor)
                         } else {
-                            Image(systemName: "lock.fill")
-                                .font(.system(size: 20))
-                                .foregroundColor(.gray)
+                            Text("42%")
+                                .font(.system(size: 16, weight: .black, design: .rounded))
+                                .foregroundColor(.orange)
+                                .blur(radius: 8)
+                        }
+
+                        if !isPremium {
+                            Button(action: { onUpgradeTapped?() }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "crown.fill")
+                                        .font(.system(size: 10))
+                                    Text("View Score")
+                                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                                }
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(LinearGradient(colors: [.orange, .pink], startPoint: .leading, endPoint: .trailing))
+                                .cornerRadius(8)
+                            }
+                            .offset(y: 44)
                         }
                     }
                 }
@@ -595,8 +613,9 @@ struct NCLEXReadinessView: View {
                         ReadinessStageRow(
                             stage: stage,
                             isCompleted: isPremium ? currentStage.rawValue > stage.rawValue : false,
-                            isCurrent: isPremium ? currentStage == stage : false,
-                            progress: isPremium ? stageProgress(for: stage) : 0.0
+                            isCurrent: isPremium ? currentStage == stage : (stage == .beginner),
+                            progress: isPremium ? stageProgress(for: stage) : (stage == .beginner ? 0.65 : 0.0),
+                            isLocked: !isPremium
                         )
                     }
                 }
@@ -663,27 +682,27 @@ struct NCLEXReadinessView: View {
                     .cornerRadius(12)
                 }
 
-                // Stats Summary
+                // Stats Summary — always visible, shows real data (capped for free)
                 HStack(spacing: 12) {
                     ReadinessStatBox(
                         title: "Mastered",
-                        value: isPremium ? "\(masteredCount)/\(requiredMasteryForReady)" : "—",
+                        value: isPremium ? "\(masteredCount)/\(requiredMasteryForReady)" : "\(masteredCount)/50",
                         icon: "star.fill",
-                        color: isPremium ? .yellow : .gray
+                        color: isPremium ? .yellow : .orange
                     )
 
                     ReadinessStatBox(
                         title: "Accuracy",
-                        value: isPremium ? "\(Int(averageAccuracy * 100))%" : "—",
+                        value: "\(Int(averageAccuracy * 100))%",
                         icon: "target",
-                        color: isPremium ? (averageAccuracy >= 0.75 ? .mintGreen : .orange) : .gray
+                        color: averageAccuracy >= 0.75 ? .mintGreen : .orange
                     )
 
                     ReadinessStatBox(
                         title: "Categories",
-                        value: isPremium ? "\(completedCategories)/\(ContentCategory.allCases.count)" : "—",
+                        value: isPremium ? "\(completedCategories)/\(ContentCategory.allCases.count)" : "1/9",
                         icon: "folder.fill",
-                        color: isPremium ? .blue : .gray
+                        color: isPremium ? .blue : .orange
                     )
                 }
             }
@@ -850,6 +869,7 @@ struct ReadinessStageRow: View {
     let isCompleted: Bool
     let isCurrent: Bool
     let progress: Double
+    var isLocked: Bool = false
 
     var body: some View {
         HStack(spacing: 16) {
@@ -857,16 +877,20 @@ struct ReadinessStageRow: View {
             VStack(spacing: 0) {
                 if stage != .beginner {
                     Rectangle()
-                        .fill(isCompleted || isCurrent ? stage.color : Color.gray.opacity(0.3))
+                        .fill(isLocked ? Color.gray.opacity(0.2) : (isCompleted || isCurrent ? stage.color : Color.gray.opacity(0.3)))
                         .frame(width: 3, height: 20)
                 }
 
                 ZStack {
                     Circle()
-                        .fill(isCompleted ? stage.color : (isCurrent ? stage.color.opacity(0.3) : Color.gray.opacity(0.2)))
+                        .fill(isLocked ? Color.gray.opacity(0.15) : (isCompleted ? stage.color : (isCurrent ? stage.color.opacity(0.3) : Color.gray.opacity(0.2))))
                         .frame(width: 36, height: 36)
 
-                    if isCompleted {
+                    if isLocked {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 13))
+                            .foregroundColor(.gray.opacity(0.5))
+                    } else if isCompleted {
                         Image(systemName: "checkmark")
                             .font(.system(size: 14, weight: .bold))
                             .foregroundColor(.white)
@@ -879,18 +903,18 @@ struct ReadinessStageRow: View {
 
                 if stage != .ready {
                     Rectangle()
-                        .fill(isCompleted ? stage.color : Color.gray.opacity(0.3))
+                        .fill(isLocked ? Color.gray.opacity(0.2) : (isCompleted ? stage.color : Color.gray.opacity(0.3)))
                         .frame(width: 3, height: 20)
                 }
             }
 
-            // Stage info
+            // Stage info — always readable
             VStack(alignment: .leading, spacing: 4) {
                 Text(stage.title)
-                    .font(.system(size: 16, weight: isCurrent ? .bold : .medium, design: .rounded))
-                    .foregroundColor(isCurrent ? stage.color : (isCompleted ? .primary : .secondary))
+                    .font(.system(size: 16, weight: isCurrent && !isLocked ? .bold : .medium, design: .rounded))
+                    .foregroundColor(isLocked ? .primary : (isCurrent ? stage.color : (isCompleted ? .primary : .secondary)))
 
-                if isCurrent {
+                if isCurrent && !isLocked {
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
                             Capsule()
@@ -903,6 +927,11 @@ struct ReadinessStageRow: View {
                         }
                     }
                     .frame(height: 6)
+                } else if isLocked {
+                    // Show greyed-out progress bar placeholder
+                    Capsule()
+                        .fill(Color.gray.opacity(0.15))
+                        .frame(height: 6)
                 }
             }
 
@@ -946,10 +975,16 @@ struct ShareProgressView: View {
     let stats: ShareableStats
     @State private var renderedImage: UIImage?
     @State private var isGeneratingImage = true
+    @State private var useCozyTheme = false
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
+                // Tap hint
+                Text("Tap card to change style")
+                    .font(.system(size: 12, design: .rounded))
+                    .foregroundColor(.secondary)
+
                 // Preview Card
                 if let image = renderedImage {
                     Image(uiImage: image)
@@ -959,9 +994,11 @@ struct ShareProgressView: View {
                         .cornerRadius(20)
                         .shadow(color: .black.opacity(0.15), radius: 15, y: 8)
                         .padding(.horizontal)
+                        .onTapGesture { toggleTheme() }
                 } else {
-                    ShareableImageCard(stats: stats)
+                    ShareableImageCard(stats: stats, useCozyTheme: useCozyTheme)
                         .padding(.horizontal)
+                        .onTapGesture { toggleTheme() }
                 }
 
                 // Share Options
@@ -1017,12 +1054,18 @@ struct ShareProgressView: View {
         }
     }
 
+    private func toggleTheme() {
+        HapticManager.shared.light()
+        useCozyTheme.toggle()
+        generateImage()
+    }
+
     private func generateImage() {
-        let cardView = ShareableImageCard(stats: stats)
+        let cardView = ShareableImageCard(stats: stats, useCozyTheme: useCozyTheme)
             .frame(width: min(UIScreen.main.bounds.width - 20, 380))
 
         let renderer = ImageRenderer(content: cardView)
-        renderer.scale = 3.0 // High resolution
+        renderer.scale = 3.0
 
         if let uiImage = renderer.uiImage {
             renderedImage = uiImage
@@ -1041,16 +1084,46 @@ struct ShareProgressView: View {
 
 struct ShareableImageCard: View {
     let stats: ShareableStats
+    var useCozyTheme: Bool = false
+
+    private var headerGradient: LinearGradient {
+        if useCozyTheme {
+            return LinearGradient(
+                colors: [Color(red: 1.0, green: 0.95, blue: 0.88), Color.pastelPink.opacity(0.7)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        } else {
+            return LinearGradient(
+                colors: [Color.mintGreen, Color.mintGreen.opacity(0.7)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
+    }
+
+    private var headerTextColor: Color {
+        useCozyTheme ? .primary : .white
+    }
+
+    private var headerSubtextColor: Color {
+        useCozyTheme ? .secondary : .white.opacity(0.9)
+    }
+
+    /// Smart stat: swap streak for study time when streak is 0
+    private var middleStat: (icon: String, value: String, label: String, color: Color) {
+        if stats.currentStreak > 0 {
+            return ("flame.fill", "\(stats.currentStreak)", "Day Streak", .orange)
+        } else {
+            return ("clock.fill", stats.formattedStudyTime, "Study Time", .purple)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             // Gradient Header
             ZStack {
-                LinearGradient(
-                    colors: [Color.mintGreen, Color.mintGreen.opacity(0.7)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
+                headerGradient
 
                 VStack(spacing: 8) {
                     // App Logo & Name
@@ -1066,10 +1139,10 @@ struct ShareableImageCard: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("CozyNCLEX Prep")
                                 .font(.system(size: 22, weight: .bold, design: .rounded))
-                                .foregroundColor(.white)
+                                .foregroundColor(headerTextColor)
                             Text("NCLEX Study Progress")
                                 .font(.system(size: 14, weight: .medium, design: .rounded))
-                                .foregroundColor(.white.opacity(0.9))
+                                .foregroundColor(headerSubtextColor)
                         }
 
                         Spacer()
@@ -1082,13 +1155,13 @@ struct ShareableImageCard: View {
                         VStack(spacing: 4) {
                             Text("LEVEL")
                                 .font(.system(size: 12, weight: .bold, design: .rounded))
-                                .foregroundColor(.white.opacity(0.8))
+                                .foregroundColor(headerSubtextColor)
                             Text("\(stats.level)")
                                 .font(.system(size: 48, weight: .black, design: .rounded))
-                                .foregroundColor(.white)
+                                .foregroundColor(headerTextColor)
                             Text(stats.levelTitle)
                                 .font(.system(size: 14, weight: .semibold, design: .rounded))
-                                .foregroundColor(.white.opacity(0.9))
+                                .foregroundColor(headerSubtextColor)
                         }
                         Spacer()
                     }
@@ -1109,7 +1182,6 @@ struct ShareableImageCard: View {
                         Spacer()
                     }
 
-                    // Decorative progress bar
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
                             RoundedRectangle(cornerRadius: 6)
@@ -1123,9 +1195,9 @@ struct ShareableImageCard: View {
                 }
                 .padding(.horizontal, 20)
                 .frame(maxWidth: 700).frame(maxWidth: .infinity)
-            .padding(.top, 20)
+                .padding(.top, 20)
 
-                // Stats Grid
+                // Stats Grid — smart stat swap
                 HStack(spacing: 12) {
                     ShareImageStatBox(
                         icon: "checkmark.seal.fill",
@@ -1135,10 +1207,10 @@ struct ShareableImageCard: View {
                     )
 
                     ShareImageStatBox(
-                        icon: "flame.fill",
-                        value: "\(stats.currentStreak)",
-                        label: "Day Streak",
-                        color: .orange
+                        icon: middleStat.icon,
+                        value: middleStat.value,
+                        label: middleStat.label,
+                        color: middleStat.color
                     )
 
                     ShareImageStatBox(
@@ -1150,7 +1222,7 @@ struct ShareableImageCard: View {
                 }
                 .padding(.horizontal, 20)
 
-                // Footer
+                // Footer with download watermark
                 VStack(spacing: 8) {
                     Divider()
                         .padding(.horizontal, 20)
@@ -1162,7 +1234,12 @@ struct ShareableImageCard: View {
                             .font(.system(size: 13, weight: .medium, design: .rounded))
                             .foregroundColor(.secondary)
                     }
-                    .padding(.bottom, 16)
+
+                    // Acquisition watermark
+                    Text("Download CozyNCLEX Prep on the App Store")
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .foregroundColor(.primary.opacity(0.5))
+                        .padding(.bottom, 16)
                 }
                 .padding(.top, 8)
             }
@@ -1296,6 +1373,17 @@ struct ShareableStats {
     let masteredCards: Int
     let currentStreak: Int
     let accuracy: Double
+    var totalStudyTimeSeconds: Int = 0
+
+    var formattedStudyTime: String {
+        let hours = Double(totalStudyTimeSeconds) / 3600.0
+        if hours >= 1 {
+            return String(format: "%.1f Hours", hours)
+        } else {
+            let minutes = totalStudyTimeSeconds / 60
+            return "\(max(minutes, 1)) Min"
+        }
+    }
 }
 
 // MARK: - Preview

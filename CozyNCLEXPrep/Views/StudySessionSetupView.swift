@@ -22,6 +22,13 @@ struct StudySessionSetupView: View {
     @State private var selectedCardCount: CardCount = .ten
     @State private var selectedCategory: ContentCategory?
     @State private var shuffleCards = true
+    @ObservedObject var authManager = AuthManager.shared
+    @State private var showTollBoothPaywall = false
+    @State private var showCategoryLockedAlert = false
+
+    var isPremium: Bool {
+        subscriptionManager.hasPremiumAccess || (authManager.userProfile?.isPremium ?? false)
+    }
 
     enum CardCount: Int, CaseIterable {
         case ten = 10
@@ -202,7 +209,8 @@ struct StudySessionSetupView: View {
                                         CardCountOption(
                                             count: count,
                                             isSelected: selectedCardCount == count,
-                                            availableCount: availableCards.count
+                                            availableCount: availableCards.count,
+                                            displayTitle: (!isPremium && count == .all) ? "All Free Cards (50)" : nil
                                         ) {
                                             HapticManager.shared.light()
                                             selectedCardCount = count
@@ -221,20 +229,38 @@ struct StudySessionSetupView: View {
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 10) {
                                     CategoryChip(
-                                        title: "All Categories",
+                                        title: isPremium ? "All Categories" : "NCLEX Essentials",
                                         isSelected: selectedCategory == nil,
-                                        color: .gray
+                                        color: isPremium ? .gray : .mintGreen
                                     ) {
                                         selectedCategory = nil
                                     }
 
                                     ForEach(ContentCategory.allCases, id: \.self) { category in
-                                        CategoryChip(
-                                            title: category.rawValue,
-                                            isSelected: selectedCategory == category,
-                                            color: category.color
-                                        ) {
-                                            selectedCategory = category
+                                        if isPremium {
+                                            CategoryChip(
+                                                title: category.rawValue,
+                                                isSelected: selectedCategory == category,
+                                                color: category.color
+                                            ) {
+                                                selectedCategory = category
+                                            }
+                                        } else {
+                                            ZStack(alignment: .topTrailing) {
+                                                CategoryChip(
+                                                    title: category.rawValue,
+                                                    isSelected: false,
+                                                    color: category.color
+                                                ) {
+                                                    showCategoryLockedAlert = true
+                                                }
+                                                .opacity(0.5)
+
+                                                Image(systemName: "lock.fill")
+                                                    .font(.system(size: 8))
+                                                    .foregroundColor(.gray)
+                                                    .offset(x: -4, y: 4)
+                                            }
                                         }
                                     }
                                 }
@@ -289,17 +315,40 @@ struct StudySessionSetupView: View {
                     }
                 }
             }
+            .sheet(isPresented: $showTollBoothPaywall) {
+                TollBoothPaywallSheet(onContinue: {
+                    showTollBoothPaywall = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        proceedWithSession()
+                    }
+                })
+            }
+            .alert("Premium Feature", isPresented: $showCategoryLockedAlert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text("Upgrade to filter by Category. Currently studying the NCLEX Essentials mix.")
+            }
         }
     }
 
     private func startSession() {
         HapticManager.shared.success()
+
+        // Toll booth: if free user has seen all 50 cards, show soft paywall
+        if !isPremium {
+            let viewedCount = cardManager.masteredCardIDs.count + (cardManager.consecutiveCorrect.filter { $0.value > 0 }.count)
+            if viewedCount >= 50 {
+                showTollBoothPaywall = true
+                return
+            }
+        }
+
+        proceedWithSession()
+    }
+
+    private func proceedWithSession() {
         let cards = selectedCards
-
-        // Set session cards
         cardManager.sessionCards = cards
-
-        // Call onStart which will navigate and dismiss the sheet
         onStart(cards)
     }
 }
@@ -345,6 +394,7 @@ struct CardCountOption: View {
     let count: StudySessionSetupView.CardCount
     let isSelected: Bool
     let availableCount: Int
+    var displayTitle: String? = nil
     let action: () -> Void
 
     var isDisabled: Bool {
@@ -358,7 +408,7 @@ struct CardCountOption: View {
                     .font(.system(size: 22))
                     .foregroundColor(isSelected ? .white : count.color)
 
-                Text(count.title)
+                Text(displayTitle ?? count.title)
                     .font(.system(size: 15, weight: .semibold, design: .rounded))
                     .foregroundColor(isSelected ? .white : .primary)
 
@@ -415,4 +465,57 @@ extension GameMode {
     .environmentObject(CardManager.shared)
     .environmentObject(SubscriptionManager())
     .environmentObject(AppManager())
+}
+
+
+struct TollBoothPaywallSheet: View {
+    @Environment(\.dismiss) var dismiss
+    var onContinue: () -> Void
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 20) {
+                Spacer()
+
+                Image(systemName: "star.circle.fill")
+                    .font(.system(size: 60))
+                    .foregroundColor(.yellow)
+
+                Text("You've explored the Starter Deck!")
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .multilineTextAlignment(.center)
+
+                Text("Unlock 1000+ cards across 20+ categories to continue your NCLEX prep journey.")
+                    .font(.system(size: 15, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+
+                SubscriptionSheet()
+                    .frame(maxHeight: 300)
+
+                Spacer()
+
+                Button(action: {
+                    dismiss()
+                    onContinue()
+                }) {
+                    Text("Continue reviewing Free Deck")
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundColor(.secondary)
+                        .underline()
+                }
+                .padding(.bottom, 20)
+            }
+            .padding()
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+    }
 }

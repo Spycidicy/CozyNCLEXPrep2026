@@ -603,75 +603,26 @@ struct CozyBlocksView: View {
             Color.black.opacity(0.5)
                 .ignoresSafeArea()
 
-            VStack(spacing: 20) {
-                Text("Game Over!")
-                    .font(.largeTitle.weight(.bold))
-                    .foregroundColor(.primaryText)
-
-                if score >= highScore && score > 0 {
-                    HStack(spacing: 6) {
-                        Image(systemName: "trophy.fill")
-                            .foregroundColor(.yellow)
-                        Text("New High Score!")
-                            .font(.headline.weight(.bold))
-                            .foregroundColor(.yellow)
-                        Image(systemName: "trophy.fill")
-                            .foregroundColor(.yellow)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Color.yellow.opacity(0.15))
-                    .cornerRadius(12)
-                }
-
-                VStack(spacing: 12) {
-                    statRow(icon: "star.fill", iconColor: .peachOrange, label: "Score", value: "\(score)")
-                    statRow(icon: "line.3.horizontal", iconColor: .skyBlue, label: "Lines Cleared", value: "\(linesCleared)")
-                    statRow(icon: "questionmark.circle.fill", iconColor: .softLavender, label: "Questions", value: "\(questionsCorrect)/\(questionsAnswered)")
-                }
-                .padding()
-                .background(Color.creamyBackground)
-                .cornerRadius(16)
-
-                VStack(spacing: 12) {
-                    Button {
-                        HapticManager.shared.buttonTap()
-                        SoundManager.shared.buttonTap()
-                        restartGame()
-                    } label: {
-                        Text("Play Again")
-                            .font(.headline.weight(.semibold))
-                            .foregroundColor(.adaptiveWhite)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .background(Color.mintGreen)
-                            .cornerRadius(14)
-                    }
-
-                    Button {
-                        HapticManager.shared.buttonTap()
-                        SoundManager.shared.buttonTap()
-                        appManager.currentScreen = .menu
-                    } label: {
-                        Text("Home")
-                            .font(.headline.weight(.semibold))
-                            .foregroundColor(.primaryText)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .background(Color.cardBackground)
-                            .cornerRadius(14)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14)
-                                    .strokeBorder(Color.secondaryText.opacity(0.2), lineWidth: 1)
-                            )
-                    }
-                }
-            }
-            .padding(28)
-            .background(Color.cardBackground)
-            .cornerRadius(24)
-            .shadow(color: .black.opacity(0.15), radius: 20, y: 10)
-            .padding(.horizontal, 28)
+            SessionCompleteView(
+                performancePercent: questionsAnswered > 0 ? Int(Double(questionsCorrect) / Double(questionsAnswered) * 100) : 0,
+                stats: [
+                    SessionCompleteStat(value: "\(score)", label: "Score", color: .peachOrange),
+                    SessionCompleteStat(value: "\(linesCleared)", label: "Lines", color: .skyBlue),
+                    SessionCompleteStat(value: "\(questionsCorrect)/\(questionsAnswered)", label: "Questions", color: .softLavender)
+                ],
+                summaryText: score >= highScore && score > 0 ? "New High Score!" : "Score: \(score) with \(linesCleared) lines cleared",
+                onPlayAgain: {
+                    HapticManager.shared.buttonTap()
+                    SoundManager.shared.buttonTap()
+                    restartGame()
+                },
+                onHome: {
+                    HapticManager.shared.buttonTap()
+                    SoundManager.shared.buttonTap()
+                    appManager.currentScreen = .menu
+                },
+                playAgainLabel: "Play Again"
+            )
         }
         .transition(.opacity)
     }

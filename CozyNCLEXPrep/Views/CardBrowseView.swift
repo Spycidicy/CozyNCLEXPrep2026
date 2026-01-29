@@ -9,11 +9,24 @@ import SwiftUI
 
 // MARK: - Browse Filter Mode
 
-enum BrowseFilterMode: String {
-    case all = "All Cards"
-    case saved = "Saved Cards"
-    case weak = "Weak Cards"
-    case mastered = "Mastered"
+enum BrowseFilterMode: Identifiable, Hashable {
+    case all
+    case saved
+    case weak
+    case mastered
+    case category(ContentCategory)
+
+    var id: String { title }
+
+    var title: String {
+        switch self {
+        case .all: return "All Cards"
+        case .saved: return "Saved Cards"
+        case .weak: return "Weak Cards"
+        case .mastered: return "Mastered"
+        case .category(let cat): return cat.rawValue
+        }
+    }
 }
 
 // MARK: - Browse Cards Home View (Smart Sections)
@@ -25,6 +38,7 @@ struct BrowseCardsHomeView: View {
     @ObservedObject var authManager = AuthManager.shared
 
     @State private var selectedFilter: BrowseFilterMode?
+    @State private var showUpgradeSheet = false
 
     var isPremium: Bool {
         subscriptionManager.hasPremiumAccess ||
@@ -113,6 +127,48 @@ struct BrowseCardsHomeView: View {
                             accentColor: .blue
                         ) {
                             selectedFilter = .all
+                        }
+                    }
+                    .padding(.horizontal)
+
+                    // Categories Section
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Categories")
+                            .font(.system(size: 18, weight: .bold, design: .rounded))
+                            .padding(.horizontal, 4)
+
+                        // NCLEX Essentials (always available)
+                        BrowseSectionCard(
+                            icon: "book.fill",
+                            iconColor: .mintGreen,
+                            title: "NCLEX Essentials",
+                            subtitle: isPremium ? "Core study cards" : "Free Sample • 50 Cards",
+                            count: isPremium ? allCards.count : 50,
+                            accentColor: .mintGreen
+                        ) {
+                            selectedFilter = .all
+                        }
+
+                        // Individual categories
+                        ForEach(ContentCategory.allCases, id: \.self) { category in
+                            if isPremium {
+                                BrowseSectionCard(
+                                    icon: category.icon,
+                                    iconColor: category.color,
+                                    title: category.rawValue,
+                                    subtitle: "Browse " + category.rawValue + " cards",
+                                    count: allCards.filter { $0.contentCategory == category }.count,
+                                    accentColor: category.color
+                                ) {
+                                    selectedFilter = .category(category)
+                                }
+                            } else {
+                                LockedBrowseSectionCard(
+                                    icon: category.icon,
+                                    iconColor: category.color,
+                                    title: category.rawValue
+                                )
+                            }
                         }
                     }
                     .padding(.horizontal)
@@ -217,11 +273,52 @@ struct BrowseSectionCard: View {
     }
 }
 
-// MARK: - Make BrowseFilterMode Identifiable for fullScreenCover
+struct LockedBrowseSectionCard: View {
+    let icon: String
+    let iconColor: Color
+    let title: String
+    @State private var showUpgradeSheet = false
 
-extension BrowseFilterMode: Identifiable {
-    var id: String { rawValue }
+    var body: some View {
+        Button(action: {
+            HapticManager.shared.light()
+            showUpgradeSheet = true
+        }) {
+            HStack(spacing: 16) {
+                ZStack {
+                    Circle()
+                        .fill(iconColor.opacity(0.15))
+                        .frame(width: 50, height: 50)
+                    Image(systemName: icon)
+                        .font(.system(size: 22))
+                        .foregroundColor(iconColor)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .foregroundColor(.primary)
+                    Text("Premium")
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 15))
+                    .foregroundColor(.gray)
+            }
+            .padding()
+            .background(Color.adaptiveWhite)
+            .cornerRadius(16)
+            .opacity(0.6)
+        }
+        .buttonStyle(PlainButtonStyle())
+        .sheet(isPresented: $showUpgradeSheet) {
+            SubscriptionSheet()
+        }
+    }
 }
+
+// BrowseFilterMode Identifiable conformance is in the enum definition
 
 // MARK: - Card Browse View (Quizlet-style)
 
@@ -241,6 +338,9 @@ struct CardBrowseView: View {
 
     init(filterMode: BrowseFilterMode = .all) {
         self.filterMode = filterMode
+        if case .category(let cat) = filterMode {
+            _selectedCategory = State(initialValue: cat)
+        }
     }
 
     enum ViewMode: String, CaseIterable {
@@ -258,7 +358,7 @@ struct CardBrowseView: View {
         let available = cardManager.getAvailableCards(isSubscribed: isPremium)
 
         switch filterMode {
-        case .all:
+        case .all, .category:
             return available
         case .saved:
             return available.filter { cardManager.savedCardIDs.contains($0.id) }
@@ -353,7 +453,7 @@ struct CardBrowseView: View {
                 }
             }
             .background(Color.creamyBackground)
-            .navigationTitle(filterMode.rawValue)
+            .navigationTitle(filterMode.title)
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, prompt: "Search cards...")
             .toolbar {
@@ -568,6 +668,7 @@ struct FlippableCardView: View {
 // MARK: - Card Face View
 
 struct CardFaceView: View {
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
     let content: String
     let label: String
     let category: ContentCategory
@@ -621,11 +722,17 @@ struct CardFaceView: View {
                                     .foregroundColor(.yellow)
                                 Text("Rationale")
                                     .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                if !subscriptionManager.hasPremiumAccess {
+                                    Text("🔒 Premium")
+                                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                        .foregroundColor(.secondary)
+                                }
                             }
 
                             Text(rationale)
                                 .font(.system(size: 14, design: .rounded))
                                 .foregroundColor(.secondary)
+                                .blur(radius: subscriptionManager.hasPremiumAccess ? 0 : 6)
                         }
                         .padding()
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -683,6 +790,7 @@ struct CardListView: View {
 // MARK: - Browse Card List Item
 
 struct BrowseCardListItem: View {
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
     let card: Flashcard
     let isExpanded: Bool
     var isSaved: Bool = false
@@ -752,14 +860,25 @@ struct BrowseCardListItem: View {
                         .foregroundColor(.primary)
 
                     if !card.rationale.isEmpty {
-                        Text("Rationale")
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
-                            .foregroundColor(.orange)
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Rationale")
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .foregroundColor(.orange)
+                                if !subscriptionManager.hasPremiumAccess {
+                                    Text("🔒 Premium")
+                                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                        .foregroundColor(.secondary)
+                                }
+                            }
                             .padding(.top, 8)
 
-                        Text(card.rationale)
-                            .font(.system(size: 13, design: .rounded))
-                            .foregroundColor(.secondary)
+                            Text(card.rationale)
+                                .font(.system(size: 13, design: .rounded))
+                                .foregroundColor(.secondary)
+                                .blur(radius: subscriptionManager.hasPremiumAccess ? 0 : 6)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }

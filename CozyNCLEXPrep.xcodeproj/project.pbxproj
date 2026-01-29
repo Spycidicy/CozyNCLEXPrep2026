@@ -7,9 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-
 		516C4C042F27EA3E00AB69D1 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 516C4BB92F27EA0100AB69D1 /* GoogleSignIn */; };
 		516C4C052F27EA3E00AB69D1 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 516C4BBA2F27EA0600AB69D1 /* Supabase */; };
+		51FB211A2F29C4BE005F2E69 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 51FB21192F29C4BE005F2E69 /* WidgetKit.framework */; };
+		51FB211C2F29C4BE005F2E69 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 51FB211B2F29C4BE005F2E69 /* SwiftUI.framework */; };
+		51FB21292F29C4BF005F2E69 /* CozyNCLEXPrepWidgetsExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 51FB21172F29C4BE005F2E69 /* CozyNCLEXPrepWidgetsExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -27,14 +29,48 @@
 			remoteGlobalIDString = 516C45702F218F3400AB69D1;
 			remoteInfo = CozyNCLEXPrep;
 		};
+		51FB21272F29C4BF005F2E69 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 516C45692F218F3400AB69D1 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 51FB21162F29C4BE005F2E69;
+			remoteInfo = CozyNCLEXPrepWidgetsExtension;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		51FB212E2F29C4BF005F2E69 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				51FB21292F29C4BF005F2E69 /* CozyNCLEXPrepWidgetsExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		10D4E8F1789DC8126B065A4C /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		516C45712F218F3400AB69D1 /* CozyNCLEXPrep.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CozyNCLEXPrep.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		516C457E2F218F3500AB69D1 /* CozyNCLEXPrepTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CozyNCLEXPrepTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		516C45882F218F3500AB69D1 /* CozyNCLEXPrepUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CozyNCLEXPrepUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		51FB21172F29C4BE005F2E69 /* CozyNCLEXPrepWidgetsExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = CozyNCLEXPrepWidgetsExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		51FB21192F29C4BE005F2E69 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		51FB211B2F29C4BE005F2E69 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		51FB212A2F29C4BF005F2E69 /* Exceptions for "CozyNCLEXPrepWidgets" folder in "CozyNCLEXPrepWidgetsExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 51FB21162F29C4BE005F2E69 /* CozyNCLEXPrepWidgetsExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		516C45732F218F3400AB69D1 /* CozyNCLEXPrep */ = {
@@ -50,6 +86,14 @@
 		516C458B2F218F3500AB69D1 /* CozyNCLEXPrepUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = CozyNCLEXPrepUITests;
+			sourceTree = "<group>";
+		};
+		51FB211D2F29C4BE005F2E69 /* CozyNCLEXPrepWidgets */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				51FB212A2F29C4BF005F2E69 /* Exceptions for "CozyNCLEXPrepWidgets" folder in "CozyNCLEXPrepWidgetsExtension" target */,
+			);
+			path = CozyNCLEXPrepWidgets;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -78,6 +122,15 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		51FB21142F29C4BE005F2E69 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				51FB211C2F29C4BE005F2E69 /* SwiftUI.framework in Frameworks */,
+				51FB211A2F29C4BE005F2E69 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -88,6 +141,8 @@
 				516C45732F218F3400AB69D1 /* CozyNCLEXPrep */,
 				516C45812F218F3500AB69D1 /* CozyNCLEXPrepTests */,
 				516C458B2F218F3500AB69D1 /* CozyNCLEXPrepUITests */,
+				51FB211D2F29C4BE005F2E69 /* CozyNCLEXPrepWidgets */,
+				51FB21182F29C4BE005F2E69 /* Frameworks */,
 				516C45722F218F3400AB69D1 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -98,8 +153,18 @@
 				516C45712F218F3400AB69D1 /* CozyNCLEXPrep.app */,
 				516C457E2F218F3500AB69D1 /* CozyNCLEXPrepTests.xctest */,
 				516C45882F218F3500AB69D1 /* CozyNCLEXPrepUITests.xctest */,
+				51FB21172F29C4BE005F2E69 /* CozyNCLEXPrepWidgetsExtension.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		51FB21182F29C4BE005F2E69 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				51FB21192F29C4BE005F2E69 /* WidgetKit.framework */,
+				51FB211B2F29C4BE005F2E69 /* SwiftUI.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -112,10 +177,12 @@
 				516C456D2F218F3400AB69D1 /* Sources */,
 				516C456E2F218F3400AB69D1 /* Frameworks */,
 				516C456F2F218F3400AB69D1 /* Resources */,
+				51FB212E2F29C4BF005F2E69 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				51FB21282F29C4BF005F2E69 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				516C45732F218F3400AB69D1 /* CozyNCLEXPrep */,
@@ -175,6 +242,28 @@
 			productReference = 516C45882F218F3500AB69D1 /* CozyNCLEXPrepUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		51FB21162F29C4BE005F2E69 /* CozyNCLEXPrepWidgetsExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 51FB212B2F29C4BF005F2E69 /* Build configuration list for PBXNativeTarget "CozyNCLEXPrepWidgetsExtension" */;
+			buildPhases = (
+				51FB21132F29C4BE005F2E69 /* Sources */,
+				51FB21142F29C4BE005F2E69 /* Frameworks */,
+				51FB21152F29C4BE005F2E69 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				51FB211D2F29C4BE005F2E69 /* CozyNCLEXPrepWidgets */,
+			);
+			name = CozyNCLEXPrepWidgetsExtension;
+			packageProductDependencies = (
+			);
+			productName = CozyNCLEXPrepWidgetsExtension;
+			productReference = 51FB21172F29C4BE005F2E69 /* CozyNCLEXPrepWidgetsExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -195,6 +284,9 @@
 					516C45872F218F3500AB69D1 = {
 						CreatedOnToolsVersion = 26.2;
 						TestTargetID = 516C45702F218F3400AB69D1;
+					};
+					51FB21162F29C4BE005F2E69 = {
+						CreatedOnToolsVersion = 26.2;
 					};
 				};
 			};
@@ -219,6 +311,7 @@
 				516C45702F218F3400AB69D1 /* CozyNCLEXPrep */,
 				516C457D2F218F3500AB69D1 /* CozyNCLEXPrepTests */,
 				516C45872F218F3500AB69D1 /* CozyNCLEXPrepUITests */,
+				51FB21162F29C4BE005F2E69 /* CozyNCLEXPrepWidgetsExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -228,7 +321,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -240,6 +332,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		516C45862F218F3500AB69D1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		51FB21152F29C4BE005F2E69 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -270,6 +369,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		51FB21132F29C4BE005F2E69 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -282,6 +388,11 @@
 			isa = PBXTargetDependency;
 			target = 516C45702F218F3400AB69D1 /* CozyNCLEXPrep */;
 			targetProxy = 516C45892F218F3500AB69D1 /* PBXContainerItemProxy */;
+		};
+		51FB21282F29C4BF005F2E69 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 51FB21162F29C4BE005F2E69 /* CozyNCLEXPrepWidgetsExtension */;
+			targetProxy = 51FB21272F29C4BF005F2E69 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -594,6 +705,77 @@
 			};
 			name = Release;
 		};
+		51FB212C2F29C4BF005F2E69 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = CozyNCLEXPrepWidgets/CozyNCLEXPrepWidgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 58JRWL2ASQ;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CozyNCLEXPrepWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = CozyNCLEXPrepWidgets;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = EthanLong.CozyNCLEXPrep.CozyNCLEXPrepWidgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		51FB212D2F29C4BF005F2E69 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = CozyNCLEXPrepWidgets/CozyNCLEXPrepWidgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 58JRWL2ASQ;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CozyNCLEXPrepWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = CozyNCLEXPrepWidgets;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = EthanLong.CozyNCLEXPrep.CozyNCLEXPrepWidgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -629,6 +811,15 @@
 			buildConfigurations = (
 				516C45992F218F3500AB69D1 /* Debug */,
 				516C459A2F218F3500AB69D1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		51FB212B2F29C4BF005F2E69 /* Build configuration list for PBXNativeTarget "CozyNCLEXPrepWidgetsExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				51FB212C2F29C4BF005F2E69 /* Debug */,
+				51FB212D2F29C4BF005F2E69 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
