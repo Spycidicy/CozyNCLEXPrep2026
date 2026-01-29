@@ -13,6 +13,8 @@ import Charts
 import UserNotifications
 import UIKit
 import AudioToolbox
+import Supabase
+import WidgetKit
 
 // MARK: - Persistence Manager
 
@@ -204,6 +206,146 @@ class PersistenceManager {
         guard let data = defaults.data(forKey: testHistoryKey),
               let history = try? JSONDecoder().decode([TestResult].self, from: data) else { return [] }
         return history
+    }
+
+    // MARK: - Clear User Data (for logout)
+
+    // MARK: - User Change Detection
+
+    private let lastUserIdKey = "lastSignedInUserId"
+
+    /// Checks if a different user has signed in and clears data if so
+    /// Returns true if data was cleared (user changed), false otherwise
+    func handleUserChange(newUserId: String) -> Bool {
+        let lastUserId = defaults.string(forKey: lastUserIdKey)
+
+        if lastUserId != newUserId {
+            print("🔄 User changed from \(lastUserId ?? "none") to \(newUserId) - clearing local data")
+            clearAllUserData()
+            defaults.set(newUserId, forKey: lastUserIdKey)
+            return true
+        }
+        return false
+    }
+
+    /// Clears all user-specific data when logging out
+    /// This ensures the next user doesn't see previous user's data
+    func clearAllUserData() {
+        // User progress data
+        defaults.removeObject(forKey: savedCardsKey)
+        defaults.removeObject(forKey: masteredCardsKey)
+        defaults.removeObject(forKey: consecutiveCorrectKey)
+        defaults.removeObject(forKey: userCardsKey)
+        defaults.removeObject(forKey: studySetsKey)
+        defaults.removeObject(forKey: userStatsKey)
+        defaults.removeObject(forKey: spacedRepDataKey)
+        defaults.removeObject(forKey: cardNotesKey)
+        defaults.removeObject(forKey: flaggedCardsKey)
+        defaults.removeObject(forKey: testHistoryKey)
+
+        // Subscription status - IMPORTANT: Clear cached premium to prevent leaking to other accounts
+        defaults.removeObject(forKey: isSubscribedKey)
+
+        // Daily goals and XP data
+        defaults.removeObject(forKey: "totalXP")
+        defaults.removeObject(forKey: "dailyGoals")
+        defaults.removeObject(forKey: "lastGoalDate")
+        defaults.removeObject(forKey: "cardOfTheDayID")
+        defaults.removeObject(forKey: "cardOfTheDayDate")
+        defaults.removeObject(forKey: "cardOfTheDayCompleted")
+        defaults.removeObject(forKey: "currentStreak")
+        defaults.removeObject(forKey: "longestStreak")
+        defaults.removeObject(forKey: "lastStudyDate")
+        defaults.removeObject(forKey: "dailyContractDate")
+        defaults.removeObject(forKey: "dailyCommitment")
+        defaults.removeObject(forKey: "celebratedMilestones")
+
+        // Achievements
+        defaults.removeObject(forKey: "achievements")
+
+        // Session progress
+        for mode in GameMode.allCases {
+            defaults.removeObject(forKey: "sessionProgress_\(mode.rawValue)")
+        }
+
+        // Sync metadata
+        defaults.removeObject(forKey: "lastSyncDate")
+        defaults.removeObject(forKey: "pendingChanges")
+
+        // Clear last user ID so next sign-in starts fresh
+        defaults.removeObject(forKey: lastUserIdKey)
+
+        defaults.synchronize()
+
+        print("🗑️ All user data cleared from local storage")
+    }
+}
+
+// MARK: - Session Progress Manager
+
+struct SessionProgress: Codable {
+    let gameMode: String
+    let cardIDs: [String]
+    let currentIndex: Int
+    let score: Int
+    let cardsReviewed: Int // For SmartReview
+    let streakCount: Int // For BearQuiz
+    let savedAt: Date
+
+    var isValid: Bool {
+        // Progress is valid for 24 hours
+        Date().timeIntervalSince(savedAt) < 86400
+    }
+}
+
+class SessionProgressManager {
+    static let shared = SessionProgressManager()
+    private let defaults = UserDefaults.standard
+    private let progressKeyPrefix = "sessionProgress_"
+
+    private init() {}
+
+    func saveProgress(
+        gameMode: GameMode,
+        cardIDs: [UUID],
+        currentIndex: Int,
+        score: Int,
+        cardsReviewed: Int = 0,
+        streakCount: Int = 0
+    ) {
+        // Don't save if we've completed the session or barely started
+        guard currentIndex > 0 && currentIndex < cardIDs.count else { return }
+
+        let progress = SessionProgress(
+            gameMode: gameMode.rawValue,
+            cardIDs: cardIDs.map { $0.uuidString },
+            currentIndex: currentIndex,
+            score: score,
+            cardsReviewed: cardsReviewed,
+            streakCount: streakCount,
+            savedAt: Date()
+        )
+
+        if let encoded = try? JSONEncoder().encode(progress) {
+            defaults.set(encoded, forKey: progressKeyPrefix + gameMode.rawValue)
+        }
+    }
+
+    func loadProgress(for gameMode: GameMode) -> SessionProgress? {
+        guard let data = defaults.data(forKey: progressKeyPrefix + gameMode.rawValue),
+              let progress = try? JSONDecoder().decode(SessionProgress.self, from: data),
+              progress.isValid else {
+            return nil
+        }
+        return progress
+    }
+
+    func clearProgress(for gameMode: GameMode) {
+        defaults.removeObject(forKey: progressKeyPrefix + gameMode.rawValue)
+    }
+
+    func hasProgress(for gameMode: GameMode) -> Bool {
+        return loadProgress(for: gameMode) != nil
     }
 }
 
@@ -414,10 +556,20 @@ struct Achievement: Codable, Identifiable {
 class NotificationManager: ObservableObject {
     static let shared = NotificationManager()
     @Published var isAuthorized = false
-    @Published var reminderTime: Date = Calendar.current.date(from: DateComponents(hour: 9, minute: 0)) ?? Date()
+    @Published var reminderTime: Date = Calendar.current.date(from: DateComponents(hour: 18, minute: 0)) ?? Date()
 
     private let reminderTimeKey = "studyReminderTime"
     private let remindersEnabledKey = "studyRemindersEnabled"
+
+    static let nursingAffirmations: [String] = [
+        "You know more than you think you do. Trust your gut.",
+        "This exam tests your safety, not your worth. You are safe.",
+        "Take a deep breath. Your future patients are waiting for you.",
+        "You are going to be an incredible RN. Keep going.",
+        "Don't panic. Read the question again. You got this.",
+        "Visualizing you with that 'RN' behind your name. It's coming.",
+        "Progress over perfection. You are doing great."
+    ]
 
     init() {
         loadSettings()
@@ -448,18 +600,58 @@ class NotificationManager: ObservableObject {
                 self.isAuthorized = granted
                 if granted {
                     self.scheduleStudyReminder()
+                    self.scheduleDailyAffirmation()
                 }
             }
         }
     }
 
-    func scheduleStudyReminder() {
-        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
+    /// Called from the onboarding "Let Bear Help You" slide
+    func requestPermissionAndSchedule(completion: @escaping () -> Void) {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
+            DispatchQueue.main.async {
+                self.isAuthorized = granted
+                if granted {
+                    self.scheduleDailyAffirmation()
+                    self.scheduleStudyReminder()
+                }
+                completion()
+            }
+        }
+    }
+
+    // MARK: - Daily Affirmation (9:00 AM)
+
+    func scheduleDailyAffirmation() {
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["dailyAffirmation"])
+
+        let affirmation = Self.nursingAffirmations.randomElement() ?? Self.nursingAffirmations[0]
 
         let content = UNMutableNotificationContent()
-        content.title = "Time to Study! 📚"
-        content.body = "Your NCLEX prep is waiting. Keep your streak going!"
+        content.title = "Daily Cozy Reminder"
+        content.body = affirmation
         content.sound = .default
+
+        var components = DateComponents()
+        components.hour = 9
+        components.minute = 0
+
+        let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
+        let request = UNNotificationRequest(identifier: "dailyAffirmation", content: content, trigger: trigger)
+
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    // MARK: - Study Reminder (6:00 PM)
+
+    func scheduleStudyReminder() {
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["studyReminder"])
+
+        let content = UNMutableNotificationContent()
+        content.title = "Keep Your Streak Alive!"
+        content.body = "A quick 5-minute session is all it takes. Don't break the chain!"
+        content.sound = .default
+        content.badge = 1
 
         let calendar = Calendar.current
         let components = calendar.dateComponents([.hour, .minute], from: reminderTime)
@@ -469,6 +661,37 @@ class NotificationManager: ObservableObject {
 
         UNUserNotificationCenter.current().add(request)
         saveSettings()
+    }
+
+    /// Schedule a streak warning notification if user hasn't studied
+    func scheduleStreakWarning(currentStreak: Int) {
+        guard currentStreak > 0 else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = "Streak at Risk! 🔥"
+        content.body = "Your \(currentStreak)-day streak will end at midnight! Study now to keep it alive."
+        content.sound = .default
+        content.interruptionLevel = .timeSensitive
+
+        // Schedule for 9 PM if they haven't studied
+        var components = DateComponents()
+        components.hour = 21
+        components.minute = 0
+
+        let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+        let request = UNNotificationRequest(identifier: "streakWarning", content: content, trigger: trigger)
+
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    /// Cancel streak warning (call when user studies)
+    func cancelStreakWarning() {
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["streakWarning"])
+    }
+
+    /// Clear badge count
+    func clearBadge() {
+        UNUserNotificationCenter.current().setBadgeCount(0)
     }
 
     func cancelReminders() {
@@ -770,6 +993,20 @@ class SoundManager: ObservableObject {
 
 // MARK: - Daily Goals & XP System
 
+/// Random number generator with a seed for consistent daily goals
+struct SeededRandomGenerator: RandomNumberGenerator {
+    var state: UInt64
+
+    init(seed: UInt64) {
+        self.state = seed
+    }
+
+    mutating func next() -> UInt64 {
+        state = state &* 6364136223846793005 &+ 1442695040888963407
+        return state
+    }
+}
+
 struct DailyGoal: Codable, Identifiable {
     let id: UUID
     let type: DailyGoalType
@@ -793,11 +1030,15 @@ struct DailyGoal: Codable, Identifiable {
     }
 }
 
-enum DailyGoalType: String, Codable {
+enum DailyGoalType: String, Codable, CaseIterable {
     case studyCards = "Study Cards"
     case correctAnswers = "Get Correct"
     case studyMinutes = "Study Time"
     case masterCards = "Master Cards"
+    case perfectQuiz = "Perfect Quiz"
+    case studyCategories = "Study Categories"
+    case correctStreak = "Correct Streak"
+    case reviewCards = "Review Cards"
 
     var icon: String {
         switch self {
@@ -805,6 +1046,10 @@ enum DailyGoalType: String, Codable {
         case .correctAnswers: return "checkmark.circle.fill"
         case .studyMinutes: return "clock.fill"
         case .masterCards: return "star.fill"
+        case .perfectQuiz: return "rosette"
+        case .studyCategories: return "folder.fill"
+        case .correctStreak: return "flame.fill"
+        case .reviewCards: return "arrow.counterclockwise"
         }
     }
 
@@ -814,7 +1059,72 @@ enum DailyGoalType: String, Codable {
         case .correctAnswers: return .mintGreen
         case .studyMinutes: return .skyBlue
         case .masterCards: return .pastelPink
+        case .perfectQuiz: return .yellow
+        case .studyCategories: return .blue
+        case .correctStreak: return .orange
+        case .reviewCards: return .purple
         }
+    }
+
+    var displayName: String {
+        switch self {
+        case .studyCards: return "Study Cards"
+        case .correctAnswers: return "Get Correct"
+        case .studyMinutes: return "Study Time"
+        case .masterCards: return "Master Cards"
+        case .perfectQuiz: return "Perfect Quiz"
+        case .studyCategories: return "Categories"
+        case .correctStreak: return "Streak"
+        case .reviewCards: return "Review"
+        }
+    }
+}
+
+// MARK: - Daily Commitment (Legacy - kept for backward compatibility)
+
+enum DailyCommitment: String, CaseIterable {
+    case light = "Light Study"
+    case moderate = "Moderate Study"
+    case intense = "Intense Study"
+
+    var bonusXP: Int {
+        switch self {
+        case .light: return 5
+        case .moderate: return 10
+        case .intense: return 20
+        }
+    }
+}
+
+// MARK: - Remote Daily Goals Model
+struct RemoteDailyGoal: Codable {
+    let type: String
+    let target: Int
+    let xpReward: Int
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case target
+        case xpReward
+    }
+
+    func toDailyGoal() -> DailyGoal? {
+        guard let goalType = DailyGoalType(rawValue: type) else { return nil }
+        return DailyGoal(type: goalType, target: target, xpReward: xpReward)
+    }
+}
+
+struct DailyGoalsSchedule: Codable {
+    let id: UUID
+    let goalDate: String
+    let goals: [RemoteDailyGoal]
+    let createdAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case goalDate = "goal_date"
+        case goals
+        case createdAt = "created_at"
     }
 }
 
@@ -829,6 +1139,13 @@ class DailyGoalsManager: ObservableObject {
     @Published var lastGoalDate: Date?
     @Published var cardOfTheDay: Flashcard?
     @Published var hasCompletedCardOfTheDay = false
+    @Published var currentStreak: Int = 0
+    @Published var longestStreak: Int = 0
+    @Published var hasSignedDailyContract = false
+    @Published var dailyCommitment: DailyCommitment?
+    @Published var showMilestoneCelebration = false
+    @Published var milestoneCelebrationValue: Int = 0
+    @Published var isLoadingGoals = false
 
     private let dailyGoalsKey = "dailyGoals"
     private let totalXPKey = "totalXP"
@@ -836,10 +1153,21 @@ class DailyGoalsManager: ObservableObject {
     private let cardOfTheDayIDKey = "cardOfTheDayID"
     private let cardOfTheDayDateKey = "cardOfTheDayDate"
     private let cardOfTheDayCompletedKey = "cardOfTheDayCompleted"
+    private let currentStreakKey = "currentStreak"
+    private let longestStreakKey = "longestStreak"
+    private let lastStudyDateKey = "lastStudyDate"
+    private let dailyContractDateKey = "dailyContractDate"
+    private let dailyCommitmentKey = "dailyCommitment"
+    private let celebratedMilestonesKey = "celebratedMilestones"
+    private let lastFetchedGoalsDateKey = "lastFetchedGoalsDate"
+    private let syncManager = SyncManager.shared
+    private var isInitializing = true
 
     init() {
         loadData()
         checkAndResetDailyGoals()
+        isInitializing = false
+        print("🎯 DailyGoalsManager init: \(dailyGoals.count) goals loaded")
     }
 
     func loadData() {
@@ -856,6 +1184,29 @@ class DailyGoalsManager: ObservableObject {
         }
 
         hasCompletedCardOfTheDay = UserDefaults.standard.bool(forKey: cardOfTheDayCompletedKey)
+        currentStreak = UserDefaults.standard.integer(forKey: currentStreakKey)
+        longestStreak = UserDefaults.standard.integer(forKey: longestStreakKey)
+
+        // Check if daily contract was signed today
+        checkDailyContract()
+    }
+
+    private func checkDailyContract() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        if let contractDate = UserDefaults.standard.object(forKey: dailyContractDateKey) as? Date {
+            let contractDay = calendar.startOfDay(for: contractDate)
+            hasSignedDailyContract = calendar.isDate(contractDay, inSameDayAs: today)
+        } else {
+            hasSignedDailyContract = false
+        }
+
+        if hasSignedDailyContract, let commitmentRaw = UserDefaults.standard.string(forKey: dailyCommitmentKey) {
+            dailyCommitment = DailyCommitment(rawValue: commitmentRaw)
+        } else {
+            dailyCommitment = nil
+        }
     }
 
     func saveData() {
@@ -865,6 +1216,116 @@ class DailyGoalsManager: ObservableObject {
         }
         UserDefaults.standard.set(lastGoalDate, forKey: lastGoalDateKey)
         UserDefaults.standard.set(hasCompletedCardOfTheDay, forKey: cardOfTheDayCompletedKey)
+        UserDefaults.standard.set(currentStreak, forKey: currentStreakKey)
+        UserDefaults.standard.set(longestStreak, forKey: longestStreakKey)
+
+        // Mark XP data for sync
+        syncManager.markChanged(CloudKitConfig.RecordType.userXP, id: "main")
+
+        // Skip widget update during init to avoid circular dependency with StatsManager
+        guard !isInitializing else { return }
+
+        // Update widget data
+        let stats = StatsManager.shared.stats
+        let completedGoals = dailyGoals.filter { $0.isCompleted }.count
+        WidgetDataManager.update(
+            streak: currentStreak, level: currentLevel, levelTitle: levelTitle,
+            totalXP: totalXP, xpProgress: xpProgressPercent,
+            totalCardsStudied: stats.totalCardsStudied,
+            accuracy: stats.overallAccuracy,
+            dailyGoalsCompleted: completedGoals, dailyGoalsTotal: dailyGoals.count,
+            cardOfTheDayQuestion: cardOfTheDay?.question ?? "Start studying to see your Card of the Day!",
+            cardOfTheDayCategory: cardOfTheDay?.contentCategory.rawValue ?? "General"
+        )
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    /// Resets all in-memory state for a new user (called on logout)
+    func resetForNewUser() {
+        dailyGoals = []
+        totalXP = 0
+        currentLevel = 1
+        xpForNextLevel = 100
+        showLevelUpCelebration = false
+        lastGoalDate = nil
+        cardOfTheDay = nil
+        hasCompletedCardOfTheDay = false
+        currentStreak = 0
+        longestStreak = 0
+        hasSignedDailyContract = false
+        dailyCommitment = nil
+        showMilestoneCelebration = false
+        milestoneCelebrationValue = 0
+    }
+
+    func signDailyContract(_ commitment: DailyCommitment) {
+        hasSignedDailyContract = true
+        dailyCommitment = commitment
+        UserDefaults.standard.set(Date(), forKey: dailyContractDateKey)
+        UserDefaults.standard.set(commitment.rawValue, forKey: dailyCommitmentKey)
+
+        // Award bonus XP for signing contract
+        addXP(commitment.bonusXP)
+    }
+
+    func recordStudyActivity() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        if let lastStudy = UserDefaults.standard.object(forKey: lastStudyDateKey) as? Date {
+            let lastStudyDay = calendar.startOfDay(for: lastStudy)
+            let daysDiff = calendar.dateComponents([.day], from: lastStudyDay, to: today).day ?? 0
+
+            if daysDiff == 1 {
+                // Consecutive day - increase streak
+                currentStreak += 1
+                if currentStreak > longestStreak {
+                    longestStreak = currentStreak
+                }
+                // Trigger review prompt for streak milestones
+                ReviewManager.shared.recordStreakMilestone()
+            } else if daysDiff > 1 {
+                // Missed days - reset streak
+                currentStreak = 1
+            }
+            // daysDiff == 0 means same day, don't change streak
+        } else {
+            // First study ever
+            currentStreak = 1
+        }
+
+        UserDefaults.standard.set(today, forKey: lastStudyDateKey)
+        saveData()
+    }
+
+    func checkMilestone(masteredCount: Int) {
+        let milestones = [100, 500, 1000]
+        let celebrated = UserDefaults.standard.array(forKey: celebratedMilestonesKey) as? [Int] ?? []
+
+        for milestone in milestones {
+            if masteredCount >= milestone && !celebrated.contains(milestone) {
+                // Celebrate this milestone
+                milestoneCelebrationValue = milestone
+                showMilestoneCelebration = true
+
+                // Mark as celebrated
+                var newCelebrated = celebrated
+                newCelebrated.append(milestone)
+                UserDefaults.standard.set(newCelebrated, forKey: celebratedMilestonesKey)
+
+                // Award milestone XP
+                let bonusXP: Int
+                switch milestone {
+                case 100: bonusXP = 200
+                case 500: bonusXP = 500
+                case 1000: bonusXP = 1000
+                default: bonusXP = 100
+                }
+                addXP(bonusXP)
+
+                break // Only celebrate one milestone at a time
+            }
+        }
     }
 
     func calculateLevel() {
@@ -907,29 +1368,160 @@ class DailyGoalsManager: ObservableObject {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
 
+        print("🎯 checkAndResetDailyGoals: lastGoalDate = \(String(describing: lastGoalDate)), today = \(today)")
+
         if let lastDate = lastGoalDate {
             let lastDay = calendar.startOfDay(for: lastDate)
             if today > lastDay {
                 // New day - reset goals
-                generateDailyGoals()
+                print("🎯 New day detected, fetching/generating new goals")
+                fetchOrGenerateDailyGoals()
                 hasCompletedCardOfTheDay = false
+            } else {
+                print("🎯 Same day, keeping existing \(dailyGoals.count) goals")
             }
         } else {
             // First time - generate goals
-            generateDailyGoals()
+            print("🎯 First time, fetching/generating goals")
+            fetchOrGenerateDailyGoals()
         }
 
         lastGoalDate = today
         saveData()
+        print("🎯 After checkAndResetDailyGoals: \(dailyGoals.count) goals")
     }
 
-    func generateDailyGoals() {
-        dailyGoals = [
-            DailyGoal(type: .studyCards, target: 20, xpReward: 50),
-            DailyGoal(type: .correctAnswers, target: 15, xpReward: 40),
-            DailyGoal(type: .studyMinutes, target: 10, xpReward: 30)
+    /// Fetch daily goals from Supabase, fall back to local generation
+    func fetchOrGenerateDailyGoals() {
+        // First, generate local goals immediately so UI isn't empty
+        generateLocalDailyGoals()
+
+        // Then try to fetch from server (will update if successful)
+        Task {
+            await fetchDailyGoalsFromServer()
+        }
+    }
+
+    /// Fetch today's daily goals from Supabase
+    @MainActor
+    func fetchDailyGoalsFromServer() async {
+        guard SupabaseConfig.isConfigured else {
+            print("🎯 Supabase not configured, using local goals")
+            return
+        }
+
+        isLoadingGoals = true
+        defer { isLoadingGoals = false }
+
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        let todayString = dateFormatter.string(from: Date())
+
+        print("🎯 Fetching daily goals for \(todayString) from Supabase...")
+
+        do {
+            let schedules: [DailyGoalsSchedule] = try await SupabaseConfig.client
+                .from("daily_goals_schedule")
+                .select()
+                .eq("goal_date", value: todayString)
+                .execute()
+                .value
+
+            if let schedule = schedules.first {
+                let remoteGoals = schedule.goals.compactMap { $0.toDailyGoal() }
+                if remoteGoals.count >= 3 {
+                    // Keep current progress if goal types match
+                    var updatedGoals: [DailyGoal] = []
+                    for remoteGoal in remoteGoals {
+                        if let existingGoal = dailyGoals.first(where: { $0.type == remoteGoal.type }) {
+                            var goal = remoteGoal
+                            goal.progress = existingGoal.progress
+                            goal.isCompleted = existingGoal.isCompleted
+                            updatedGoals.append(goal)
+                        } else {
+                            updatedGoals.append(remoteGoal)
+                        }
+                    }
+                    dailyGoals = updatedGoals
+                    saveData()
+                    print("🎯 Loaded \(remoteGoals.count) goals from server: \(remoteGoals.map { $0.type.rawValue })")
+                    return
+                }
+            }
+
+            print("🎯 No goals found for today in database, using local goals")
+        } catch {
+            print("🎯 Error fetching daily goals: \(error.localizedDescription)")
+        }
+    }
+
+    /// Generate goals locally (deterministic based on date - same for all users)
+    func generateLocalDailyGoals() {
+        // Pool of possible goals with varying difficulty
+        let goalPool: [(type: DailyGoalType, target: Int, xpReward: Int)] = [
+            // Easy goals
+            (.studyCards, 15, 40),
+            (.correctAnswers, 10, 35),
+            (.studyMinutes, 5, 25),
+            (.reviewCards, 10, 30),
+            // Medium goals
+            (.studyCards, 25, 55),
+            (.correctAnswers, 20, 50),
+            (.studyMinutes, 15, 45),
+            (.masterCards, 3, 60),
+            (.studyCategories, 3, 45),
+            (.reviewCards, 20, 50),
+            // Hard goals
+            (.studyCards, 40, 75),
+            (.correctAnswers, 30, 65),
+            (.studyMinutes, 25, 60),
+            (.masterCards, 5, 80),
+            (.perfectQuiz, 1, 70),
+            (.correctStreak, 10, 75),
         ]
+
+        // Use today's date as seed for consistent daily goals (same for all users!)
+        let calendar = Calendar.current
+        let dayOfYear = calendar.ordinality(of: .day, in: .year, for: Date()) ?? 1
+        let year = calendar.component(.year, from: Date())
+        let combinedSeed = UInt64(year * 1000 + dayOfYear) // Unique per day across years
+
+        // Shuffle based on day to get different goals each day
+        var seededRandom = SeededRandomGenerator(seed: combinedSeed)
+        let shuffledPool = goalPool.shuffled(using: &seededRandom)
+
+        // Select 3 unique goal types
+        var selectedGoals: [DailyGoal] = []
+        var selectedTypes: Set<DailyGoalType> = []
+
+        for goal in shuffledPool {
+            if !selectedTypes.contains(goal.type) {
+                selectedGoals.append(DailyGoal(type: goal.type, target: goal.target, xpReward: goal.xpReward))
+                selectedTypes.insert(goal.type)
+
+                if selectedGoals.count == 3 {
+                    break
+                }
+            }
+        }
+
+        // Fallback if something goes wrong
+        if selectedGoals.count < 3 {
+            selectedGoals = [
+                DailyGoal(type: .studyCards, target: 20, xpReward: 50),
+                DailyGoal(type: .correctAnswers, target: 15, xpReward: 40),
+                DailyGoal(type: .studyMinutes, target: 10, xpReward: 30)
+            ]
+        }
+
+        dailyGoals = selectedGoals
+        print("🎯 generateLocalDailyGoals: Generated \(selectedGoals.count) goals: \(selectedGoals.map { $0.type.rawValue })")
         saveData()
+    }
+
+    /// Legacy function name for compatibility
+    func generateDailyGoals() {
+        fetchOrGenerateDailyGoals()
     }
 
     func updateGoal(_ type: DailyGoalType, progress: Int) {
@@ -960,6 +1552,60 @@ class DailyGoalsManager: ObservableObject {
         addXP(25) // Bonus for mastering
     }
 
+    /// Record cards reviewed (for Smart Review mode)
+    func recordReviewCards(count: Int) {
+        updateGoal(.reviewCards, progress: count)
+    }
+
+    /// Record a perfect quiz (100% correct)
+    func recordPerfectQuiz() {
+        updateGoal(.perfectQuiz, progress: 1)
+        addXP(50) // Bonus XP for perfect quiz
+    }
+
+    /// Record correct answer streak
+    func recordCorrectStreak(streakCount: Int) {
+        // Only update if this streak is longer than current progress
+        if let index = dailyGoals.firstIndex(where: { $0.type == .correctStreak }) {
+            if streakCount > dailyGoals[index].progress {
+                dailyGoals[index].progress = streakCount
+                if streakCount >= dailyGoals[index].target && !dailyGoals[index].isCompleted {
+                    dailyGoals[index].isCompleted = true
+                    addXP(dailyGoals[index].xpReward)
+                    HapticManager.shared.achievement()
+                }
+                saveData()
+            }
+        }
+    }
+
+    /// Record categories studied (tracks unique categories per day)
+    func recordCategoryStudied(_ category: ContentCategory) {
+        let key = "categoriesStudiedToday"
+        let dateKey = "categoriesStudiedDate"
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        // Check if we need to reset for a new day
+        var studiedCategories: Set<String>
+        if let storedDate = UserDefaults.standard.object(forKey: dateKey) as? Date,
+           calendar.isDate(storedDate, inSameDayAs: today),
+           let stored = UserDefaults.standard.stringArray(forKey: key) {
+            studiedCategories = Set(stored)
+        } else {
+            studiedCategories = []
+            UserDefaults.standard.set(today, forKey: dateKey)
+        }
+
+        // Add this category if not already studied today
+        let categoryName = category.rawValue
+        if !studiedCategories.contains(categoryName) {
+            studiedCategories.insert(categoryName)
+            UserDefaults.standard.set(Array(studiedCategories), forKey: key)
+            updateGoal(.studyCategories, progress: 1)
+        }
+    }
+
     func addXP(_ amount: Int) {
         let oldLevel = currentLevel
         totalXP += amount
@@ -971,6 +1617,34 @@ class DailyGoalsManager: ObservableObject {
             SoundManager.shared.levelUp()
         }
         saveData()
+
+        // Sync XP to cloud
+        Task {
+            await CloudSyncManager.shared.syncXPToCloud(totalXP: totalXP)
+        }
+    }
+
+    // MARK: - Cloud Sync Methods
+
+    /// Set XP from cloud sync (doesn't trigger celebration)
+    func setXPFromSync(_ xp: Int) {
+        guard xp > totalXP else { return }
+        totalXP = xp
+        calculateLevel()
+        UserDefaults.standard.set(totalXP, forKey: totalXPKey)
+        print("☁️ Updated local XP from cloud: \(xp)")
+    }
+
+    /// Set streak from cloud sync
+    func setStreakFromSync(current: Int, longest: Int) {
+        if current > currentStreak {
+            currentStreak = current
+            UserDefaults.standard.set(currentStreak, forKey: currentStreakKey)
+        }
+        if longest > longestStreak {
+            longestStreak = longest
+            UserDefaults.standard.set(longestStreak, forKey: longestStreakKey)
+        }
     }
 
     func selectCardOfTheDay(from cards: [Flashcard]) {
@@ -1038,13 +1712,24 @@ class DailyGoalsManager: ObservableObject {
         case 2: return "Student Nurse"
         case 3: return "Aspiring Nurse"
         case 4: return "Dedicated Learner"
-        case 5: return "NCLEX Warrior"
-        case 6: return "Knowledge Seeker"
+        case 5: return "Knowledge Builder"
+        case 6: return "Focused Scholar"
         case 7: return "Study Champion"
-        case 8: return "Expert in Training"
-        case 9: return "Nearly There"
-        case 10: return "NCLEX Master"
-        default: return "NCLEX Legend \(currentLevel - 9)"
+        case 8: return "Clinical Thinker"
+        case 9: return "Expert in Training"
+        case 10: return "NCLEX Warrior"
+        case 11: return "Quiz Conqueror"
+        case 12: return "Senior Scholar"
+        case 13: return "Nearly There"
+        case 14: return "NCLEX Candidate"
+        case 15: return "Test Day Tough"
+        case 16: return "Board Ready"
+        case 17: return "Elite Learner"
+        case 18: return "Future RN"
+        case 19: return "Almost There"
+        case 20: return "NCLEX Ready"
+        case 21: return "NCLEX Master"
+        default: return "NCLEX Legend"
         }
     }
 }
@@ -1202,10 +1887,10 @@ extension Color {
 
 enum Screen {
     case onboarding
+    case auth
     case menu
-    case swipeGame
-    case quizGame
-    case smartReview
+    case flashcardsGame
+    case learnGame
     case matchGame
     case cardBrowser
     case createCard
@@ -1214,42 +1899,44 @@ enum Screen {
     case writeMode
     case stats
     case search
+    case blocksGame
 }
 
-enum GameMode: String, CaseIterable {
-    case swipe = "Cozy Swipe"
-    case quiz = "Bear Quiz"
-    case smartReview = "Smart Review"
+enum GameMode: String, CaseIterable, Identifiable {
+    var id: String { rawValue }
+    case flashcards = "Study Flashcards"
+    case learn = "Bear Learn"
     case match = "Cozy Match"
-    case write = "Write Mode"
+    case blocks = "Cozy Blocks"
     case test = "Practice Test"
+    case write = "Write Mode"
 
     var icon: String {
         switch self {
-        case .swipe: return "hand.draw"
-        case .quiz: return "questionmark.circle"
-        case .smartReview: return "brain.head.profile"
+        case .flashcards: return "rectangle.on.rectangle.angled"
+        case .learn: return "brain.head.profile"
         case .match: return "square.grid.2x2"
         case .write: return "pencil.line"
         case .test: return "doc.text"
+        case .blocks: return "square.grid.3x3.fill"
         }
     }
 
     var subtitle: String {
         switch self {
-        case .swipe: return "Tinder-style study"
-        case .quiz: return "Multiple choice"
-        case .smartReview: return "Spaced repetition"
+        case .flashcards: return "Swipe to learn"
+        case .learn: return "Adaptive learning"
         case .match: return "Memory match"
         case .write: return "Type answers"
         case .test: return "Practice exam"
+        case .blocks: return "Block puzzle study"
         }
     }
 
     var isPaid: Bool {
         switch self {
-        case .swipe, .quiz: return false
-        case .match, .write, .test, .smartReview: return true
+        case .flashcards, .match, .blocks: return false
+        case .learn, .write, .test: return true
         }
     }
 }
@@ -1307,7 +1994,8 @@ enum NCLEXCategory: String, Codable, CaseIterable {
     }
 }
 
-enum ContentCategory: String, Codable, CaseIterable {
+enum ContentCategory: String, Codable, CaseIterable, Identifiable {
+    var id: String { rawValue }
     case fundamentals = "Fundamentals"
     case medSurg = "Med-Surg"
     case pharmacology = "Pharmacology"
@@ -1343,6 +2031,132 @@ enum ContentCategory: String, Codable, CaseIterable {
         case .leadership: return "person.3.fill"
         case .infectionControl: return "hand.raised.fill"
         case .safety: return "exclamationmark.shield.fill"
+        }
+    }
+}
+
+// MARK: - Flexible Database Value Conversion
+
+extension ContentCategory {
+    /// Convert database value to ContentCategory with flexible matching
+    static func fromDatabaseValue(_ value: String) -> ContentCategory? {
+        // Try exact match first
+        if let category = ContentCategory(rawValue: value) {
+            return category
+        }
+
+        // Normalize: lowercase, remove spaces/underscores/hyphens
+        let normalized = value.lowercased()
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+
+        // Map normalized values to categories
+        switch normalized {
+        case "fundamentals":
+            return .fundamentals
+        case "medsurg", "medsurgery", "medicalsurgical":
+            return .medSurg
+        case "pharmacology", "pharm":
+            return .pharmacology
+        case "pediatrics", "peds":
+            return .pediatrics
+        case "maternity", "maternal", "maternalnewborn", "ob":
+            return .maternity
+        case "mentalhealth", "mental", "psychiatric", "psych":
+            return .mentalHealth
+        case "leadership", "management", "leadershipmanagement":
+            return .leadership
+        case "infectioncontrol", "infection":
+            return .infectionControl
+        case "safety", "safetyinfectioncontrol":
+            return .safety
+        default:
+            return nil
+        }
+    }
+}
+
+extension NCLEXCategory {
+    /// Convert database value to NCLEXCategory with flexible matching
+    static func fromDatabaseValue(_ value: String) -> NCLEXCategory? {
+        // Try exact match first
+        if let category = NCLEXCategory(rawValue: value) {
+            return category
+        }
+
+        // Normalize: lowercase, remove spaces/underscores/hyphens
+        let normalized = value.lowercased()
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: "&", with: "")
+
+        // Map normalized values to categories
+        switch normalized {
+        case "safeeffectivecareenvironment", "safeeffectivecare", "safecare", "safeeffective":
+            return .safeEffectiveCare
+        case "healthpromotionandmaintenance", "healthpromotion", "healthmaintenance":
+            return .healthPromotion
+        case "psychosocialintegrity", "psychosocial", "psych":
+            return .psychosocial
+        case "physiologicalintegrity", "physiological", "physio":
+            return .physiological
+        default:
+            return nil
+        }
+    }
+}
+
+extension Difficulty {
+    /// Convert database value to Difficulty with flexible matching
+    static func fromDatabaseValue(_ value: String) -> Difficulty? {
+        // Try exact match first
+        if let difficulty = Difficulty(rawValue: value) {
+            return difficulty
+        }
+
+        // Normalize: lowercase
+        let normalized = value.lowercased()
+
+        switch normalized {
+        case "easy", "beginner", "simple":
+            return .easy
+        case "medium", "moderate", "intermediate":
+            return .medium
+        case "hard", "difficult", "advanced":
+            return .hard
+        default:
+            return nil
+        }
+    }
+}
+
+extension QuestionType {
+    /// Convert database value to QuestionType with flexible matching
+    static func fromDatabaseValue(_ value: String) -> QuestionType? {
+        // Try exact match first
+        if let questionType = QuestionType(rawValue: value) {
+            return questionType
+        }
+
+        // Normalize: lowercase, remove spaces/underscores/hyphens
+        let normalized = value.lowercased()
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+
+        switch normalized {
+        case "standard", "multiplechoice", "mc", "regular":
+            return .standard
+        case "selectallthatapply", "sata", "selectall", "multiselect":
+            return .sata
+        case "priority", "priorityorder", "ordering", "ordered", "sequence", "dragdrop":
+            return .priority
+        case "written", "writtenresponse", "fillintheblank", "fillin", "blank", "fill":
+            return .written
+        default:
+            return nil
         }
     }
 }
@@ -1443,7 +2257,8 @@ struct CategoryStats: Codable {
 
     var accuracy: Double {
         guard total > 0 else { return 0 }
-        return Double(correct) / Double(total) * 100
+        // Cap at 100% to handle any edge cases
+        return min(Double(correct) / Double(total) * 100, 100.0)
     }
 }
 
@@ -1459,8 +2274,20 @@ struct UserStats: Codable {
 
     var overallAccuracy: Double {
         guard totalCardsStudied > 0 else { return 0 }
-        return Double(totalCorrectAnswers) / Double(totalCardsStudied) * 100
+        // Cap at 100% to handle any edge cases where data might be inconsistent
+        return min(Double(totalCorrectAnswers) / Double(totalCardsStudied) * 100, 100.0)
     }
+}
+
+/// Tracks card mastery within a single Learn session
+struct LearnSessionCard: Identifiable {
+    let id: UUID
+    let card: Flashcard
+    var sessionLevel: Int = 0      // 0 = new, 1 = seen once correct, 2 = learned
+    var attempts: Int = 0          // Total attempts this session
+    var correctStreak: Int = 0     // Consecutive correct in session
+
+    var isLearned: Bool { sessionLevel >= 2 }
 }
 
 struct MatchTile: Identifiable, Equatable {
@@ -1485,34 +2312,22 @@ struct MatchTile: Identifiable, Equatable {
 extension Flashcard {
     // FREE CARDS (50) - Available to all users
     static let freeCards: [Flashcard] = [
-        // FUNDAMENTALS - FREE (10)
         Flashcard(
-            question: "What is the FIRST action a nurse should take when a patient falls?",
-            answer: "Assess the patient for injuries",
-            wrongAnswers: ["Call the physician", "Complete an incident report", "Help the patient back to bed"],
-            rationale: "Patient safety is the priority. Before any other action, the nurse must assess for injuries to determine the severity and appropriate interventions. Documentation and notification come after ensuring patient safety.",
+            question: "Which nursing intervention is MOST important for preventing hospital-acquired infections?",
+            answer: "Performing hand hygiene before and after patient contact",
+            wrongAnswers: ["Wearing gloves for all patient interactions", "Isolating all patients with infections", "Administering prophylactic antibiotics"],
+            rationale: "CORRECT: Hand hygiene is THE #1 evidence-based intervention for preventing HAIs per CDC and WHO. Simple, cheap, effective.\n\nWHY OTHER ANSWERS ARE WRONG:\n• Gloves for ALL interactions = Overuse leads to false security; gloves don't replace hand hygiene, and can spread pathogens if not changed\n• Isolating ALL infected patients = Not practical or necessary; isolation is for specific conditions requiring precautions\n• Prophylactic antibiotics = Creates antibiotic resistance; used only for specific surgical situations, not general prevention\n\nTHE 5 MOMENTS FOR HAND HYGIENE (WHO):\n1. Before patient contact\n2. Before aseptic procedure\n3. After body fluid exposure\n4. After patient contact\n5. After touching patient surroundings\n\nNCLEX TIP: Hand hygiene is almost always the correct answer for infection prevention questions.",
             contentCategory: .fundamentals,
             nclexCategory: .safeEffectiveCare,
             difficulty: .easy,
-            questionType: .priority,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which vital sign change indicates a patient may be developing shock?",
-            answer: "Decreased blood pressure with increased heart rate",
-            wrongAnswers: ["Increased blood pressure with decreased heart rate", "Normal blood pressure with normal heart rate", "Decreased blood pressure with decreased heart rate"],
-            rationale: "In early compensatory shock, the body attempts to maintain perfusion by increasing heart rate (tachycardia) as blood pressure drops. This compensatory mechanism is a key early warning sign.",
-            contentCategory: .fundamentals,
-            nclexCategory: .physiological,
-            difficulty: .medium,
             questionType: .standard,
             isPremium: false
         ),
         Flashcard(
-            question: "A nurse is preparing to administer medications. Which action demonstrates proper patient identification?",
-            answer: "Check two patient identifiers and compare with the MAR",
-            wrongAnswers: ["Ask the patient their name only", "Check the room number", "Verify with the patient's family member"],
-            rationale: "The Joint Commission requires two patient identifiers (name and DOB, or name and medical record number) before medication administration. Room numbers should never be used as identifiers.",
+            question: "What does the acronym RACE stand for in fire safety?",
+            answer: "Rescue, Alarm, Contain, Extinguish",
+            wrongAnswers: ["Run, Alert, Call, Evacuate", "Rescue, Alert, Cover, Exit", "Remove, Alarm, Close, Escape"],
+            rationale: "CORRECT: RACE is the standardized fire response protocol used in healthcare facilities.\n\nR - RESCUE patients in immediate danger (closest to fire)\nA - ALARM - pull fire alarm, call switchboard\nC - CONTAIN - close doors to limit fire/smoke spread\nE - EXTINGUISH - only if small, safe, and you're trained (use PASS technique)\n\nWHY OTHER ANSWERS ARE WRONG:\nAll alternatives have incorrect components:\n• \"Run\" - Never run; creates panic, spreads fire\n• \"Call\" - Alarm comes before calling for help\n• \"Exit/Escape\" - Evacuation is last resort, not first step\n• \"Cover\" - Not part of standard protocol\n\nALSO KNOW PASS (Fire Extinguisher):\nP - Pull the pin\nA - Aim at base of fire\nS - Squeeze the handle\nS - Sweep side to side",
             contentCategory: .fundamentals,
             nclexCategory: .safeEffectiveCare,
             difficulty: .easy,
@@ -1523,7 +2338,7 @@ extension Flashcard {
             question: "What is the correct order for performing a physical assessment?",
             answer: "Inspection, palpation, percussion, auscultation",
             wrongAnswers: ["Palpation, inspection, percussion, auscultation", "Auscultation, inspection, palpation, percussion", "Percussion, palpation, auscultation, inspection"],
-            rationale: "The correct sequence is Inspection (visual), Palpation (touch), Percussion (tapping), Auscultation (listening). Exception: For abdominal assessment, auscultate before palpation to avoid altering bowel sounds.",
+            rationale: "CORRECT: IPPA sequence (Inspection, Palpation, Percussion, Auscultation) - systematic head-to-toe approach.\n\nWHY OTHER ANSWERS ARE WRONG:\nAll other orders disrupt the logical sequence:\n• Inspection MUST be first - visual assessment is non-invasive and guides further exam\n• Palpation before inspection means you might miss visible abnormalities\n• Auscultation first can alter findings (especially abdomen)\n\nEXCEPTION: ABDOMINAL ASSESSMENT = Inspection, Auscultation, Percussion, Palpation\nWhy? Palpation and percussion stimulate bowel activity and alter auscultation findings.\n\nMEMORY AID: \"I Properly Perform Assessments\" = Inspection, Palpation, Percussion, Auscultation",
             contentCategory: .fundamentals,
             nclexCategory: .healthPromotion,
             difficulty: .easy,
@@ -1531,21 +2346,10 @@ extension Flashcard {
             isPremium: false
         ),
         Flashcard(
-            question: "A patient has a blood pressure of 88/56 mmHg. Which position should the nurse place the patient in?",
-            answer: "Supine with legs elevated (modified Trendelenburg)",
-            wrongAnswers: ["High Fowler's position", "Prone position", "Left lateral position"],
-            rationale: "For hypotensive patients, elevating the legs helps return blood to the central circulation, improving cardiac output and blood pressure. High Fowler's would worsen hypotension by pooling blood in the lower extremities.",
-            contentCategory: .fundamentals,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which nursing intervention is MOST important for preventing hospital-acquired infections?",
-            answer: "Performing hand hygiene before and after patient contact",
-            wrongAnswers: ["Wearing gloves for all patient interactions", "Isolating all patients with infections", "Administering prophylactic antibiotics"],
-            rationale: "Hand hygiene is the single most effective way to prevent the spread of infections in healthcare settings. The CDC and WHO emphasize hand hygiene as the cornerstone of infection prevention.",
+            question: "What is the FIRST action a nurse should take when a patient falls?",
+            answer: "Assess the patient for injuries",
+            wrongAnswers: ["Call the physician", "Complete an incident report", "Help the patient back to bed"],
+            rationale: "CORRECT: Assess first - patient safety is the priority. You need to determine injury severity before moving the patient (could have spinal injury).\n\nWHY OTHER ANSWERS ARE WRONG:\n• Call the physician - Assessment data needed first; calling without info wastes time\n• Complete incident report - Administrative task, never takes priority over patient care\n• Help patient back to bed - DANGEROUS - could worsen spinal injury; assess first\n\nNCLEX TIP: When you see \"FIRST action,\" think assessment before intervention. ABC (Airway, Breathing, Circulation) and safety always come first.",
             contentCategory: .fundamentals,
             nclexCategory: .safeEffectiveCare,
             difficulty: .easy,
@@ -1553,451 +2357,109 @@ extension Flashcard {
             isPremium: false
         ),
         Flashcard(
-            question: "A patient is NPO for surgery. Which action by the nurse is appropriate?",
-            answer: "Remove the water pitcher and post NPO sign",
-            wrongAnswers: ["Allow ice chips only", "Give medications with a full glass of water", "Permit clear liquids until 2 hours before surgery"],
-            rationale: "NPO means nothing by mouth. Removing access to fluids and posting clear signage prevents accidental intake. Specific pre-operative guidelines should be followed per facility protocol and surgeon orders.",
+            question: "A patient is diagnosed with exocrine pancreatic insufficiency (EPI). Which of the following dietary modifications is MOST important for the nurse to teach the patient?",
+            answer: "Consume a low-fat diet with pancreatic enzyme replacement therapy.",
+            wrongAnswers: ["Prepare the patient for the prescribed diagnostic imaging procedure", "Initiate intravenous fluid therapy as ordered by the healthcare provider", "Apply a cold compress to the area for twenty minutes at a time"],
+            rationale: "Patients with EPI have difficulty digesting fats due to a lack of pancreatic enzymes. A low-fat diet helps reduce symptoms such as steatorrhea (fatty stools), and pancreatic enzyme replacement therapy helps improve digestion and absorption of nutrients. The other options may be helpful in some situations, but the low-fat diet and enzyme replacement are the most crucial components of dietary management for EPI.",
             contentCategory: .fundamentals,
-            nclexCategory: .safeEffectiveCare,
-            difficulty: .easy,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Select ALL interventions that are appropriate for fall prevention:",
-            answer: "Keep bed in lowest position, Ensure call light is within reach, Use non-slip footwear, Keep environment well-lit",
-            wrongAnswers: ["Restrain all high-risk patients"],
-            rationale: "Fall prevention is multifaceted: low bed position reduces injury from falls, accessible call light allows patients to ask for help, non-slip footwear prevents slipping, and good lighting helps patients see obstacles. Restraints are a last resort and can increase fall risk.",
-            contentCategory: .fundamentals,
-            nclexCategory: .safeEffectiveCare,
-            difficulty: .medium,
-            questionType: .sata,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "What does the acronym RACE stand for in fire safety?",
-            answer: "Rescue, Alarm, Contain, Extinguish",
-            wrongAnswers: ["Run, Alert, Call, Evacuate", "Rescue, Alert, Cover, Exit", "Remove, Alarm, Close, Escape"],
-            rationale: "RACE is the fire response protocol: Rescue patients in immediate danger, Activate the Alarm, Contain the fire by closing doors, Extinguish if small and safe to do so. This sequence prioritizes patient safety.",
-            contentCategory: .fundamentals,
-            nclexCategory: .safeEffectiveCare,
-            difficulty: .easy,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A nurse is documenting in the medical record. Which entry is MOST appropriate?",
-            answer: "Patient states 'I feel dizzy when I stand up.' VS: BP 100/60 sitting, 82/50 standing.",
-            wrongAnswers: ["Patient is dizzy, probably dehydrated", "Patient seems to have orthostatic hypotension", "Patient is a poor historian and is confused about symptoms"],
-            rationale: "Documentation should be objective, factual, and include direct patient quotes when relevant. Avoid assumptions, diagnoses (unless within scope), and judgmental language. Include measurable data.",
-            contentCategory: .fundamentals,
-            nclexCategory: .safeEffectiveCare,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-
-        // MED-SURG - FREE (10)
-        Flashcard(
-            question: "A patient with heart failure has gained 3 pounds overnight. What is the nurse's PRIORITY action?",
-            answer: "Assess for edema and lung sounds, then notify the provider",
-            wrongAnswers: ["Restrict fluids immediately", "Administer an extra dose of diuretic", "Encourage increased activity"],
-            rationale: "Rapid weight gain (>2-3 lbs in 24 hours) indicates fluid retention, a sign of worsening heart failure. Assessment confirms the finding, and the provider needs notification for medication adjustments. Nurses cannot independently change medication doses.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .priority,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which finding in a patient with diabetes requires IMMEDIATE intervention?",
-            answer: "Blood glucose of 45 mg/dL with diaphoresis",
-            wrongAnswers: ["Blood glucose of 180 mg/dL before lunch", "Blood glucose of 95 mg/dL fasting", "HbA1c of 7.2%"],
-            rationale: "Hypoglycemia (<70 mg/dL) with symptoms (diaphoresis, confusion, tremors) is a medical emergency requiring immediate treatment with fast-acting glucose. Untreated severe hypoglycemia can lead to seizures, coma, and death.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A patient post-thyroidectomy reports tingling around the mouth. What should the nurse assess for?",
-            answer: "Hypocalcemia (check Chvostek's and Trousseau's signs)",
-            wrongAnswers: ["Hyperkalemia", "Thyroid storm", "Allergic reaction to anesthesia"],
-            rationale: "Parathyroid glands may be damaged during thyroidectomy, causing hypocalcemia. Perioral tingling is an early sign. Chvostek's sign (facial twitch when tapping cheek) and Trousseau's sign (carpopedal spasm with BP cuff) confirm hypocalcemia.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "What is the PRIORITY nursing diagnosis for a patient experiencing an acute asthma attack?",
-            answer: "Impaired gas exchange",
-            wrongAnswers: ["Anxiety", "Activity intolerance", "Deficient knowledge"],
-            rationale: "During an acute asthma attack, bronchospasm and inflammation severely impair oxygen and carbon dioxide exchange. This life-threatening physiological problem takes priority over psychological or educational needs using Maslow's hierarchy.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A patient with COPD has an oxygen saturation of 88%. What is the appropriate oxygen flow rate?",
-            answer: "1-2 L/min via nasal cannula, titrate to SpO2 88-92%",
-            wrongAnswers: ["High-flow oxygen at 15 L/min", "100% oxygen via non-rebreather mask", "No oxygen needed, 88% is acceptable for COPD"],
-            rationale: "COPD patients have chronic CO2 retention and rely on hypoxic drive for breathing. High-flow oxygen can suppress this drive and cause respiratory failure. Target SpO2 of 88-92% balances oxygenation with maintaining respiratory drive.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which assessment finding indicates a patient may be experiencing a stroke?",
-            answer: "Sudden onset of facial drooping, arm weakness, and slurred speech",
-            wrongAnswers: ["Gradual onset of bilateral leg weakness over 2 weeks", "Chronic headaches with normal neurological exam", "Intermittent dizziness when changing positions"],
-            rationale: "FAST (Face drooping, Arm weakness, Speech difficulty, Time to call 911) identifies stroke symptoms. Sudden onset of unilateral neurological deficits is characteristic. Stroke is time-sensitive - 'time is brain.'",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A patient with cirrhosis has a distended abdomen. Which position is BEST for comfort and breathing?",
-            answer: "Semi-Fowler's or high Fowler's position",
-            wrongAnswers: ["Supine flat position", "Trendelenburg position", "Prone position"],
-            rationale: "Ascites (fluid accumulation) in cirrhosis causes abdominal distension that pushes on the diaphragm, making breathing difficult. Elevating the head of bed allows gravity to pull fluid down and gives the diaphragm more room to expand.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "After a cardiac catheterization via femoral artery, which assessment is PRIORITY?",
-            answer: "Check the puncture site for bleeding and assess distal pulses",
-            wrongAnswers: ["Encourage the patient to ambulate immediately", "Assess for pain at the catheter insertion site", "Check blood glucose levels"],
-            rationale: "Femoral artery access creates bleeding risk and potential for hematoma or arterial occlusion. Checking the site for bleeding/hematoma and assessing pedal pulses ensures adequate circulation. The patient must remain on bedrest with the leg straight.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .priority,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A patient with renal failure has a potassium level of 6.8 mEq/L. Which ECG change should the nurse expect?",
-            answer: "Tall, peaked T waves",
-            wrongAnswers: ["Flat T waves", "Prolonged QT interval", "ST segment elevation"],
-            rationale: "Hyperkalemia causes characteristic ECG changes: tall peaked T waves (early), widened QRS, and eventually sine wave pattern and cardiac arrest. K+ >6.0 mEq/L is dangerous and requires immediate treatment.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Select ALL signs and symptoms of left-sided heart failure:",
-            answer: "Dyspnea, Orthopnea, Crackles in lungs, Pink frothy sputum",
-            wrongAnswers: ["Jugular vein distension"],
-            rationale: "Left-sided heart failure causes pulmonary congestion because the left ventricle cannot effectively pump blood forward. Fluid backs up into the lungs causing dyspnea, orthopnea, crackles, and in severe cases, pink frothy sputum (pulmonary edema). JVD is a sign of right-sided failure.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .sata,
-            isPremium: false
-        ),
-
-        // PHARMACOLOGY - FREE (10)
-        Flashcard(
-            question: "A patient is prescribed warfarin. Which lab value should the nurse monitor?",
-            answer: "INR (International Normalized Ratio)",
-            wrongAnswers: ["aPTT (activated Partial Thromboplastin Time)", "Platelet count only", "Hemoglobin and hematocrit only"],
-            rationale: "Warfarin affects vitamin K-dependent clotting factors (II, VII, IX, X). INR monitors warfarin effectiveness. Therapeutic range is usually 2-3 (2.5-3.5 for mechanical heart valves). aPTT monitors heparin, not warfarin.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "What is the antidote for heparin overdose?",
-            answer: "Protamine sulfate",
-            wrongAnswers: ["Vitamin K", "Naloxone", "Flumazenil"],
-            rationale: "Protamine sulfate is a positively charged molecule that binds to negatively charged heparin, neutralizing its anticoagulant effect. Vitamin K reverses warfarin. Naloxone reverses opioids. Flumazenil reverses benzodiazepines.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which medication class ending in '-pril' is used for hypertension and heart failure?",
-            answer: "ACE inhibitors (e.g., lisinopril, enalapril)",
-            wrongAnswers: ["Beta blockers", "Calcium channel blockers", "ARBs"],
-            rationale: "ACE inhibitors end in '-pril' and work by blocking angiotensin-converting enzyme, reducing angiotensin II production. This causes vasodilation and decreased aldosterone, lowering BP. Common side effect is dry cough.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .easy,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A patient on digoxin has a heart rate of 52 bpm. What should the nurse do?",
-            answer: "Hold the medication and notify the provider",
-            wrongAnswers: ["Give the medication as prescribed", "Give half the prescribed dose", "Wait 30 minutes and recheck the heart rate"],
-            rationale: "Digoxin slows heart rate. Hold digoxin if HR <60 bpm (adults) or <70 bpm (children) as this may indicate toxicity. Always check apical pulse for full minute before administration. Notify provider for HR below threshold.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which electrolyte imbalance increases the risk of digoxin toxicity?",
-            answer: "Hypokalemia (low potassium)",
-            wrongAnswers: ["Hyperkalemia", "Hypernatremia", "Hypercalcemia"],
-            rationale: "Digoxin and potassium compete for the same binding sites on the sodium-potassium ATPase pump. Low potassium means more digoxin binds, increasing toxicity risk. Always monitor K+ levels in patients on digoxin.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "What is the antidote for acetaminophen (Tylenol) overdose?",
-            answer: "Acetylcysteine (Mucomyst)",
-            wrongAnswers: ["Naloxone", "Flumazenil", "Protamine sulfate"],
-            rationale: "Acetylcysteine replenishes glutathione stores in the liver, which is depleted by the toxic metabolite of acetaminophen (NAPQI). Most effective within 8 hours of overdose but can be given up to 24 hours.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A patient is starting metformin for type 2 diabetes. Which teaching is ESSENTIAL?",
-            answer: "Hold the medication before procedures using IV contrast dye",
-            wrongAnswers: ["Take on an empty stomach for best absorption", "This medication will cause significant weight gain", "Blood glucose monitoring is not necessary"],
-            rationale: "Metformin combined with IV contrast dye can cause lactic acidosis, a life-threatening condition. Hold metformin 48 hours before and after contrast procedures. Metformin should be taken with food to reduce GI upset and typically causes weight loss or neutrality.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which medication requires the patient to avoid grapefruit juice?",
-            answer: "Statins (e.g., atorvastatin, simvastatin)",
-            wrongAnswers: ["Acetaminophen", "Amoxicillin", "Omeprazole"],
-            rationale: "Grapefruit juice inhibits CYP3A4 enzyme in the intestine, which normally metabolizes statins. This leads to increased statin levels and risk of muscle damage (rhabdomyolysis). Some statins are more affected than others.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Select ALL symptoms of opioid overdose:",
-            answer: "Respiratory depression, Pinpoint pupils, Decreased level of consciousness, Bradycardia",
-            wrongAnswers: ["Dilated pupils"],
-            rationale: "Opioid overdose causes CNS depression: slow/shallow breathing (respiratory depression is the killer), pinpoint (miotic) pupils, decreased LOC/unresponsive, and bradycardia. Dilated pupils suggest stimulant overdose or anticholinergic toxicity.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .sata,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which antibiotic class should be avoided during pregnancy due to effects on fetal teeth and bones?",
-            answer: "Tetracyclines",
-            wrongAnswers: ["Penicillins", "Cephalosporins", "Macrolides"],
-            rationale: "Tetracyclines cross the placenta and deposit in developing teeth and bones, causing permanent tooth discoloration and potential bone growth problems. Contraindicated in pregnancy and children under 8 years.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-
-        // PEDIATRICS - FREE (5)
-        Flashcard(
-            question: "A 2-year-old is admitted with suspected epiglottitis. Which action should the nurse AVOID?",
-            answer: "Inspecting the throat with a tongue depressor",
-            wrongAnswers: ["Keeping the child calm", "Having emergency intubation equipment nearby", "Allowing the child to sit in a position of comfort"],
-            rationale: "In epiglottitis, the airway is severely compromised. Using a tongue depressor can trigger complete airway obstruction and respiratory arrest. Visualize the throat only in a controlled setting with emergency airway equipment ready.",
-            contentCategory: .pediatrics,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "What is the normal respiratory rate for a newborn?",
-            answer: "30-60 breaths per minute",
-            wrongAnswers: ["12-20 breaths per minute", "20-30 breaths per minute", "60-80 breaths per minute"],
-            rationale: "Newborns have faster respiratory rates than adults due to higher metabolic demands and smaller lung capacity. Normal newborn RR is 30-60/min. Rates >60/min (tachypnea) may indicate respiratory distress.",
-            contentCategory: .pediatrics,
             nclexCategory: .healthPromotion,
             difficulty: .easy,
             questionType: .standard,
             isPremium: false
         ),
         Flashcard(
-            question: "A child is diagnosed with Kawasaki disease. Which assessment finding is MOST concerning?",
-            answer: "Coronary artery abnormalities on echocardiogram",
-            wrongAnswers: ["Strawberry tongue", "Peeling skin on fingers", "High fever for 5 days"],
-            rationale: "Kawasaki disease causes systemic vasculitis with the most serious complication being coronary artery aneurysms, which can lead to MI, heart failure, and death. IVIG treatment reduces this risk when given within 10 days of fever onset.",
-            contentCategory: .pediatrics,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "At what age should an infant double their birth weight?",
-            answer: "4-6 months",
-            wrongAnswers: ["1-2 months", "8-10 months", "12 months"],
-            rationale: "Infants typically double birth weight by 4-6 months and triple it by 12 months. This is an important milestone for assessing adequate nutrition and growth. Failure to meet this may indicate feeding problems or underlying illness.",
-            contentCategory: .pediatrics,
+            question: "The nurse is reviewing risk factors for coronary heart disease with a group of patients. Which of the following risk factors is NOT explicitly mentioned in the provided text?",
+            answer: "Hyperlipidemia",
+            wrongAnswers: ["Serum sodium level", "Arterial blood gas", "Troponin level"],
+            rationale: "While the text discusses plaque buildup and narrowing of the arteries, it doesn't explicitly mention hyperlipidemia (high cholesterol) as a risk factor. The text refers to risk factors in general but does not provide a list. Therefore, hyperlipidemia is the answer as it is a risk factor for CHD but is not detailed in the provided content. The other options can be related to symptoms presented in the content (chest pain, shortness of breath, neck pain).",
+            contentCategory: .fundamentals,
             nclexCategory: .healthPromotion,
             difficulty: .easy,
             questionType: .standard,
             isPremium: false
         ),
         Flashcard(
-            question: "Which finding is expected in a child with pyloric stenosis?",
-            answer: "Projectile vomiting after feeding with an olive-shaped mass in the abdomen",
-            wrongAnswers: ["Bile-stained vomiting", "Diarrhea with blood in stool", "Gradual onset of vomiting over several weeks"],
-            rationale: "Pyloric stenosis causes hypertrophy of the pyloric sphincter, obstructing gastric outflow. Classic presentation: non-bilious projectile vomiting, visible peristalsis, palpable 'olive' mass in RUQ, and hungry baby. Usually presents at 2-8 weeks of age.",
-            contentCategory: .pediatrics,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-
-        // MATERNITY - FREE (5)
-        Flashcard(
-            question: "A laboring patient's fetal heart rate shows late decelerations. What is the nurse's PRIORITY action?",
-            answer: "Reposition the patient to left lateral side and administer oxygen",
-            wrongAnswers: ["Continue to monitor without intervention", "Increase the rate of Pitocin", "Prepare for immediate cesarean section"],
-            rationale: "Late decelerations indicate uteroplacental insufficiency (decreased oxygen to fetus). Immediate nursing actions: left lateral position (improves uterine blood flow), oxygen (increases available O2), stop Pitocin if running, IV fluid bolus. Notify provider immediately.",
-            contentCategory: .maternity,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .priority,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "What is the normal fetal heart rate range?",
-            answer: "110-160 beats per minute",
-            wrongAnswers: ["60-100 beats per minute", "100-150 beats per minute", "160-200 beats per minute"],
-            rationale: "Normal fetal heart rate (FHR) baseline is 110-160 bpm. Below 110 (bradycardia) or above 160 (tachycardia) for >10 minutes requires evaluation. Variability and accelerations are signs of fetal well-being.",
-            contentCategory: .maternity,
-            nclexCategory: .healthPromotion,
+            question: "A nurse is preparing to administer medications. Which action demonstrates proper patient identification?",
+            answer: "Check two patient identifiers and compare with the MAR",
+            wrongAnswers: ["Ask the patient their name only", "Check the room number", "Verify with the patient's family member"],
+            rationale: "CORRECT: Two patient identifiers (name + DOB or name + MRN) per The Joint Commission standards. Compare with MAR to ensure right patient.\n\nWHY OTHER ANSWERS ARE WRONG:\n• Ask name only = Only ONE identifier; patients may answer to wrong name if confused\n• Room number = NEVER an identifier; patients change rooms, wrong patient could be in bed\n• Family member = Family can misidentify; always verify with patient or wristband\n\nMEMORY AID: \"Two IDs before the meds\" - Always TWO identifiers.\n\nCLINICAL PEARL: Use open-ended questions: \"What is your name and date of birth?\" NOT \"Are you Mr. Smith?\" (leading question - confused patients may say yes to anything).",
+            contentCategory: .fundamentals,
+            nclexCategory: .safeEffectiveCare,
             difficulty: .easy,
             questionType: .standard,
             isPremium: false
         ),
         Flashcard(
-            question: "A postpartum patient has a boggy uterus and heavy bleeding. What is the FIRST nursing action?",
-            answer: "Massage the uterine fundus",
-            wrongAnswers: ["Administer pain medication", "Call for emergency surgery", "Insert a Foley catheter"],
-            rationale: "Uterine atony (boggy uterus) is the most common cause of postpartum hemorrhage. First action is fundal massage to stimulate uterine contraction. Also empty the bladder (full bladder prevents contraction), administer uterotonics as ordered.",
-            contentCategory: .maternity,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .priority,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which symptom is a warning sign of preeclampsia?",
-            answer: "Severe headache with visual changes and BP of 160/110",
-            wrongAnswers: ["Mild ankle swelling at end of day", "Occasional Braxton Hicks contractions", "Increased urinary frequency"],
-            rationale: "Preeclampsia warning signs: BP ≥140/90, severe headache, visual disturbances (blurring, spots), epigastric pain, sudden edema. Severe preeclampsia (BP ≥160/110) can progress to eclampsia (seizures) and is life-threatening.",
-            contentCategory: .maternity,
+            question: "Which vital sign change indicates a patient may be developing shock?",
+            answer: "Decreased blood pressure with increased heart rate",
+            wrongAnswers: ["Increased blood pressure with decreased heart rate", "Normal blood pressure with normal heart rate", "Decreased blood pressure with decreased heart rate"],
+            rationale: "CORRECT: This is COMPENSATORY SHOCK - the heart beats faster (tachycardia) trying to maintain cardiac output as BP drops.\n\nWHY OTHER ANSWERS ARE WRONG:\n• Increased BP + decreased HR = Cushing triad (increased ICP), not shock\n• Normal VS = No shock present\n• Decreased BP + decreased HR = Late/decompensated shock or other cause (beta-blocker effect)\n\nMEMORY AID: Think of shock like a failing pump - heart works harder (faster) but pressure still drops.\n\nCLINICAL PEARL: Early shock may show NORMAL BP because of compensation. Watch for: tachycardia, narrowing pulse pressure, delayed cap refill, anxiety/restlessness.",
+            contentCategory: .fundamentals,
             nclexCategory: .physiological,
             difficulty: .medium,
             questionType: .standard,
             isPremium: false
         ),
         Flashcard(
-            question: "When should a pregnant patient feel fetal movement (quickening)?",
-            answer: "Primigravida: 18-20 weeks; Multigravida: 16-18 weeks",
-            wrongAnswers: ["8-10 weeks in all pregnancies", "25-28 weeks in all pregnancies", "Only after 30 weeks"],
-            rationale: "Quickening (first maternal perception of fetal movement) occurs earlier in multiparous women who recognize the sensation. It's an important milestone. Decreased fetal movement later in pregnancy warrants evaluation.",
-            contentCategory: .maternity,
-            nclexCategory: .healthPromotion,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: false
-        ),
-
-        // MENTAL HEALTH - FREE (5)
-        Flashcard(
-            question: "A patient expresses suicidal thoughts. What is the nurse's PRIORITY assessment?",
-            answer: "Ask directly if the patient has a plan and access to means",
-            wrongAnswers: ["Avoid discussing suicide to prevent giving ideas", "Immediately place in physical restraints", "Call family members before talking to patient"],
-            rationale: "Direct questioning about suicide does NOT increase risk - it shows concern and allows intervention. Assess: ideation, plan, means, timeline, and protective factors. A specific plan with accessible means = HIGH RISK requiring immediate intervention.",
-            contentCategory: .mentalHealth,
-            nclexCategory: .psychosocial,
-            difficulty: .medium,
-            questionType: .priority,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "Which therapeutic communication technique involves restating the patient's message?",
-            answer: "Reflection",
-            wrongAnswers: ["Clarification", "Confrontation", "Summarizing"],
-            rationale: "Reflection mirrors back the patient's feelings or content, showing understanding and encouraging elaboration. Example: Patient: 'I'm so angry at my family.' Nurse: 'You're feeling angry at your family.' This validates feelings.",
-            contentCategory: .mentalHealth,
-            nclexCategory: .psychosocial,
-            difficulty: .easy,
-            questionType: .standard,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A patient with schizophrenia reports hearing voices telling them to hurt themselves. What type of hallucination is this?",
-            answer: "Command auditory hallucination",
-            wrongAnswers: ["Visual hallucination", "Tactile hallucination", "Olfactory hallucination"],
-            rationale: "Command hallucinations are auditory hallucinations that tell the person to do something, often harmful. These require immediate assessment and safety intervention as patients may act on commands. This is a psychiatric emergency.",
-            contentCategory: .mentalHealth,
-            nclexCategory: .psychosocial,
+            question: "A patient with tuberculosis is being discharged. Which instruction is MOST important for preventing transmission?",
+            answer: "Take all medications exactly as prescribed for the full duration",
+            wrongAnswers: ["Avoid all public places permanently", "Wear a mask at home at all times", "Sleep in a separate house from family"],
+            rationale: "CORRECT: TB treatment requires 6-9 months of multiple drugs. COMPLETING treatment prevents drug resistance and ensures cure. Non-adherence = MDR-TB.\n\nTB TREATMENT (Standard regimen - RIPE):\n• Rifampin - 6 months\n• Isoniazid (INH) - 6 months\n• Pyrazinamide - 2 months\n• Ethambutol - 2 months\n\nWHY COMPLETION IS CRITICAL:\n• Incomplete treatment = surviving bacteria become resistant\n• Drug-resistant TB is extremely difficult to treat\n• Directly Observed Therapy (DOT) recommended\n\nWHY OTHER ANSWERS ARE WRONG:\n• Avoid all public places permanently = Not necessary; becomes non-infectious 2-3 weeks after starting treatment\n• Mask at home always = Only until non-infectious (2-3 weeks)\n• Separate house = Excessive; good ventilation and treatment sufficient\n\nTB TRANSMISSION PREVENTION:\n• Airborne precautions while hospitalized\n• Negative pressure room\n• N95 respirator for staff\n• Patient wears surgical mask during transport\n• After 2-3 weeks of effective treatment = generally non-infectious\n\nMEDICATION SIDE EFFECTS TO MONITOR:\n• Rifampin: Orange body fluids (normal), hepatotoxicity\n• INH: Peripheral neuropathy (give B6), hepatotoxicity\n• Pyrazinamide: Hepatotoxicity, hyperuricemia\n• Ethambutol: Optic neuritis (report vision changes)\n\nTEACHING: Report signs of hepatotoxicity - dark urine, jaundice, RUQ pain, fatigue",
+            contentCategory: .infectionControl,
+            nclexCategory: .safeEffectiveCare,
             difficulty: .medium,
             questionType: .standard,
             isPremium: false
         ),
         Flashcard(
-            question: "Select ALL symptoms of serotonin syndrome:",
-            answer: "Hyperthermia, Agitation, Hyperreflexia, Tremor, Diaphoresis",
-            wrongAnswers: ["Hypothermia"],
-            rationale: "Serotonin syndrome occurs with excessive serotonergic activity, often from drug interactions (SSRIs + MAOIs, SSRIs + triptans). Symptoms: hyperthermia, altered mental status, autonomic instability, neuromuscular abnormalities. Life-threatening emergency.",
-            contentCategory: .mentalHealth,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .sata,
-            isPremium: false
-        ),
-        Flashcard(
-            question: "A patient with alcohol use disorder is admitted. When should the nurse expect withdrawal symptoms to begin?",
-            answer: "6-24 hours after last drink",
-            wrongAnswers: ["Immediately upon admission", "3-5 days after last drink", "1-2 weeks after last drink"],
-            rationale: "Alcohol withdrawal timeline: 6-24 hours - tremors, anxiety, tachycardia; 24-48 hours - hallucinations; 48-72 hours - seizures; 3-5 days - delirium tremens (DTs). DTs have 5-15% mortality if untreated.",
-            contentCategory: .mentalHealth,
-            nclexCategory: .physiological,
+            question: "What is the CORRECT order for donning PPE?",
+            answer: "Gown, mask/respirator, goggles/face shield, gloves",
+            wrongAnswers: ["Gloves, gown, mask, goggles", "Mask, gloves, gown, goggles", "Goggles, gloves, mask, gown"],
+            rationale: "CORRECT: Sequence is designed to prevent contamination of clean equipment and ensure proper fit.\n\nDONNING PPE (putting ON):\n1. GOWN first - ties in back, provides base layer\n2. MASK/RESPIRATOR - requires both hands, fit to face\n3. GOGGLES/FACE SHIELD - over mask straps\n4. GLOVES last - over gown cuffs for complete coverage\n\nDOFFING PPE (taking OFF) - Most contaminated first:\n1. GLOVES first (most contaminated)\n2. Hand hygiene\n3. GOWN (contaminated outside)\n4. Hand hygiene\n5. GOGGLES/FACE SHIELD\n6. MASK/RESPIRATOR last (touch only straps)\n7. Hand hygiene\n\nWHY OTHER ANSWERS ARE WRONG:\n• All start with wrong item\n• Gloves should be last on (first off)\n• Mask needs to be on before eye protection\n\nMEMORY AIDS:\n• DONNING: \"Gown, Mask, Goggles, Gloves\" - GMG G\n• DOFFING: \"Gloves off first, Mask off last\"\n\nKEY POINTS:\n• Perform hand hygiene before donning and after doffing\n• Remove PPE at doorway or in anteroom\n• Discard in appropriate waste container\n• Don't touch face during removal\n• If PPE becomes visibly soiled or torn, change it\n\nN95 RESPIRATOR:\n• Must be fit-tested annually\n• Seal check before each use\n• Cannot wear if facial hair prevents seal",
+            contentCategory: .infectionControl,
+            nclexCategory: .safeEffectiveCare,
             difficulty: .medium,
             questionType: .standard,
             isPremium: false
         ),
-
-        // LEADERSHIP - FREE (5)
+        Flashcard(
+            question: "A patient has C. difficile infection. Which precautions are required?",
+            answer: "Contact precautions with hand washing (not alcohol-based sanitizer)",
+            wrongAnswers: ["Droplet precautions only", "Airborne precautions", "Standard precautions only"],
+            rationale: "CORRECT: C. diff spores are NOT killed by alcohol. Must use soap and water for hand hygiene. Contact precautions for gown/gloves.\n\nC. DIFF PRECAUTIONS:\n• CONTACT PRECAUTIONS: Gown and gloves\n• HAND WASHING with soap and water (NOT alcohol gel)\n• Private room or cohorting\n• Dedicated equipment\n• Enhanced environmental cleaning with sporicidal agents (bleach-based)\n\nWHY SOAP AND WATER:\n• C. diff forms SPORES\n• Spores are resistant to alcohol\n• Friction of hand washing physically removes spores\n• Bleach kills spores on surfaces\n\nWHY OTHER ANSWERS ARE WRONG:\n• Droplet = C. diff is spread fecal-oral, not respiratory\n• Airborne = Not an airborne pathogen\n• Standard only = Inadequate; increased transmission risk\n\nC. DIFF FACTS:\n• Usually caused by antibiotic use (disrupts normal gut flora)\n• Symptoms: Watery diarrhea, fever, abdominal pain\n• Diagnosis: Stool toxin test\n• Treatment: Stop offending antibiotic, start oral vancomycin or fidaxomicin\n• Complications: Toxic megacolon, perforation\n\nPREVENTION:\n• Antibiotic stewardship (appropriate use only)\n• Contact precautions for infected patients\n• Hand hygiene with soap and water\n• Environmental cleaning with bleach\n• Probiotics may help prevent",
+            contentCategory: .infectionControl,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "Which isolation precaution is required for a patient with tuberculosis?",
+            answer: "Airborne precautions with N95 respirator",
+            wrongAnswers: ["Contact precautions only", "Droplet precautions with surgical mask", "Standard precautions only"],
+            rationale: "CORRECT: TB spreads via airborne droplet nuclei (<5 microns) that remain suspended in air for hours. Requires special precautions.\n\nAIRBORNE PRECAUTIONS:\n• N95 respirator (fit-tested annually)\n• Private room with negative pressure\n• Door must remain closed\n• 6-12 air changes per hour\n• HEPA filtration or exhaust to outside\n• Patient wears surgical mask during transport\n\nAIRBORNE DISEASES (memory aid - MTV):\n• Measles\n• Tuberculosis\n• Varicella (chickenpox) + Disseminated zoster\n\nWHY OTHER ANSWERS ARE WRONG:\n• Contact precautions = For infections spread by touch (MRSA, C. diff)\n• Droplet with surgical mask = For large droplets (flu, pertussis, meningococcal) - surgical mask sufficient\n• Standard precautions = Base level for all patients but inadequate for TB\n\nCOMPARISON OF PRECAUTIONS:\n| Type | Particle Size | Examples | Mask Type |\n|------|---------------|----------|-----------|\n| Airborne | <5 microns | TB, measles, varicella | N95 |\n| Droplet | >5 microns | Flu, pertussis, mumps | Surgical |\n| Contact | N/A (touch) | MRSA, C. diff, scabies | None specific |\n\nTB-SPECIFIC CARE:\n• Patient on airborne precautions until 3 negative sputum smears\n• TB skin test annually for healthcare workers\n• TB prophylaxis if positive PPD without active disease\n• Multi-drug regimen for active TB (6-9 months)",
+            contentCategory: .infectionControl,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "What is the nurse's responsibility when receiving an unclear or potentially harmful order?",
+            answer: "Clarify the order with the prescriber before acting",
+            wrongAnswers: ["Carry out the order as written", "Ignore the order", "Have another nurse carry out the order"],
+            rationale: "CORRECT: Nurses are legally and ethically obligated to QUESTION unclear, incomplete, or potentially harmful orders. You are accountable for your actions.\n\nWHEN TO CLARIFY ORDERS:\n• Order is illegible or unclear\n• Dose seems incorrect (too high or too low)\n• Medication is contraindicated for this patient\n• Order conflicts with other orders\n• Order doesn't match patient's condition\n• You're unfamiliar with the medication/procedure\n• Order seems to violate policy or standards\n\nWHY OTHER ANSWERS ARE WRONG:\n• Carry out as written = \"Following orders\" is not a defense; nurse is accountable\n• Ignore the order = Patient may be harmed by not receiving needed treatment\n• Have another nurse do it = Passing the problem doesn't resolve it; still your responsibility\n\nCHAIN OF COMMAND:\n1. Contact prescriber directly, clarify concerns\n2. If prescriber refuses to change, contact supervisor\n3. If still unresolved, escalate up chain of command\n4. Document all communication\n\nREFUSING AN ORDER:\n• You have the RIGHT to refuse an order you believe is harmful\n• Document your concerns and who you notified\n• Continue to advocate for patient safety\n\nDOCUMENTATION:\n\"Clarified order with Dr. X regarding [concern]. New order received: [details].\"\nOR\n\"Expressed concern to Dr. X about [order]. Dr. X stated [response]. Notified charge nurse.\"",
+            contentCategory: .leadership,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
         Flashcard(
             question: "Which task is appropriate to delegate to a UAP (unlicensed assistive personnel)?",
             answer: "Taking vital signs on a stable patient",
             wrongAnswers: ["Assessing a new patient's pain level", "Administering oral medications", "Teaching a patient about new medications"],
-            rationale: "UAPs can perform tasks that are routine, standard, and do not require nursing judgment: vital signs, ADLs, ambulation, I&O, feeding stable patients. Assessment, teaching, and medication administration require RN/LPN licensure.",
+            rationale: "CORRECT: UAPs can perform tasks that are routine, standard, low-risk, and require no nursing judgment. Vital signs on STABLE patients fit this criteria.\n\nTHE 5 RIGHTS OF DELEGATION:\n1. Right TASK (routine, standard procedure)\n2. Right CIRCUMSTANCE (stable patient, predictable outcome)\n3. Right PERSON (competent UAP, within their training)\n4. Right DIRECTION (clear, specific instructions)\n5. Right SUPERVISION (RN monitors and evaluates)\n\nWHAT UAPs CAN DO:\n✓ Vital signs (stable patients)\n✓ ADLs (bathing, feeding, toileting)\n✓ Ambulation\n✓ I&O measurement\n✓ Specimen collection (not invasive)\n✓ Transport\n✓ CPR (if trained)\n\nWHAT UAPs CANNOT DO:\n✗ Assessment (any form)\n✗ Teaching\n✗ Medication administration\n✗ Care planning\n✗ Evaluation of outcomes\n✗ Unstable patients\n✗ Initial or comprehensive assessments\n\nWHY OTHER ANSWERS ARE WRONG:\n• Assessing pain = ASSESSMENT requires RN; UAP can ask and report, but not assess\n• Administering medications = ALWAYS requires licensed nurse (RN or LPN depending on state)\n• Teaching = Requires RN; UAP can reinforce but not teach new content\n\nNCLEX TIP: When \"stable\" appears with a task, it's often delegable. When assessment, teaching, or evaluation is involved, it requires an RN.",
             contentCategory: .leadership,
             nclexCategory: .safeEffectiveCare,
             difficulty: .medium,
@@ -2008,47 +2470,400 @@ extension Flashcard {
             question: "A nurse receives report on four patients. Which patient should be assessed FIRST?",
             answer: "Post-op patient with increasing restlessness and blood pressure dropping",
             wrongAnswers: ["Diabetic patient due for morning insulin", "Patient requesting pain medication", "Patient scheduled for discharge teaching"],
-            rationale: "Using ABCs and prioritization: the post-op patient with restlessness and dropping BP may be hemorrhaging (shock). This is life-threatening and requires immediate assessment. The other patients are important but stable.",
+            rationale: "CORRECT: This patient shows signs of SHOCK (restlessness = early sign of hypoxia, dropping BP = inadequate perfusion). Post-op bleeding is likely. This is life-threatening.\n\nPRIORITIZATION FRAMEWORKS:\n1. ABCs: Airway, Breathing, Circulation\n2. Maslow's Hierarchy: Physiological needs first\n3. Acute vs Chronic: Acute/changing conditions first\n4. Actual vs Potential: Actual problems before risk for problems\n\nANALYZING THIS QUESTION:\n• Post-op + restlessness + dropping BP = ACTUAL airway/circulation problem (hemorrhagic shock)\n• Insulin due = Scheduled, can wait briefly, patient is stable\n• Pain medication = Important but not life-threatening\n• Discharge teaching = Can definitely wait\n\nWHY OTHER ANSWERS ARE WRONG:\n• Diabetic/insulin = Scheduled task, patient presumably stable; come back to this\n• Pain medication = Comfort need, not life-threatening; return after emergency\n• Discharge teaching = Lowest priority; psychosocial/educational need\n\nNCLEX PRIORITIZATION TIPS:\n• \"Unstable\" and \"changing\" are red flags = see first\n• New onset symptoms > chronic symptoms\n• Assessment findings suggesting shock, bleeding, airway compromise = EMERGENCY\n• Scheduled tasks can wait (briefly) for emergencies\n• Teaching and comfort needs are lower priority than survival needs",
             contentCategory: .leadership,
             nclexCategory: .safeEffectiveCare,
             difficulty: .medium,
-            questionType: .priority,
+            questionType: .standard,
             isPremium: false
         ),
         Flashcard(
             question: "A nurse makes a medication error. What is the FIRST action?",
             answer: "Assess the patient for adverse effects",
             wrongAnswers: ["Complete an incident report before telling anyone", "Notify the nurse manager", "Call the pharmacy"],
-            rationale: "Patient safety is always first. Assess for adverse effects and intervene as needed. Then notify the provider, document objectively in the chart, and complete an incident report. Never delay patient assessment for administrative tasks.",
+            rationale: "CORRECT: PATIENT SAFETY FIRST. Always assess for harm before any administrative actions. The patient may need immediate intervention.\n\nMEDICATION ERROR RESPONSE SEQUENCE:\n1. ASSESS the patient immediately (Are they okay? Signs of adverse reaction?)\n2. INTERVENE if needed (antidotes, supportive care, call rapid response)\n3. NOTIFY the provider (they need to know to manage patient care)\n4. DOCUMENT objectively in the medical record (what happened, patient assessment, interventions)\n5. COMPLETE incident report (for quality improvement, NOT in medical record)\n6. NOTIFY manager per facility policy\n\nWHY OTHER ANSWERS ARE WRONG:\n• Incident report first = Administrative task never before patient care\n• Notify manager = Important but after patient assessment and provider notification\n• Call pharmacy = May be needed later but patient comes first\n\nDOCUMENTATION OF ERRORS:\n• DO document: What happened, patient assessment, interventions, provider notification\n• DON'T document: \"Error made,\" \"Incident report filed,\" speculation, blame\n\nINCIDENT REPORTS:\n• Quality improvement tool, not punitive (in most systems)\n• NOT part of medical record\n• Don't reference in chart notes\n• Identifies system issues and patterns\n\nNCLEX TIP: Patient assessment and safety ALWAYS come first. Administrative tasks are important but never take priority over patient care.",
             contentCategory: .leadership,
             nclexCategory: .safeEffectiveCare,
             difficulty: .medium,
-            questionType: .priority,
+            questionType: .standard,
             isPremium: false
         ),
         Flashcard(
-            question: "What is the purpose of an incident report?",
-            answer: "To identify patterns and improve systems to prevent future occurrences",
-            wrongAnswers: ["To punish the nurse who made the error", "To document in the patient's medical record", "To report the nurse to the state board"],
-            rationale: "Incident reports are quality improvement tools, not punitive. They identify system issues and patterns to prevent future errors. They are NOT part of the medical record and should not be referenced in charting.",
+            question: "A 68-year-old African American male is admitted with worsening symptoms of heart failure. The nurse understands that this population is at higher risk for heart failure. What intervention should the nurse prioritize when providing care?",
+            answer: "Strict adherence to prescribed medication regimen and dietary restrictions.",
+            wrongAnswers: ["Delegate the task to a licensed practical nurse under appropriate supervision", "Notify the charge nurse and document the situation in the patient's chart", "Assign the most experienced nurse to the patient requiring complex care"],
+            rationale: "African Americans tend to develop heart failure earlier and have more severe cases, partly due to higher rates of hypertension and other contributing factors. Therefore, ensuring strict adherence to the medication regimen and dietary restrictions (such as low sodium) is crucial for managing the condition and preventing further complications. While the other options are important aspects of care, medication adherence is most critical for this patient population.",
             contentCategory: .leadership,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "What is the normal fetal heart rate range?",
+            answer: "110-160 beats per minute",
+            wrongAnswers: ["60-100 beats per minute", "100-150 beats per minute", "160-200 beats per minute"],
+            rationale: "CORRECT: Normal FHR baseline is 110-160 bpm, measured between contractions over a 10-minute period.\n\nFHR BASELINE CATEGORIES:\n• Bradycardia: <110 bpm for >10 minutes\n• Normal: 110-160 bpm\n• Tachycardia: >160 bpm for >10 minutes\n\nWHY OTHER ANSWERS ARE WRONG:\n• 60-100 = Adult heart rate; would be severe fetal bradycardia\n• 100-150 = Lower limit too low\n• 160-200 = Would be fetal tachycardia\n\nCAUSES OF FETAL BRADYCARDIA:\n• Fetal hypoxia (late sign)\n• Maternal hypotension\n• Cord compression\n• Maternal medication (beta-blockers)\n• Prolonged pushing\n\nCAUSES OF FETAL TACHYCARDIA:\n• Maternal fever/infection\n• Fetal anemia\n• Fetal hypoxia (early sign)\n• Medications (terbutaline)\n• Fetal arrhythmia\n\nREASSURING FHR CHARACTERISTICS:\n• Baseline 110-160 bpm\n• Moderate variability (6-25 bpm fluctuation)\n• Accelerations present (increase ≥15 bpm for ≥15 seconds)\n• No late or variable decelerations\n\nNON-REASSURING SIGNS:\n• Absent or minimal variability\n• Recurrent late decelerations\n• Recurrent severe variable decelerations\n• Prolonged decelerations\n• Sinusoidal pattern",
+            contentCategory: .maternity,
+            nclexCategory: .healthPromotion,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "What is the expected fundal height at 20 weeks gestation?",
+            answer: "At the level of the umbilicus",
+            wrongAnswers: ["Just above the symphysis pubis", "Halfway between umbilicus and xiphoid", "At the xiphoid process"],
+            rationale: "CORRECT: McDonald's rule: Fundal height in cm ≈ gestational age in weeks. At 20 weeks, fundus is at umbilicus.\n\nFUNDAL HEIGHT LANDMARKS:\n• 12 weeks: Just above symphysis pubis\n• 16 weeks: Halfway between symphysis and umbilicus\n• 20 weeks: At umbilicus\n• 36 weeks: At xiphoid process (highest point)\n• 38-40 weeks: May drop as baby engages (lightening)\n\nWHY OTHER ANSWERS ARE WRONG:\n• Above symphysis = 12 weeks (too early)\n• Between umbilicus and xiphoid = 28-32 weeks\n• At xiphoid = 36 weeks (too late)\n\nFUNDAL HEIGHT ASSESSMENT:\n• Measure from top of symphysis to top of fundus\n• Use non-elastic tape measure\n• Patient should empty bladder first\n• After 20 weeks: Discrepancy of >2-3 cm warrants investigation\n\nCAUSES OF FUNDAL HEIGHT DISCREPANCY:\nTOO LARGE:\n• Wrong dates\n• Multiple gestation\n• Polyhydramnios\n• Macrosomia\n• Fibroids\n\nTOO SMALL:\n• Wrong dates\n• IUGR\n• Oligohydramnios\n• Fetal demise\n\nMEMORY AID: \"At 20 weeks, fundus is at the belly button (umbilicus).\"",
+            contentCategory: .maternity,
+            nclexCategory: .healthPromotion,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A postpartum patient has a boggy uterus and heavy bleeding. What is the FIRST nursing action?",
+            answer: "Massage the uterine fundus",
+            wrongAnswers: ["Administer pain medication", "Call for emergency surgery", "Insert a Foley catheter"],
+            rationale: "CORRECT: Boggy uterus = UTERINE ATONY, the #1 cause of postpartum hemorrhage. Fundal massage is the immediate first intervention - stimulates uterine contraction to control bleeding.\n\nPOSTPARTUM HEMORRHAGE (PPH) CAUSES - \"The 4 T's\":\n1. TONE (atony) - 70-80% of cases - boggy, soft uterus\n2. TRAUMA - lacerations, hematoma, uterine rupture\n3. TISSUE - retained placenta or clots\n4. THROMBIN - coagulation disorders\n\nWHY OTHER ANSWERS ARE WRONG:\n• Pain medication = Does not address the emergency bleeding\n• Emergency surgery = May be needed but try less invasive measures first\n• Foley catheter = A full bladder CAN prevent uterine contraction, but massage first while preparing to empty bladder\n\nPPH MANAGEMENT SEQUENCE:\n1. Fundal massage (FIRST - immediate, noninvasive)\n2. Empty bladder (Foley if needed)\n3. Uterotonics: Oxytocin, Methylergonovine, Carboprost, Misoprostol\n4. Bimanual compression if above fail\n5. Surgical intervention (B-Lynch suture, hysterectomy) as last resort\n\nPPH DEFINITION: >500 mL for vaginal birth, >1000 mL for cesarean\n\nFUNDAL MASSAGE TECHNIQUE: One hand on fundus, massage firmly in circular motion. Other hand supports lower uterus to prevent uterine inversion.",
+            contentCategory: .maternity,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A pregnant patient at 28 weeks has Rh-negative blood. When should RhoGAM be administered?",
+            answer: "At 28 weeks gestation and within 72 hours after delivery if baby is Rh-positive",
+            wrongAnswers: ["Only after delivery", "Only if antibodies are present", "At every prenatal visit"],
+            rationale: "CORRECT: RhoGAM (Rh immune globulin) prevents Rh sensitization in Rh-negative mothers carrying Rh-positive babies.\n\nRhoGAM TIMING:\n• 28 weeks gestation (routine antepartum dose)\n• Within 72 hours after delivery (if baby is Rh-positive)\n• After any event with risk of fetal-maternal hemorrhage\n\nADDITIONAL INDICATIONS FOR RhoGAM:\n• Miscarriage or elective abortion\n• Ectopic pregnancy\n• Amniocentesis, CVS\n• Abdominal trauma during pregnancy\n• Placental abruption or previa with bleeding\n• External cephalic version\n\nWHY OTHER ANSWERS ARE WRONG:\n• Only after delivery = Need prenatal dose at 28 weeks (fetal cells may cross in 3rd trimester)\n• Only if antibodies present = Once antibodies form, RhoGAM won't help; it PREVENTS sensitization\n• Every visit = Not necessary; specific timing is important\n\nRh SENSITIZATION EXPLAINED:\n• Rh-negative mother + Rh-positive baby = Risk of sensitization\n• Fetal RBCs enter maternal circulation → mother makes anti-Rh antibodies\n• FIRST pregnancy usually okay (sensitization occurs at delivery)\n• SUBSEQUENT pregnancies: Antibodies cross placenta → attack fetal RBCs → hemolytic disease\n\nRhoGAM contains anti-D antibodies that destroy any Rh-positive fetal cells before mother can make her own antibodies.\n\nDOSE: 300 mcg IM covers up to 30 mL of fetal blood exposure.",
+            contentCategory: .maternity,
+            nclexCategory: .healthPromotion,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "When should a pregnant patient feel fetal movement (quickening)?",
+            answer: "Primigravida: 18-20 weeks; Multigravida: 16-18 weeks",
+            wrongAnswers: ["8-10 weeks in all pregnancies", "25-28 weeks in all pregnancies", "Only after 30 weeks"],
+            rationale: "CORRECT: Multiparous women feel movement earlier because they recognize the sensation from previous pregnancies.\n\nQUICKENING EXPLAINED:\n• First maternal perception of fetal movement\n• Described as \"fluttering,\" \"butterflies,\" or \"gas bubbles\"\n• Multigravida feel it earlier (experienced, know what to expect)\n• Movement present earlier but not felt until quickening\n\nWHY OTHER ANSWERS ARE WRONG:\n• 8-10 weeks = Too early; fetus moves but too small to feel\n• 25-28 weeks = Too late; quickening occurs earlier\n• After 30 weeks = Much too late\n\nFETAL MOVEMENT COUNTING:\n• Third trimester: Count kicks (fetal kick counts)\n• Cardiff method: Count to 10 movements; should reach 10 within 2 hours\n• If <10 movements in 2 hours after eating and lying on side: Contact provider\n\nDECREASED FETAL MOVEMENT:\n• May indicate fetal compromise\n• Warrants evaluation (NST, BPP)\n• Assess for: maternal medications, fetal sleep cycle, anterior placenta (muffles movement)\n\nIMPORTANT MILESTONES:\n• Quickening: 16-20 weeks\n• Audible FHR with Doppler: 10-12 weeks\n• FHR audible with fetoscope: 18-20 weeks\n• Fetus viable: ~24 weeks\n\nPATIENT TEACHING: Report decreased fetal movement; it may indicate fetal distress.",
+            contentCategory: .maternity,
+            nclexCategory: .healthPromotion,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with acute kidney injury has a urine output of 200 mL in 24 hours. What phase of AKI is the patient in?",
+            answer: "Oliguric phase",
+            wrongAnswers: ["Initiation phase", "Diuretic phase", "Recovery phase"],
+            rationale: "CORRECT: OLIGURIA = urine output <400 mL/day. This patient with 200 mL/24hr is in oliguric phase - the most dangerous phase with highest mortality.\n\nAKI PHASES:\n\n1. INITIATION (Onset):\n• Begins with insult (ischemia, toxin, obstruction)\n• Hours to days\n• May be preventable if caught early\n\n2. OLIGURIC/ANURIC PHASE:\n• Urine output <400 mL/day (oliguria) or <100 mL/day (anuria)\n• Lasts 1-3 weeks\n• Highest mortality\n• Fluid overload, hyperkalemia, uremia\n\n3. DIURETIC PHASE:\n• Urine output increases (may be >3-5 L/day)\n• Kidneys recovering\n• Risk of dehydration and electrolyte loss\n• Lasts 1-3 weeks\n\n4. RECOVERY PHASE:\n• GFR and urine output normalize\n• May take up to 12 months\n• Some patients have permanent damage\n\nWHY OTHER ANSWERS ARE WRONG:\n• Initiation = Very early phase before oliguria develops\n• Diuretic = HIGH urine output (opposite of this patient)\n• Recovery = Normal or near-normal output\n\nOLIGURIA MANAGEMENT:\n• Fluid restriction\n• Monitor electrolytes (especially K+)\n• Dialysis if indicated\n• Avoid nephrotoxic drugs\n• Daily weights\n• Strict I&O",
+            contentCategory: .medSurg,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with anemia has hemoglobin of 7.0 g/dL. Which assessment finding does the nurse expect?",
+            answer: "Fatigue and pallor",
+            wrongAnswers: ["Ruddy complexion", "Increased energy", "Bradycardia"],
+            rationale: "CORRECT: Low Hgb = decreased oxygen-carrying capacity = tissue hypoxia = FATIGUE. Pallor from decreased red blood cells in circulation.\n\nNORMAL HEMOGLOBIN:\n• Males: 14-18 g/dL\n• Females: 12-16 g/dL\n• Hgb 7.0 = SEVERE anemia\n\nANEMIA SYMPTOMS:\n• Fatigue, weakness (most common)\n• Pallor (skin, mucous membranes, conjunctivae, nail beds)\n• Tachycardia (heart compensates for low O2)\n• Dyspnea on exertion\n• Dizziness\n• Headache\n• Cold intolerance\n\nCOMPENSATORY MECHANISMS:\n• Increased heart rate (deliver more blood)\n• Increased respiratory rate\n• Shift of oxyhemoglobin curve\n\nWHY OTHER ANSWERS ARE WRONG:\n• Ruddy complexion = Seen in polycythemia (too many RBCs)\n• Increased energy = Opposite - fatigue is hallmark\n• Bradycardia = Would expect TACHYCARDIA as compensation\n\nANEMIA TYPES:\nMICROCYTIC (small RBCs):\n• Iron deficiency (most common)\n• Thalassemia\n\nNORMOCYTIC (normal size):\n• Acute blood loss\n• Chronic disease\n\nMACROCYTIC (large RBCs):\n• B12 deficiency\n• Folate deficiency\n\nTREATMENT DEPENDS ON CAUSE:\n• Iron deficiency: iron supplements\n• B12 deficiency: B12 injections\n• Severe anemia: blood transfusion\n• Chronic kidney disease: erythropoietin",
+            contentCategory: .medSurg,
+            nclexCategory: .physiological,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with a urinary catheter develops cloudy, foul-smelling urine with sediment. What should the nurse suspect?",
+            answer: "Urinary tract infection",
+            wrongAnswers: ["Normal catheter drainage", "Dehydration", "Kidney stones"],
+            rationale: "CORRECT: Cloudy, foul-smelling urine with sediment = classic UTI signs. Catheters are a major risk factor for UTI.\n\nUTI SIGNS AND SYMPTOMS:\n• Cloudy urine\n• Foul odor\n• Sediment\n• Hematuria (blood)\n• Fever\n• Suprapubic pain/tenderness\n• Confusion in elderly (may be only sign)\n\nCATHETER-ASSOCIATED UTI (CAUTI):\n• Most common healthcare-associated infection\n• Risk increases with duration of catheterization\n• Remove catheter ASAP when no longer needed\n\nWHY OTHER ANSWERS ARE WRONG:\n• Normal drainage = Normal urine is clear, amber, no strong odor\n• Dehydration = Would cause concentrated (darker) urine, not cloudy/foul\n• Kidney stones = Would cause hematuria, pain, but not typically foul smell\n\nCAUTI PREVENTION:\n• Insert only when necessary\n• Remove as soon as possible\n• Maintain closed drainage system\n• Keep bag below bladder level\n• Secure catheter to prevent pulling\n• Meatal care (soap and water)\n• Hand hygiene before/after handling\n• Empty bag when 2/3 full\n\nNURSING INTERVENTIONS:\n• Obtain urine culture before antibiotics\n• Administer antibiotics as ordered\n• Encourage fluids (if not contraindicated)\n• Monitor temperature\n• Assess for sepsis signs",
+            contentCategory: .medSurg,
+            nclexCategory: .physiological,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with suspected stroke arrives at the ED. What is the MOST critical information to obtain?",
+            answer: "Time of symptom onset",
+            wrongAnswers: ["Patients medical history", "List of current medications", "Patients age"],
+            rationale: "CORRECT: TIME IS BRAIN! tPA (alteplase) can only be given within 4.5 hours of symptom onset. Need exact time to determine eligibility for treatment.\n\nWHY TIME IS CRITICAL:\n• tPA (tissue plasminogen activator) dissolves clots\n• Window: within 4.5 hours of symptom onset\n• Earlier treatment = better outcomes\n• \"Last known well\" time is used if onset unknown\n\nISCHEMIC STROKE TREATMENT TIMELINE:\n• Door-to-physician: 10 minutes\n• Door-to-CT: 25 minutes\n• Door-to-CT interpretation: 45 minutes\n• Door-to-needle (tPA): 60 minutes\n\nWHY OTHER ANSWERS ARE WRONG:\n• Medical history = Important but doesnt determine immediate treatment eligibility\n• Medications = Important for tPA contraindications but TIME is priority\n• Age = Not as critical as symptom onset time\n\ntPA CONTRAINDICATIONS:\n• >4.5 hours from symptom onset\n• Recent surgery or trauma\n• Active bleeding\n• Bleeding disorders\n• Recent stroke\n• Uncontrolled hypertension\n• INR >1.7\n\nSTROKE TYPES:\nISCHEMIC (87%):\n• Blocked blood vessel\n• Treatment: tPA, thrombectomy\n• Time-sensitive\n\nHEMORRHAGIC (13%):\n• Bleeding in brain\n• NO tPA (would worsen bleeding)\n• Treatment: control BP, surgery if needed",
+            contentCategory: .medSurg,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient is scheduled for a colonoscopy. Which finding indicates the bowel prep was effective?",
+            answer: "Clear, yellow liquid stool",
+            wrongAnswers: ["Brown formed stool", "Small amount of solid stool", "No stool output in 6 hours"],
+            rationale: "CORRECT: Clear yellow liquid = bowel is clean. Visualization requires empty colon. Any solid material or brown color means inadequate prep.\n\nCOLONOSCOPY BOWEL PREP:\n• Clear liquid diet 1-2 days before\n• Bowel prep solution (polyethylene glycol/GoLYTELY, etc.)\n• Large volume of fluid to flush colon\n• Expected: Multiple watery stools becoming clear\n\nADEQUATE PREP INDICATORS:\n• Watery stool\n• Clear to light yellow color\n• No solid particles\n• Able to see through fluid\n\nWHY OTHER ANSWERS ARE WRONG:\n• Brown formed stool = Inadequate prep; needs more prep solution\n• Small solid stool = Inadequate; procedure may be cancelled/rescheduled\n• No output = May indicate obstruction or non-compliance\n\nPATIENT TEACHING:\n• Begin clear liquid diet as instructed\n• Drink all of prep solution (even if difficult)\n• Stay near bathroom\n• Use barrier cream for skin protection\n• Stay hydrated\n• Stop certain medications as instructed (anticoagulants, iron)\n\nCOLONOSCOPY POST-PROCEDURE:\n• May have cramping and gas (air introduced during procedure)\n• Monitor for bleeding (small amount normal, large amount report)\n• Watch for signs of perforation (severe pain, fever, distention)\n• Can resume regular diet after recovery\n• Sedation - no driving for 24 hours",
+            contentCategory: .medSurg,
             nclexCategory: .safeEffectiveCare,
             difficulty: .easy,
             questionType: .standard,
             isPremium: false
         ),
         Flashcard(
-            question: "Which patient can the RN safely assign to an LPN/LVN?",
-            answer: "Stable patient with a chronic condition requiring routine care",
-            wrongAnswers: ["New admission requiring comprehensive assessment", "Patient requiring blood transfusion", "Unstable patient requiring frequent reassessment"],
-            rationale: "LPN/LVNs work under RN supervision and can care for stable, predictable patients. They can administer most medications (varies by state), perform treatments, and reinforce teaching. New admissions, unstable patients, and blood transfusions require RN assessment skills.",
-            contentCategory: .leadership,
+            question: "A patient has a tracheostomy. What is the nurses priority intervention?",
+            answer: "Maintain a patent airway",
+            wrongAnswers: ["Document tube size", "Assess nutritional status", "Teach patient to write notes"],
+            rationale: "CORRECT: Airway is ALWAYS the priority with tracheostomy. A blocked trach = no airway = death. Keep suction equipment at bedside.\n\nTRACHEOSTOMY PRIORITIES (ABCs):\n• Airway patency is #1\n• Keep suction equipment at bedside (always!)\n• Keep spare trach tube at bedside (same size AND one size smaller)\n• Keep obturator at bedside\n\nWHY OTHER ANSWERS ARE WRONG:\n• Document tube size = Important but not priority over airway\n• Nutritional status = Important long-term but not immediate priority\n• Writing notes = Communication is important but airway first\n\nTRACHEOSTOMY CARE:\n• Suction as needed (not routinely - irritates mucosa)\n• Clean inner cannula q8h or as needed\n• Change trach ties when soiled (two-person technique)\n• Keep stoma clean and dry\n• Humidified oxygen (trach bypasses natural humidification)\n\nTRACH SUCTIONING:\n• Preoxygenate with 100% O2\n• Sterile technique\n• Insert catheter WITHOUT suction (to carina, then pull back 1 cm)\n• Apply suction only while withdrawing\n• Maximum 10 seconds per pass\n• Allow recovery between passes\n\nEMERGENCY EQUIPMENT AT BEDSIDE:\n• Suction catheter and suction source\n• Spare tracheostomy tubes (same size + one smaller)\n• Obturator\n• Manual resuscitation bag\n• Oxygen source",
+            contentCategory: .medSurg,
             nclexCategory: .safeEffectiveCare,
             difficulty: .medium,
             questionType: .standard,
             isPremium: false
-        )
+        ),
+        Flashcard(
+            question: "A patient post-lumbar puncture reports a severe headache. What position should the nurse place the patient in?",
+            answer: "Flat supine position",
+            wrongAnswers: ["Fowlers position", "Side-lying with HOB elevated", "Prone with head turned"],
+            rationale: "CORRECT: Post-LP headache is from CSF leakage. Lying FLAT reduces pressure on puncture site and helps seal. Also increase fluids.\n\nPOST-LUMBAR PUNCTURE HEADACHE:\n• Occurs in 10-30% of patients\n• Due to CSF leakage through dural puncture site\n• Worse when upright (gravity pulls CSF down)\n• Better when lying flat\n\nSYMPTOMS:\n• Severe headache (positional)\n• Worsens sitting/standing\n• Improves lying down\n• May have nausea, dizziness, neck stiffness\n\nWHY OTHER ANSWERS ARE WRONG:\n• Fowlers = Head elevated increases CSF pressure at site\n• Side-lying with HOB elevated = Still elevated, still problematic\n• Prone with head turned = Not necessary; supine is sufficient\n\nNURSING INTERVENTIONS:\n• Flat position for 4-6 hours (or longer if headache)\n• Increase fluid intake (oral and IV)\n• Caffeine may help (causes vasoconstriction)\n• Pain medication as ordered\n• Avoid straining (increases CSF pressure)\n\nBLOOD PATCH:\n• For severe or persistent headaches\n• Anesthesiologist injects patients blood at puncture site\n• Blood clots and seals the leak\n• Usually provides relief within hours\n\nLUMBAR PUNCTURE NURSING CARE:\n• Pre: empty bladder, explain procedure\n• During: fetal position or sitting bent over\n• Post: flat position, monitor neuro status\n• Check puncture site for bleeding/hematoma\n• Monitor for signs of infection",
+            contentCategory: .medSurg,
+            nclexCategory: .physiological,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with GERD asks how to reduce symptoms. Which instruction should the nurse provide?",
+            answer: "Avoid lying down for 2-3 hours after eating",
+            wrongAnswers: ["Eat large meals to reduce frequency of eating", "Lie down after meals to aid digestion", "Drink plenty of fluids with meals"],
+            rationale: "CORRECT: Staying upright allows gravity to keep stomach contents down. Lying down promotes reflux of acid into esophagus.\n\nGERD LIFESTYLE MODIFICATIONS:\n• Remain upright 2-3 hours after eating\n• Elevate head of bed 6-8 inches (blocks, not pillows)\n• Eat small, frequent meals\n• Avoid tight clothing\n• Lose weight if overweight\n• Avoid eating before bedtime\n\nWHY OTHER ANSWERS ARE WRONG:\n• Large meals = Increase gastric distention, worsen reflux\n• Lie down after meals = Promotes reflux; gravity works against you\n• Fluids with meals = Increases gastric volume; drink between meals instead\n\nFOODS TO AVOID:\n• Fatty/fried foods (slow emptying)\n• Citrus, tomatoes (acidic)\n• Chocolate, peppermint (relax LES)\n• Caffeine, alcohol\n• Carbonated beverages\n• Spicy foods\n\nMEDICATIONS FOR GERD:\n• Antacids (quick relief)\n• H2 blockers (famotidine) - reduce acid production\n• PPIs (omeprazole, pantoprazole) - most effective\n• Prokinetic agents (metoclopramide) - speed emptying\n\nWHEN TO SEEK MEDICAL ATTENTION:\n• Difficulty swallowing\n• Painful swallowing\n• Unintentional weight loss\n• GI bleeding\n• Symptoms not controlled with OTC medications\n\nCOMPLICATIONS OF UNTREATED GERD:\n• Esophagitis\n• Barretts esophagus (precancerous)\n• Strictures\n• Esophageal cancer",
+            contentCategory: .medSurg,
+            nclexCategory: .healthPromotion,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with schizophrenia reports hearing voices telling them to hurt themselves. What type of hallucination is this?",
+            answer: "Command auditory hallucination",
+            wrongAnswers: ["Visual hallucination", "Tactile hallucination", "Olfactory hallucination"],
+            rationale: "CORRECT: Command hallucinations are auditory hallucinations that direct the person to take specific action, often harmful. This is a PSYCHIATRIC EMERGENCY.\n\nTYPES OF HALLUCINATIONS:\n| Type | Sense | Examples | Common in |\n|------|-------|----------|-----------|\n| Auditory | Hearing | Voices, commands | Schizophrenia (#1 type) |\n| Visual | Seeing | People, objects | Delirium, substance use |\n| Tactile | Touch | Bugs crawling | Alcohol withdrawal, cocaine |\n| Olfactory | Smell | Burning, foul odors | Seizures, brain tumors |\n| Gustatory | Taste | Strange tastes | Seizures, brain lesions |\n\nWHY OTHER ANSWERS ARE WRONG:\n• Visual = Would be seeing things, not hearing\n• Tactile = Would involve feeling sensations on body\n• Olfactory = Would involve smelling something not there\n\nCOMMAND HALLUCINATION NURSING CARE:\n1. ASSESS content: What do the voices say? Do they tell you to hurt yourself or others?\n2. SAFETY: Implement precautions if commands are dangerous\n3. DON'T argue about reality but don't validate hallucination either\n4. DISTRACT with reality-based activities\n5. MEDICATION: Ensure antipsychotic compliance\n\nTHERAPEUTIC RESPONSE: \"I understand the voices feel real to you. I don't hear them, but I want to help you feel safe. What are the voices saying?\"",
+            contentCategory: .mentalHealth,
+            nclexCategory: .psychosocial,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "Which defense mechanism is demonstrated when a patient diagnosed with cancer says \"The lab must have made a mistake\"?",
+            answer: "Denial",
+            wrongAnswers: ["Projection", "Rationalization", "Displacement"],
+            rationale: "CORRECT: Denial is refusing to acknowledge reality as a way to cope with overwhelming, threatening information.\n\nDENIAL:\n• Definition: Unconscious refusal to accept reality\n• Purpose: Protects ego from overwhelming threat\n• Example: \"There must be some mistake with my diagnosis.\"\n• Normal initially; becomes problematic if prevents treatment\n\nWHY OTHER ANSWERS ARE WRONG:\n• Projection = Attributing your unacceptable feelings to someone else\n  Example: \"The nurse is angry at me\" (when you're actually angry)\n• Rationalization = Making excuses to justify behavior\n  Example: \"I smoked because I was stressed, not because I'm addicted\"\n• Displacement = Redirecting feelings to a safer target\n  Example: Yelling at spouse after bad day at work\n\nCOMMON DEFENSE MECHANISMS:\n| Mechanism | Definition | Example |\n|-----------|------------|---------|\n| Denial | Refusing reality | \"This can't be happening\" |\n| Repression | Unconsciously forgetting | No memory of trauma |\n| Suppression | Consciously pushing away | \"I'll think about it later\" |\n| Projection | Blaming others for own feelings | \"She hates me\" |\n| Displacement | Shifting feelings to safer target | Kicking dog after bad day |\n| Rationalization | Making excuses | \"I deserved that drink\" |\n| Sublimation | Channeling into acceptable outlet | Exercising when angry |\n| Regression | Returning to earlier behavior | Adult throwing tantrum |\n\nNURSING RESPONSE TO DENIAL: Initially allow (protective), but gently reality-orient over time. Offer support and information when ready.",
+            contentCategory: .mentalHealth,
+            nclexCategory: .psychosocial,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "Which therapeutic communication technique involves restating the patient's message?",
+            answer: "Reflection",
+            wrongAnswers: ["Clarification", "Confrontation", "Summarizing"],
+            rationale: "CORRECT: Reflection mirrors back the patient's feelings or content, showing understanding and encouraging further expression.\n\nREFLECTION:\n• Mirrors content or feelings back to patient\n• Shows you're listening and understanding\n• Encourages elaboration\n• Example: Patient: \"I'm so frustrated with my treatment.\"\n  Nurse: \"You're feeling frustrated with your treatment.\"\n\nWHY OTHER ANSWERS ARE WRONG:\n• Clarification = Asking for more information to understand better\n  Example: \"What do you mean when you say frustrated?\"\n• Confrontation = Pointing out discrepancies (use carefully, therapeutically)\n  Example: \"You say you're fine, but you look upset.\"\n• Summarizing = Condensing main points at end of interaction\n  Example: \"So today we discussed your medication concerns and family visit.\"\n\nTHERAPEUTIC COMMUNICATION TECHNIQUES:\n| Technique | Definition | Example |\n|-----------|------------|---------|\n| Open-ended questions | Encourage elaboration | \"How are you feeling?\" |\n| Reflection | Mirror feelings | \"You seem sad.\" |\n| Clarification | Seek understanding | \"Can you explain more?\" |\n| Silence | Allow processing | Simply being present |\n| Validation | Acknowledge feelings | \"It's understandable to feel that way.\" |\n| Focusing | Direct to important topic | \"Let's talk more about...\" |\n| Summarizing | Review main points | \"To summarize...\" |\n\nNON-THERAPEUTIC TECHNIQUES (AVOID):\n• Giving advice\n• False reassurance\n• Asking \"why\"\n• Changing the subject\n• Judging/moralizing\n• Disagreeing/arguing",
+            contentCategory: .mentalHealth,
+            nclexCategory: .psychosocial,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with alcohol use disorder is admitted. When should the nurse expect withdrawal symptoms to begin?",
+            answer: "6-24 hours after last drink",
+            wrongAnswers: ["Immediately upon admission", "3-5 days after last drink", "1-2 weeks after last drink"],
+            rationale: "CORRECT: Alcohol withdrawal follows a predictable timeline. Symptoms begin 6-24 hours after last drink.\n\nALCOHOL WITHDRAWAL TIMELINE:\n| Time | Symptoms |\n|------|----------|\n| 6-24 hrs | Tremors, anxiety, insomnia, tachycardia, diaphoresis, N/V |\n| 24-48 hrs | Hallucinations (usually visual - \"seeing bugs\") |\n| 48-72 hrs | SEIZURES (grand mal) - highest risk period |\n| 3-5 days | DELIRIUM TREMENS (DTs) - confused, agitated, fever, severe autonomic instability |\n\nWHY OTHER ANSWERS ARE WRONG:\n• Immediately = Too early; need time for blood alcohol to drop\n• 3-5 days = This is when DTs occur, not initial symptoms\n• 1-2 weeks = Withdrawal is acute; would be resolved or fatal by then\n\nDELIRIUM TREMENS (DTs):\n• Most serious complication\n• 5-15% mortality if untreated\n• Symptoms: Severe confusion, hallucinations, fever, hypertension, tachycardia, diaphoresis, tremors\n\nCIWA-Ar SCALE: Clinical Institute Withdrawal Assessment - used to monitor severity and guide benzodiazepine dosing (score >8-10 typically requires treatment)\n\nTREATMENT:\n• Benzodiazepines (lorazepam, chlordiazepoxide) - prevent seizures and DTs\n• Thiamine (B1) - prevent Wernicke encephalopathy\n• Fluids, electrolytes, nutrition\n• Multivitamins, folate",
+            contentCategory: .mentalHealth,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient expresses suicidal thoughts. What is the nurse's PRIORITY assessment?",
+            answer: "Ask directly if the patient has a plan and access to means",
+            wrongAnswers: ["Avoid discussing suicide to prevent giving ideas", "Immediately place in physical restraints", "Call family members before talking to patient"],
+            rationale: "CORRECT: DIRECT QUESTIONING is essential. Research proves asking about suicide does NOT increase risk - it provides opportunity for intervention and shows the nurse cares.\n\nSUICIDE ASSESSMENT - Ask Directly:\n• Ideation: \"Are you thinking about killing yourself?\"\n• Plan: \"Do you have a plan for how you would do it?\"\n• Means: \"Do you have access to [method mentioned]?\"\n• Timeline: \"When are you thinking of doing this?\"\n• Protective factors: \"What has stopped you from acting on these thoughts?\"\n\nSUICIDE RISK LEVELS:\n• LOW: Vague ideation, no plan, future orientation, good support\n• MODERATE: Frequent thoughts, vague plan, some risk factors\n• HIGH: Specific plan, available means, recent attempt, giving away possessions, hopelessness\n\nWHY OTHER ANSWERS ARE WRONG:\n• Avoid discussing = MYTH! Silence increases isolation; asking reduces risk\n• Restraints = Excessive and inappropriate initial response; may traumatize patient\n• Call family first = Breaches confidentiality; assess patient first, then involve family appropriately\n\nNURSING INTERVENTIONS FOR SUICIDAL PATIENT:\n1. Ensure safety (remove means, 1:1 observation)\n2. Therapeutic communication (nonjudgmental)\n3. Establish safety plan/no-harm contract\n4. Notify provider for psychiatric evaluation\n5. Document thoroughly",
+            contentCategory: .mentalHealth,
+            nclexCategory: .psychosocial,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A toddler with acute otitis media is prescribed amoxicillin. What should the nurse teach the parents?",
+            answer: "Complete the full course of antibiotics even if symptoms improve",
+            wrongAnswers: ["Stop when ear pain resolves", "Give only when fever is present", "Skip doses if child seems better"],
+            rationale: "CORRECT: Incomplete antibiotic courses lead to resistant bacteria and recurrent infection. Complete full 10-day course regardless of symptom improvement.\n\nANTIBIOTIC COMPLIANCE TEACHING:\n\nWHY COMPLETE THE COURSE:\n• Bacteria not fully eliminated if stopped early\n• Surviving bacteria may become resistant\n• Infection can recur (often worse)\n• Full course needed to eradicate infection\n\nOTITIS MEDIA TREATMENT:\n• First-line: Amoxicillin 80-90 mg/kg/day\n• Duration: 10 days (under age 2)\n• Duration: 5-7 days (over age 2, mild)\n• If allergic: azithromycin or cephalosporin\n\nWHY OTHER ANSWERS ARE WRONG:\n• Stop when pain resolves = Symptoms improve before bacteria eliminated\n• Give only with fever = Need consistent dosing, not PRN\n• Skip doses = Inconsistent levels allow bacterial survival\n\nADMINISTRATION TIPS:\n• Give at same times daily\n• Complete entire prescription\n• Store properly (refrigerate if liquid)\n• Use measuring device (not household spoons)\n• Can give with food if GI upset\n\nSIGNS OF COMPLICATIONS (Report to provider):\n• Fever persisting >48-72 hours on antibiotics\n• Worsening pain\n• Swelling behind ear\n• Drainage from ear\n• Hearing changes\n• Balance problems\n\nPREVENTION:\n• Breastfeeding (protective)\n• Avoid bottle propping\n• Avoid secondhand smoke\n• Pneumococcal vaccine\n• Influenza vaccine",
+            contentCategory: .pediatrics,
+            nclexCategory: .healthPromotion,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A child with cystic fibrosis is prescribed pancreatic enzymes. When should these be given?",
+            answer: "With meals and snacks",
+            wrongAnswers: ["Only at bedtime", "2 hours before meals", "Only when experiencing symptoms"],
+            rationale: "CORRECT: Pancreatic enzymes MUST be taken with ALL food to digest it. Without enzymes, fats and proteins pass through undigested.\n\nCYSTIC FIBROSIS PATHOPHYSIOLOGY:\n• Defective CFTR gene → thick, sticky mucus\n• Affects: lungs, pancreas, liver, intestines, sweat glands\n• Pancreatic insufficiency in 85-90% of CF patients\n\nPANCREATIC ENZYME (PANCRELIPASE) ADMINISTRATION:\n• Take with EVERY meal and snack\n• Swallow capsules whole or sprinkle on acidic food (applesauce)\n• Never crush or chew beads\n• Don't mix with hot food or milk (destroys enzymes)\n• Dose adjusted based on fat intake and stool character\n\nWHY OTHER ANSWERS ARE WRONG:\n• Bedtime only = Food needs to be present for digestion\n• 2 hours before = Enzymes only work when food is present\n• Only with symptoms = Too late; need consistent use with all food\n\nSIGNS OF INADEQUATE ENZYME REPLACEMENT:\n• Steatorrhea (fatty, foul-smelling, floating stools)\n• Abdominal pain, bloating\n• Poor weight gain\n• Increased flatus\n\nOTHER CF MANAGEMENT:\n• Airway clearance techniques (chest physiotherapy)\n• Bronchodilators, mucolytics (dornase alfa)\n• CFTR modulators (ivacaftor, lumacaftor) - for specific mutations\n• High-calorie, high-fat diet\n• Fat-soluble vitamin supplements (A, D, E, K)\n• Salt replacement (especially in hot weather)",
+            contentCategory: .pediatrics,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "At what age should an infant double their birth weight?",
+            answer: "4-6 months",
+            wrongAnswers: ["1-2 months", "8-10 months", "12 months"],
+            rationale: "CORRECT: Growth milestones for weight are: double by 4-6 months, triple by 12 months.\n\nINFANT GROWTH MILESTONES:\n| Time | Weight Milestone |\n|------|------------------|\n| 4-6 months | DOUBLE birth weight |\n| 12 months | TRIPLE birth weight |\n| 2 years | QUADRUPLE birth weight |\n\nEXPECTED WEIGHT GAIN:\n• First 6 months: ~1 oz (30g) per day, 1.5 lb per month\n• 6-12 months: ~0.5 oz (15g) per day, 1 lb per month\n\nWHY OTHER ANSWERS ARE WRONG:\n• 1-2 months = Too early; infants may lose up to 10% birth weight in first week\n• 8-10 months = Too late; suggests possible failure to thrive\n• 12 months = Time to TRIPLE, not double\n\nOTHER IMPORTANT MILESTONES:\n• Birth: Average 7.5 lbs (3.4 kg)\n• Length doubles by 4 years\n• Head circumference: Rapid growth first 2 years (brain growth)\n\nFAILURE TO THRIVE (FTT): Weight <5th percentile or weight drops 2 major percentiles. Warrants investigation for feeding issues, underlying illness, or psychosocial factors.",
+            contentCategory: .pediatrics,
+            nclexCategory: .healthPromotion,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "What finding in a newborn requires IMMEDIATE intervention?",
+            answer: "Central cyanosis",
+            wrongAnswers: ["Acrocyanosis of hands and feet", "Mottled skin", "Mild jaundice at 3 days"],
+            rationale: "CORRECT: CENTRAL cyanosis (blue lips, tongue, trunk) = inadequate oxygenation = EMERGENCY. Requires immediate assessment and intervention.\n\nCENTRAL VS PERIPHERAL CYANOSIS:\n\nCENTRAL CYANOSIS (Emergency):\n• Blue lips, tongue, mucous membranes\n• Blue trunk/torso\n• Indicates systemic hypoxia\n• Requires immediate action\n\nPERIPHERAL CYANOSIS/ACROCYANOSIS (Normal in newborns):\n• Blue hands and feet only\n• Central areas PINK\n• Normal in first 24-48 hours\n• Due to immature circulation\n\nWHY OTHER ANSWERS ARE WRONG:\n• Acrocyanosis = Normal in newborns up to 48 hours\n• Mottled skin = Can be normal with cold or normal circulation changes\n• Mild jaundice day 3 = Physiologic jaundice peaks day 3-5; monitor but not emergency\n\nCAUSES OF CENTRAL CYANOSIS IN NEWBORNS:\n• Congenital heart defects\n• Respiratory distress syndrome\n• Pneumonia\n• Meconium aspiration\n• Persistent pulmonary hypertension\n• Airway obstruction\n\nIMMEDIATE ACTIONS:\n• Stimulate breathing if needed\n• Clear airway\n• Provide oxygen\n• Assess respiratory effort\n• Check heart rate\n• Call for help\n• Consider resuscitation\n\nAPGAR SCORING (Color component):\n0 = Blue/pale all over\n1 = Body pink, extremities blue (acrocyanosis)\n2 = Completely pink",
+            contentCategory: .pediatrics,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A child with suspected appendicitis has sudden relief of pain. What does this indicate?",
+            answer: "Possible perforation of the appendix",
+            wrongAnswers: ["The appendicitis has resolved", "Medication is working", "Normal variation in pain"],
+            rationale: "CORRECT: SUDDEN PAIN RELIEF in appendicitis = PERFORATION. The stretched, inflamed appendix has ruptured, temporarily relieving pressure. Medical emergency!\n\nAPPENDICITIS PROGRESSION:\n\nCLASSIC PRESENTATION:\n• Periumbilical pain → localizes to RLQ (McBurney point)\n• Anorexia\n• Nausea/vomiting (after pain starts)\n• Low-grade fever\n• Rebound tenderness\n• Guarding\n\nPERFORATION SIGNS:\n• Sudden relief of pain (concerning!)\n• Followed by increasing generalized abdominal pain\n• Rigid abdomen\n• High fever\n• Signs of peritonitis\n• Tachycardia\n• Altered mental status\n\nWHY OTHER ANSWERS ARE WRONG:\n• Resolved = Appendicitis does not spontaneously resolve\n• Medication working = Pain relief this sudden is pathological\n• Normal variation = Sudden relief is ominous sign\n\nNURSING ACTIONS IF PERFORATION SUSPECTED:\n• NPO\n• IV fluids\n• Antibiotics\n• Prepare for emergency surgery\n• Monitor for sepsis\n• Pain management\n\nPEDIATRIC CONSIDERATIONS:\n• Children often have atypical presentation\n• May not localize pain to RLQ\n• Perforation rate higher in young children (cant communicate symptoms)\n• Higher index of suspicion needed\n\nASSESSMENT TECHNIQUES:\n• Rebound tenderness (Blumberg sign)\n• Rovsing sign (RLQ pain with LLQ palpation)\n• Psoas sign (pain with hip extension)\n• Obturator sign (pain with internal rotation of hip)",
+            contentCategory: .pediatrics,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient is prescribed warfarin. Which lab value should the nurse monitor?",
+            answer: "INR (International Normalized Ratio)",
+            wrongAnswers: ["aPTT (activated Partial Thromboplastin Time)", "Platelet count only", "Hemoglobin and hematocrit only"],
+            rationale: "CORRECT: Warfarin affects vitamin K-dependent clotting factors (II, VII, IX, X). INR measures this pathway.\n\nTHERAPEUTIC INR RANGES:\n• Standard (DVT, PE, A-fib): 2.0-3.0\n• Mechanical heart valve: 2.5-3.5\n\nWHY OTHER ANSWERS ARE WRONG:\n• aPTT = Monitors HEPARIN, not warfarin (different pathway - intrinsic)\n• Platelet count only = Warfarin doesn't affect platelet count; it affects clotting factors\n• H&H only = Important for detecting bleeding but doesn't monitor anticoagulation level\n\nWARFARIN TEACHING POINTS:\n• Takes 3-5 days to reach therapeutic level (overlap with heparin initially)\n• Vitamin K is antidote (reverses effect)\n• Consistent vitamin K intake (don't suddenly change green leafy vegetable consumption)\n• Many drug interactions (check all new meds)\n• Avoid NSAIDs, aspirin (increase bleeding risk)\n\nMEMORY AID: \"War(farin) needs INR\" - also remember PT (prothrombin time) is part of INR.\n\nMNEMONIC for Warfarin factors: \"1972\" = factors 10, 9, 7, 2",
+            contentCategory: .pharmacology,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with rheumatoid arthritis asks when to take prescribed ibuprofen. What is the best instruction?",
+            answer: "Take with food to reduce GI irritation",
+            wrongAnswers: ["Take on an empty stomach for faster absorption", "Take at bedtime only", "Take only when pain is severe"],
+            rationale: "CORRECT: NSAIDs like ibuprofen irritate GI mucosa. Taking with food or milk reduces this irritation and risk of ulcers.\n\nNSAID GI EFFECTS:\n• Inhibit prostaglandins (including protective ones in stomach)\n• Reduce mucus production\n• Decrease blood flow to stomach lining\n• Risk: gastritis, ulcers, GI bleeding\n\nWHY OTHER ANSWERS ARE WRONG:\n• Empty stomach = Increases GI irritation, despite faster absorption\n• Bedtime only = Should be taken regularly for RA inflammation\n• Only when severe = RA needs consistent anti-inflammatory treatment\n\nNSAID TEACHING:\n• Take with food, milk, or antacids\n• Take regularly as prescribed (not just PRN for RA)\n• Watch for signs of GI bleeding (black tarry stools, abdominal pain)\n• Avoid alcohol (increases GI risk)\n• Report unusual bleeding or bruising\n\nOTHER NSAID SIDE EFFECTS:\n• Renal impairment (avoid in kidney disease)\n• Cardiovascular risk (especially with long-term use)\n• Platelet inhibition (bleeding risk)\n• Hypersensitivity reactions\n• Fluid retention\n\nRHEUMATOID ARTHRITIS TREATMENT:\n• NSAIDs (symptom relief, not disease-modifying)\n• DMARDs (methotrexate - slows disease progression)\n• Biologics (TNF inhibitors, etc.)\n• Corticosteroids (flares)\n• Physical therapy\n• Joint protection\n\nRA CHARACTERISTICS:\n• Autoimmune, systemic\n• Morning stiffness >1 hour\n• Symmetric joint involvement\n• Small joints first (hands, wrists)\n• Eventually larger joints",
+            contentCategory: .pharmacology,
+            nclexCategory: .healthPromotion,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with hypertension is prescribed lisinopril. Which assessment finding requires the nurse to hold the medication?",
+            answer: "Potassium level of 5.8 mEq/L",
+            wrongAnswers: ["Blood pressure of 138/88 mmHg", "Sodium level of 140 mEq/L", "Heart rate of 72 bpm"],
+            rationale: "CORRECT: Lisinopril is an ACE inhibitor. ACE inhibitors RETAIN potassium (block aldosterone). K+ of 5.8 is HYPERKALEMIA - hold the med!\n\nACE INHIBITOR FACTS (-pril drugs):\n• Block conversion of angiotensin I to angiotensin II\n• Cause vasodilation (lower BP)\n• Reduce aldosterone (retain K+, excrete Na+)\n• Cardioprotective and renoprotective\n• First-line for HTN with diabetes or HF\n\nWHY OTHER ANSWERS ARE WRONG:\n• BP 138/88 = Still elevated but not contraindication; med is needed\n• Na+ 140 = Normal (135-145 mEq/L)\n• HR 72 = Normal; ACE inhibitors dont significantly affect HR\n\nNORMAL POTASSIUM: 3.5-5.0 mEq/L\n• >5.0 = Hyperkalemia\n• >6.0 = Dangerous - cardiac arrhythmia risk\n• >6.5 = Medical emergency\n\nACE INHIBITOR SIDE EFFECTS:\n• DRY COUGH (most common - bradykinin accumulation)\n• Hyperkalemia\n• First-dose hypotension\n• Angioedema (rare but serious)\n\nTEACHING POINTS:\n• Avoid potassium supplements and K+-sparing diuretics\n• Avoid salt substitutes (contain KCl)\n• Report persistent dry cough (may switch to ARB)\n• Report swelling of lips/tongue (angioedema - stop immediately)",
+            contentCategory: .pharmacology,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient with a new diagnosis of type 2 diabetes is prescribed metformin. Which side effect should the nurse teach the patient to expect?",
+            answer: "GI upset including diarrhea",
+            wrongAnswers: ["Significant weight gain", "Hypoglycemia when used alone", "Increased appetite"],
+            rationale: "CORRECT: Metformin commonly causes GI side effects (nausea, diarrhea, abdominal discomfort). Usually improves with time. Take with food to reduce.\n\nMETFORMIN FACTS:\n• First-line oral medication for type 2 diabetes\n• Biguanide class\n• Decreases hepatic glucose production\n• Improves insulin sensitivity\n• Does NOT cause hypoglycemia when used alone\n\nWHY OTHER ANSWERS ARE WRONG:\n• Weight gain = Metformin is WEIGHT NEUTRAL or causes slight weight loss\n• Hypoglycemia alone = Does not stimulate insulin; wont cause hypo alone\n• Increased appetite = Opposite - may decrease appetite slightly\n\nMETFORMIN BENEFITS:\n• Weight neutral/slight loss\n• No hypoglycemia risk alone\n• Cardiovascular benefits\n• Inexpensive\n• Well-studied\n\nSIDE EFFECTS:\n• GI: nausea, diarrhea, metallic taste (most common)\n• B12 deficiency (long-term)\n• Lactic acidosis (rare but serious)\n\nLACTIC ACIDOSIS RISK:\n• Rare but can be fatal\n• Risk factors: renal impairment, contrast dye, hypoxia\n• Hold for 48 hours around contrast procedures\n\nCONTRAINDICATIONS:\n• Significant renal impairment (eGFR <30)\n• Active liver disease\n• Conditions causing hypoxia\n• Heavy alcohol use\n\nPATIENT TEACHING:\n• Take with meals (reduces GI effects)\n• GI effects usually temporary\n• Not holding before contrast procedures\n• Monitor B12 levels annually",
+            contentCategory: .pharmacology,
+            nclexCategory: .physiological,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "Which antibiotic class should be avoided during pregnancy due to effects on fetal teeth and bones?",
+            answer: "Tetracyclines",
+            wrongAnswers: ["Penicillins", "Cephalosporins", "Macrolides"],
+            rationale: "CORRECT: Tetracyclines cross placenta and deposit in developing teeth and bones, causing permanent tooth discoloration (yellow-brown) and potential bone growth issues.\n\nTETRACYCLINE EFFECTS ON FETUS:\n• Tooth enamel hypoplasia and discoloration\n• Bone growth inhibition\n• Risk highest in 2nd and 3rd trimesters\n• Also contraindicated in children <8 years (same reasons)\n\nTETRACYCLINE EXAMPLES:\n• Tetracycline\n• Doxycycline\n• Minocycline\n\nWHY OTHER ANSWERS ARE WRONG - These are generally SAFE in pregnancy:\n• Penicillins = Category B, safe, first-line for many infections\n• Cephalosporins = Category B, safe\n• Macrolides = Erythromycin and azithromycin are Category B\n\nANTIBIOTICS TO AVOID IN PREGNANCY:\n• Tetracyclines - teeth and bone effects\n• Fluoroquinolones - cartilage damage\n• Aminoglycosides - ototoxicity, nephrotoxicity\n• Sulfonamides (near term) - kernicterus risk\n• Metronidazole (first trimester) - potential teratogen\n\nSAFE ANTIBIOTICS IN PREGNANCY (generally):\n• Penicillins\n• Cephalosporins\n• Erythromycin (not estolate form)\n• Azithromycin\n• Nitrofurantoin (avoid near term)\n\nFDA PREGNANCY CATEGORIES (old system):\nA = Safe | B = Probably safe | C = Weigh risks | D = Evidence of risk | X = Contraindicated",
+            contentCategory: .pharmacology,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient receiving chemotherapy develops nausea and vomiting. When should antiemetics be most effective?",
+            answer: "Before chemotherapy administration",
+            wrongAnswers: ["After vomiting begins", "Only if nausea is severe", "24 hours after treatment"],
+            rationale: "CORRECT: PROPHYLACTIC antiemetics work best. Give 30-60 minutes BEFORE chemo to prevent nausea/vomiting rather than treat after it starts.\n\nCHEMOTHERAPY-INDUCED NAUSEA AND VOMITING (CINV):\n• Very common (up to 80% of patients)\n• Major cause of treatment discontinuation\n• Prevention is more effective than treatment\n\nTIMING OF CINV:\nACUTE: Within 24 hours of treatment\nDELAYED: 24 hours to several days after\nANTICIPATORY: Before treatment (conditioned response)\nBREAKTHROUGH: Despite prophylaxis\n\nWHY OTHER ANSWERS ARE WRONG:\n• After vomiting = Once vomiting starts, harder to control\n• Only if severe = Should be prevented, not just treated\n• 24 hours after = Misses acute phase\n\nANTIEMETIC MEDICATIONS:\n\n5-HT3 ANTAGONISTS (ondansetron, granisetron):\n• Block serotonin receptors\n• Given before chemo\n• Very effective\n\nNK1 ANTAGONISTS (aprepitant):\n• For highly emetogenic chemo\n• Given with steroids and 5-HT3\n\nCORTICOSTEROIDS (dexamethasone):\n• Enhance other antiemetics\n• Reduce inflammation\n\nBENZODIAZEPINES (lorazepam):\n• Help with anticipatory nausea\n• Reduce anxiety\n\nNURSING TEACHING:\n• Take antiemetics as prescribed (even if not nauseous)\n• Small, frequent meals\n• Avoid strong odors\n• Stay hydrated\n• Rest after treatment\n• Ginger may help some patients",
+            contentCategory: .pharmacology,
+            nclexCategory: .physiological,
+            difficulty: .easy,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient has an order for albuterol and ipratropium nebulizer treatments. Which medication should be administered first?",
+            answer: "Albuterol first, then ipratropium",
+            wrongAnswers: ["Ipratropium first, then albuterol", "Both medications mixed together", "Either order is acceptable"],
+            rationale: "CORRECT: Give short-acting BETA-AGONIST (albuterol) FIRST. It opens airways fast, allowing ipratropium to reach deeper into lungs.\n\nBRONCHODILATOR ORDER:\n1. Short-acting beta-agonist (albuterol) - works in 5 minutes\n2. Anticholinergic (ipratropium) - works in 15-20 minutes\n3. Corticosteroid inhaler (if prescribed) - last\n\nWHY ALBUTEROL FIRST:\n• Fastest onset (5 minutes)\n• Opens airways quickly\n• Allows subsequent medications better distribution\n• \"Open the door before you walk through\"\n\nWHY OTHER ANSWERS ARE WRONG:\n• Ipratropium first = Slower onset, less effective delivery\n• Mixed together = Can be done with DuoNeb, but if separate, order matters\n• Either order = Not optimal; albuterol first is preferred\n\nMEDICATION CLASSES:\nSABA (Short-Acting Beta-Agonist):\n• Albuterol (Proventil, Ventolin)\n• Rescue medication\n• Works quickly, lasts 4-6 hours\n\nSAMA (Short-Acting Muscarinic Antagonist):\n• Ipratropium (Atrovent)\n• Blocks acetylcholine\n• Slower onset but longer duration\n\nINHALER TECHNIQUE TEACHING:\n• Shake well (MDI)\n• Exhale completely\n• Inhale slowly and deeply\n• Hold breath 10 seconds\n• Wait 1 minute between puffs\n• Rinse mouth after corticosteroids",
+            contentCategory: .pharmacology,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A nurse is teaching a client about preventing fungal infections. Which of the following instructions should the nurse include?",
+            answer: "Maintain good personal hygiene, including keeping skin clean and dry.",
+            wrongAnswers: ["Activate the rapid response team if the patient's condition deteriorates", "Ensure the patient's identification band is verified before any procedure", "Use two patient identifiers before administering medications or treatments"],
+            rationale: "Maintaining good personal hygiene, including keeping the skin clean and dry, is essential for preventing fungal infections. Fungi thrive in warm, moist environments, so minimizing moisture and practicing good hygiene can reduce the risk of infection. While a balanced diet and avoiding crowds are generally good health practices, they are not specifically related to preventing fungal infections. Sharing personal items increases the risk of spreading infections.",
+            contentCategory: .safety,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient is receiving PCA morphine. Which assessment indicates potential oversedation?",
+            answer: "Respiratory rate of 8 and difficult to arouse",
+            wrongAnswers: ["Pain rating of 3/10", "Drowsy but easily arousable", "Requesting increased PCA dose"],
+            rationale: "CORRECT: RR <10 and decreased arousability are DANGER SIGNS indicating opioid overdose. Sedation precedes respiratory depression.\n\nPASERO OPIOID-INDUCED SEDATION SCALE:\nS = Sleep, easy to arouse - ACCEPTABLE\n1 = Awake and alert - ACCEPTABLE\n2 = Slightly drowsy, easily aroused - ACCEPTABLE\n3 = Frequently drowsy, arousable, drifts off - UNACCEPTABLE (hold opioid, monitor)\n4 = Somnolent, minimal response - UNACCEPTABLE (stop opioid, stimulate, naloxone)\n\nWHY OTHER ANSWERS ARE WRONG:\n• Pain 3/10 = Acceptable pain level; PCA is working\n• Drowsy but arousable = Normal with opioids; easily aroused is key\n• Requesting increase = May indicate inadequate pain control; requires assessment\n\nIMMEDIATE INTERVENTIONS FOR OVERSEDATION:\n1. Stop PCA\n2. Stimulate patient (call name, sternal rub)\n3. Maintain airway\n4. Apply oxygen\n5. Administer naloxone as ordered\n6. Stay with patient\n7. Notify provider\n\nPCA SAFETY:\n• Only patient should push button (no family dosing)\n• Lockout interval prevents overdose\n• Continuous monitoring (especially high-risk patients)\n• Assess sedation level before pain level\n\nNALOXONE (NARCAN):\n• Opioid antagonist\n• May need repeated doses (short half-life)\n• Can precipitate withdrawal in dependent patients\n• Titrate to respiratory rate, not consciousness",
+            contentCategory: .safety,
+            nclexCategory: .physiological,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
+        Flashcard(
+            question: "A patient is scheduled for a lumbar MRI to investigate suspected Tarlov cysts. What is the priority nursing intervention following the procedure?",
+            answer: "Monitor the puncture site for bleeding or CSF leakage.",
+            wrongAnswers: ["Educate the patient on the proper use of the nurse call system", "Implement contact isolation precautions for the patient immediately", "Place the patient on continuous fall precaution monitoring"],
+            rationale: "Following a lumbar puncture, whether for MRI contrast injection or diagnostic sampling, the priority is to monitor for complications such as bleeding, CSF leakage, or infection at the puncture site. This ensures early detection and management of potential adverse events. While assessing pain, encouraging fluids, and reviewing the MRI results are important, they are secondary to ensuring immediate post-procedure safety.",
+            contentCategory: .safety,
+            nclexCategory: .safeEffectiveCare,
+            difficulty: .medium,
+            questionType: .standard,
+            isPremium: false
+        ),
     ]
+
 
     // PREMIUM CARDS (450 more) - Available to subscribers
     static let premiumCards: [Flashcard] = [
@@ -7337,23 +8152,50 @@ class AppManager: ObservableObject {
 
     init() {
         // Check if user has seen onboarding
-        if PersistenceManager.shared.hasSeenOnboarding() {
-            currentScreen = .menu
-        } else {
+        if !PersistenceManager.shared.hasSeenOnboarding() {
             currentScreen = .onboarding
+        } else if !AuthManager.shared.isAuthenticated {
+            // Onboarding done but not authenticated
+            currentScreen = .auth
+        } else {
+            currentScreen = .menu
         }
     }
 
     func completeOnboarding() {
         PersistenceManager.shared.setOnboardingComplete()
         withAnimation(.easeInOut(duration: 0.5)) {
+            currentScreen = .auth
+        }
+    }
+
+    func completeAuth() {
+        withAnimation(.easeInOut(duration: 0.5)) {
             currentScreen = .menu
+        }
+        // Auto-sync data after login
+        Task {
+            print("🔄 Auto-syncing after login...")
+            await CloudSyncManager.shared.syncAll()
+            print("🔄 Auto-sync complete")
+        }
+    }
+
+    func signOut() {
+        withAnimation(.easeInOut(duration: 0.5)) {
+            currentScreen = .auth
         }
     }
 }
 
 class SubscriptionManager: ObservableObject {
-    @Published var isSubscribed: Bool = false
+    @Published var isSubscribed: Bool = false {
+        didSet { updatePremiumAccess() }
+    }
+    @Published var hasSupabasePremium: Bool = false {
+        didSet { updatePremiumAccess() }
+    }
+    @Published var hasPremiumAccess: Bool = false
     @Published var products: [Product] = []
     @Published var lifetimeProduct: Product?
     @Published var purchaseError: String?
@@ -7362,19 +8204,71 @@ class SubscriptionManager: ObservableObject {
     private let subscriptionIDs = ["com.cozynclex.premium.weekly", "com.cozynclex.premium.monthly", "com.cozynclex.premium.yearly"]
     private let lifetimeProductID = "com.cozynclex.lifetime"
     private var updateListenerTask: Task<Void, Error>?
+    private var cancellables = Set<AnyCancellable>()
+
+    // MARK: - Debug Flag (set to true for testing premium features)
+    #if DEBUG
+    private let forceDebugPremium = false  // Set to true to test premium features
+    #else
+    private let forceDebugPremium = false
+    #endif
+
+    private func updatePremiumAccess() {
+        hasPremiumAccess = isSubscribed || hasSupabasePremium
+    }
 
     init() {
         // Load cached subscription status
         isSubscribed = PersistenceManager.shared.loadSubscriptionStatus()
 
+        // Debug override for testing
+        if forceDebugPremium {
+            isSubscribed = true
+        }
+
+        // Update premium access based on initial values
+        updatePremiumAccess()
+
         // Start listening for transactions
         updateListenerTask = listenForTransactions()
+
+        // Observe AuthManager's userProfile changes for Supabase premium
+        AuthManager.shared.$userProfile
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] profile in
+                let isPremium = profile?.isPremium ?? false
+                print("💎 SubscriptionManager: profile changed, isPremium = \(isPremium)")
+                self?.hasSupabasePremium = isPremium
+            }
+            .store(in: &cancellables)
 
         // Load products and check subscription status
         Task {
             await loadProducts()
             await checkSubscriptionStatus()
+            // Sync any StoreKit premium to Supabase
+            await syncPremiumToSupabase()
         }
+
+        // Also sync when auth state changes
+        AuthManager.shared.$isAuthenticated
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isAuthenticated in
+                if isAuthenticated {
+                    Task {
+                        await self?.syncPremiumToSupabase()
+                    }
+                } else {
+                    // User logged out - reset premium state to prevent leaking to next user
+                    self?.isSubscribed = false
+                    self?.hasSupabasePremium = false
+                    // Re-check StoreKit for actual subscription status
+                    Task {
+                        await self?.checkSubscriptionStatus()
+                    }
+                }
+            }
+            .store(in: &cancellables)
     }
 
     deinit {
@@ -7450,14 +8344,20 @@ class SubscriptionManager: ObservableObject {
 
     @MainActor
     func checkSubscriptionStatus() async {
-        var hasAccess = false
+        // Debug override - skip StoreKit check
+        if forceDebugPremium {
+            isSubscribed = true
+            return
+        }
+
+        var hasStoreKitAccess = false
 
         for await result in Transaction.currentEntitlements {
             do {
                 let transaction = try checkVerified(result)
                 // Check for active subscription OR lifetime purchase
                 if transaction.productType == .autoRenewable || transaction.productType == .nonConsumable {
-                    hasAccess = true
+                    hasStoreKitAccess = true
                     break
                 }
             } catch {
@@ -7465,13 +8365,44 @@ class SubscriptionManager: ObservableObject {
             }
         }
 
-        isSubscribed = hasAccess
-        PersistenceManager.shared.saveSubscriptionStatus(hasAccess)
+        isSubscribed = hasStoreKitAccess
+        PersistenceManager.shared.saveSubscriptionStatus(hasStoreKitAccess)
     }
 
     @MainActor
     func updateSubscriptionStatus() async {
         await checkSubscriptionStatus()
+        // Sync premium status to Supabase for cross-device access
+        await syncPremiumToSupabase()
+    }
+
+    @MainActor
+    private func syncPremiumToSupabase() async {
+        guard AuthManager.shared.isAuthenticated,
+              let profile = AuthManager.shared.userProfile else { return }
+
+        // Only sync if user has StoreKit premium and profile isn't already premium
+        guard isSubscribed && !profile.isPremium else { return }
+
+        do {
+            struct PremiumUpdate: Encodable {
+                let is_premium: Bool
+                let updated_at: String
+            }
+            let update = PremiumUpdate(is_premium: true, updated_at: ISO8601DateFormatter().string(from: Date()))
+
+            try await SupabaseConfig.client
+                .from("user_profiles")
+                .update(update)
+                .eq("id", value: profile.id.uuidString)
+                .execute()
+            print("💎 Synced premium status to Supabase")
+
+            // Reload profile to get updated premium status
+            await AuthManager.shared.checkSession()
+        } catch {
+            print("💎 Failed to sync premium to Supabase: \(error)")
+        }
     }
 
     @MainActor
@@ -7495,6 +8426,19 @@ class SubscriptionManager: ObservableObject {
         }
         // Do nothing if no products - user must wait for products to load
     }
+
+    /// Resets subscription state for new user (called on logout)
+    @MainActor
+    func resetForNewUser() {
+        isSubscribed = false
+        hasSupabasePremium = false
+        hasPremiumAccess = false
+        purchaseError = nil
+        // Re-check actual subscription status from StoreKit
+        Task {
+            await checkSubscriptionStatus()
+        }
+    }
 }
 
 enum StoreError: Error {
@@ -7502,6 +8446,8 @@ enum StoreError: Error {
 }
 
 class CardManager: ObservableObject {
+    static let shared = CardManager()
+
     @Published var savedCardIDs: Set<UUID> = []
     @Published var masteredCardIDs: Set<UUID> = []
     @Published var consecutiveCorrect: [UUID: Int] = [:]
@@ -7513,12 +8459,42 @@ class CardManager: ObservableObject {
     @Published var cardNotes: [UUID: CardNote] = [:]
     @Published var flaggedCardIDs: Set<UUID> = []
     @Published var testHistory: [TestResult] = []
+    @Published var sessionCards: [Flashcard] = [] // Cards selected for current game session
+    @Published var resumeProgress: SessionProgress? // Progress to restore when resuming a session
+    @Published var remoteCardsCount: Int = 0 // Triggers view updates when remote cards change
 
     let masteryThreshold = 3
     private let persistence = PersistenceManager.shared
+    private let syncManager = SyncManager.shared
+    private var cancellables = Set<AnyCancellable>()
 
-    init() {
+    private init() {
         loadData()
+
+        // Observe changes to remote cards and trigger view updates
+        SupabaseContentProvider.shared.$remoteCards
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] cards in
+                self?.remoteCardsCount = cards.count
+            }
+            .store(in: &cancellables)
+    }
+
+    // MARK: - Remote Cards (from Supabase)
+
+    /// Get cards from remote content provider (Supabase)
+    var remoteCards: [Flashcard] {
+        SupabaseContentProvider.shared.allRemoteCards
+    }
+
+    /// Get free remote cards
+    var freeRemoteCards: [Flashcard] {
+        SupabaseContentProvider.shared.freeRemoteCards
+    }
+
+    /// Get premium remote cards
+    var premiumRemoteCards: [Flashcard] {
+        SupabaseContentProvider.shared.premiumRemoteCards
     }
 
     // MARK: - Persistence
@@ -7547,6 +8523,26 @@ class CardManager: ObservableObject {
         persistence.saveCardNotes(cardNotes)
         persistence.saveFlaggedCards(flaggedCardIDs)
         persistence.saveTestHistory(testHistory)
+
+        // Mark user progress for sync
+        syncManager.markChanged(CloudKitConfig.RecordType.userProgress, id: "main")
+    }
+
+    /// Resets all in-memory state for a new user (called on logout)
+    func resetForNewUser() {
+        savedCardIDs = []
+        masteredCardIDs = []
+        consecutiveCorrect = [:]
+        currentFilter = .all
+        userCreatedCards = []
+        studySets = []
+        selectedCategories = Set(ContentCategory.allCases)
+        spacedRepData = [:]
+        cardNotes = [:]
+        flaggedCardIDs = []
+        testHistory = []
+        sessionCards = []
+        resumeProgress = nil
     }
 
     // MARK: - Notes
@@ -7568,6 +8564,7 @@ class CardManager: ObservableObject {
             }
         }
         persistence.saveCardNotes(cardNotes)
+        syncManager.markChanged(CloudKitConfig.RecordType.cardNote, id: cardID.uuidString)
     }
 
     // MARK: - Flagging
@@ -7598,19 +8595,91 @@ class CardManager: ObservableObject {
             testHistory = Array(testHistory.prefix(50))
         }
         persistence.saveTestHistory(testHistory)
+        syncManager.markChanged(CloudKitConfig.RecordType.testResult, id: result.id.uuidString)
     }
 
     var allCards: [Flashcard] {
-        Flashcard.freeCards + (SubscriptionManager().isSubscribed ? Flashcard.premiumCards : []) + userCreatedCards
+        // Prefer remote cards if available, otherwise use bundled
+        if !remoteCards.isEmpty {
+            return remoteCards + userCreatedCards
+        }
+        return Flashcard.freeCards + (SubscriptionManager().isSubscribed ? Flashcard.premiumCards : []) + userCreatedCards
     }
 
+    /// Maximum free cards for non-subscribers
+    private let maxFreeCards = 50
+
     func getAvailableCards(isSubscribed: Bool) -> [Flashcard] {
+        // If remote cards are available, use those
+        if !remoteCards.isEmpty {
+            if isSubscribed {
+                return remoteCards + userCreatedCards
+            } else {
+                // For free users: pick the best 50 cards across all categories
+                // Prioritize non-premium cards first, then fill from premium to reach 50
+                let nonPremium = freeRemoteCards
+                if nonPremium.count >= maxFreeCards {
+                    return Array(nonPremium.prefix(maxFreeCards)) + userCreatedCards
+                } else {
+                    // Not enough non-premium cards — fill with a curated selection
+                    // Pick a balanced mix across categories and difficulties
+                    let remaining = maxFreeCards - nonPremium.count
+                    let premiumPool = remoteCards.filter { $0.isPremium }
+                    let selected = selectBalancedCards(from: premiumPool, count: remaining)
+                    return nonPremium + selected + userCreatedCards
+                }
+            }
+        }
+        // Fall back to bundled cards
         let baseCards = isSubscribed ? Flashcard.allCards : Flashcard.freeCards
         return baseCards + userCreatedCards
     }
 
+    /// Select a balanced mix of cards across categories and difficulties
+    private func selectBalancedCards(from cards: [Flashcard], count: Int) -> [Flashcard] {
+        guard count > 0, !cards.isEmpty else { return [] }
+
+        var result: [Flashcard] = []
+        let categories = ContentCategory.allCases
+        let perCategory = max(count / categories.count, 1)
+
+        // Pick cards evenly across categories, preferring easy/medium difficulty
+        for category in categories {
+            let catCards = cards.filter { $0.contentCategory == category }
+                .sorted { ($0.difficulty == .easy ? 0 : $0.difficulty == .medium ? 1 : 2) < ($1.difficulty == .easy ? 0 : $1.difficulty == .medium ? 1 : 2) }
+            result.append(contentsOf: catCards.prefix(perCategory))
+        }
+
+        // If we still need more, fill from remaining cards
+        if result.count < count {
+            let usedIDs = Set(result.map { $0.id })
+            let remaining = cards.filter { !usedIDs.contains($0.id) }
+            result.append(contentsOf: remaining.prefix(count - result.count))
+        }
+
+        return Array(result.prefix(count))
+    }
+
     func getFilteredCards(isSubscribed: Bool) -> [Flashcard] {
         var available = getAvailableCards(isSubscribed: isSubscribed)
+
+        // For free users, skip category filtering (the 50 cards are the complete set)
+        if !isSubscribed {
+            switch currentFilter {
+            case .all:
+                return available
+            case .mastered:
+                let baseCards = remoteCards.isEmpty ? Flashcard.allCards : remoteCards
+                let allCards = baseCards + userCreatedCards
+                return allCards.filter { masteredCardIDs.contains($0.id) }
+            case .saved:
+                let baseCards = remoteCards.isEmpty ? Flashcard.allCards : remoteCards
+                let allCards = baseCards + userCreatedCards
+                return allCards.filter { savedCardIDs.contains($0.id) }
+            case .userCreated:
+                return userCreatedCards
+            }
+        }
 
         // Apply category filter
         if selectedCategories.count < ContentCategory.allCases.count {
@@ -7622,11 +8691,13 @@ class CardManager: ObservableObject {
             return available
         case .mastered:
             // Show ALL mastered cards regardless of subscription or category filters
-            let allCards = Flashcard.allCards + userCreatedCards
+            let baseCards = remoteCards.isEmpty ? Flashcard.allCards : remoteCards
+            let allCards = baseCards + userCreatedCards
             return allCards.filter { masteredCardIDs.contains($0.id) }
         case .saved:
             // Show ALL saved cards regardless of subscription or category filters
-            let allCards = Flashcard.allCards + userCreatedCards
+            let baseCards = remoteCards.isEmpty ? Flashcard.allCards : remoteCards
+            let allCards = baseCards + userCreatedCards
             return allCards.filter { savedCardIDs.contains($0.id) }
         case .userCreated:
             return userCreatedCards.filter { selectedCategories.contains($0.contentCategory) }
@@ -7741,23 +8812,48 @@ class CardManager: ObservableObject {
     // MARK: - Card Actions
 
     func toggleSaved(_ card: Flashcard) {
+        let isSaved: Bool
         if savedCardIDs.contains(card.id) {
             savedCardIDs.remove(card.id)
+            isSaved = false
         } else {
             savedCardIDs.insert(card.id)
+            isSaved = true
         }
         persistence.saveSavedCards(savedCardIDs)
+
+        // Sync to cloud
+        Task {
+            await CloudSyncManager.shared.updateCardProgress(cardId: card.id, isSaved: isSaved)
+        }
     }
 
     func recordCorrectAnswer(_ card: Flashcard) {
         let current = consecutiveCorrect[card.id] ?? 0
         let newCount = current + 1
         consecutiveCorrect[card.id] = newCount
+        var wasMastered = false
         if newCount >= masteryThreshold {
+            let wasNewlyMastered = !masteredCardIDs.contains(card.id)
             masteredCardIDs.insert(card.id)
             persistence.saveMasteredCards(masteredCardIDs)
+            wasMastered = true
+
+            // Trigger review prompt at mastery milestones
+            if wasNewlyMastered {
+                ReviewManager.shared.recordMasteryMilestone(totalMastered: masteredCardIDs.count)
+            }
         }
         persistence.saveConsecutiveCorrect(consecutiveCorrect)
+
+        // Sync to cloud
+        Task {
+            await CloudSyncManager.shared.updateCardProgress(
+                cardId: card.id,
+                isMastered: wasMastered ? true : nil,
+                consecutiveCorrect: newCount
+            )
+        }
 
         // Also update spaced repetition (quality 4 = correct with hesitation)
         recordSpacedRepResponse(card: card, quality: 4)
@@ -7766,6 +8862,11 @@ class CardManager: ObservableObject {
     func recordWrongAnswer(_ card: Flashcard) {
         consecutiveCorrect[card.id] = 0
         persistence.saveConsecutiveCorrect(consecutiveCorrect)
+
+        // Sync to cloud
+        Task {
+            await CloudSyncManager.shared.updateCardProgress(cardId: card.id, consecutiveCorrect: 0)
+        }
 
         // Also update spaced repetition (quality 1 = wrong)
         recordSpacedRepResponse(card: card, quality: 1)
@@ -7778,14 +8879,26 @@ class CardManager: ObservableObject {
     }
 
     func toggleMastered(_ card: Flashcard) {
+        let isMastered: Bool
         if masteredCardIDs.contains(card.id) {
             masteredCardIDs.remove(card.id)
             consecutiveCorrect[card.id] = 0
+            isMastered = false
         } else {
             masteredCardIDs.insert(card.id)
+            isMastered = true
         }
         persistence.saveMasteredCards(masteredCardIDs)
         persistence.saveConsecutiveCorrect(consecutiveCorrect)
+
+        // Sync to cloud
+        Task {
+            await CloudSyncManager.shared.updateCardProgress(
+                cardId: card.id,
+                isMastered: isMastered,
+                consecutiveCorrect: isMastered ? masteryThreshold : 0
+            )
+        }
     }
 
     func isSaved(_ card: Flashcard) -> Bool { savedCardIDs.contains(card.id) }
@@ -7794,14 +8907,18 @@ class CardManager: ObservableObject {
 
     // Count of mastered cards that actually exist in the database
     var validMasteredCount: Int {
-        let allCards = Flashcard.allCards + userCreatedCards
+        // Use remote cards if available, otherwise fallback to bundled cards
+        let baseCards = remoteCards.isEmpty ? Flashcard.allCards : remoteCards
+        let allCards = baseCards + userCreatedCards
         let allCardIDs = Set(allCards.map { $0.id })
         return masteredCardIDs.filter { allCardIDs.contains($0) }.count
     }
 
     // Count of saved cards that actually exist in the database
     var validSavedCount: Int {
-        let allCards = Flashcard.allCards + userCreatedCards
+        // Use remote cards if available, otherwise fallback to bundled cards
+        let baseCards = remoteCards.isEmpty ? Flashcard.allCards : remoteCards
+        let allCards = baseCards + userCreatedCards
         let allCardIDs = Set(allCards.map { $0.id })
         return savedCardIDs.filter { allCardIDs.contains($0) }.count
     }
@@ -7811,11 +8928,14 @@ class CardManager: ObservableObject {
     func addUserCard(_ card: Flashcard) {
         userCreatedCards.append(card)
         persistence.saveUserCards(userCreatedCards)
+        syncManager.markChanged(CloudKitConfig.RecordType.userCard, id: card.id.uuidString)
     }
 
     func deleteUserCard(_ card: Flashcard) {
         userCreatedCards.removeAll { $0.id == card.id }
         persistence.saveUserCards(userCreatedCards)
+        // Mark for deletion sync
+        syncManager.markChanged(CloudKitConfig.RecordType.userCard, id: card.id.uuidString)
     }
 
     // MARK: - Study Sets
@@ -7823,18 +8943,21 @@ class CardManager: ObservableObject {
     func addStudySet(_ set: StudySet) {
         studySets.append(set)
         persistence.saveStudySets(studySets)
+        syncManager.markChanged(CloudKitConfig.RecordType.studySet, id: set.id.uuidString)
     }
 
     func updateStudySet(_ set: StudySet) {
         if let index = studySets.firstIndex(where: { $0.id == set.id }) {
             studySets[index] = set
             persistence.saveStudySets(studySets)
+            syncManager.markChanged(CloudKitConfig.RecordType.studySet, id: set.id.uuidString)
         }
     }
 
     func deleteStudySet(_ set: StudySet) {
         studySets.removeAll { $0.id == set.id }
         persistence.saveStudySets(studySets)
+        syncManager.markChanged(CloudKitConfig.RecordType.studySet, id: set.id.uuidString)
     }
 
     // MARK: - Search
@@ -7851,11 +8974,22 @@ class CardManager: ObservableObject {
 }
 
 class StatsManager: ObservableObject {
+    static let shared = StatsManager()
+
     @Published var stats: UserStats = UserStats()
 
     private let persistence = PersistenceManager.shared
+    private let syncManager = SyncManager.shared
 
-    init() {
+    private var isInitializing = true
+
+    private init() {
+        stats = persistence.loadUserStats()
+        checkStreakReset()
+        isInitializing = false
+    }
+
+    func loadData() {
         stats = persistence.loadUserStats()
         checkStreakReset()
     }
@@ -7910,7 +9044,9 @@ class StatsManager: ObservableObject {
 
         if daysDiff > 1 {
             stats.currentStreak = 0
-            save()
+            // Only persist, don't call full save() which triggers widget update
+            // and can cause circular dependency during init
+            persistence.saveUserStats(stats)
         }
     }
 
@@ -7940,6 +9076,29 @@ class StatsManager: ObservableObject {
 
     func save() {
         persistence.saveUserStats(stats)
+        syncManager.markChanged(CloudKitConfig.RecordType.userStats, id: "main")
+
+        // Skip widget update during init to avoid circular dependency with DailyGoalsManager
+        guard !isInitializing else { return }
+
+        // Update widget data
+        let goals = DailyGoalsManager.shared
+        let completedGoals = goals.dailyGoals.filter { $0.isCompleted }.count
+        WidgetDataManager.update(
+            streak: goals.currentStreak, level: goals.currentLevel, levelTitle: goals.levelTitle,
+            totalXP: goals.totalXP, xpProgress: goals.xpProgressPercent,
+            totalCardsStudied: stats.totalCardsStudied,
+            accuracy: stats.overallAccuracy,
+            dailyGoalsCompleted: completedGoals, dailyGoalsTotal: goals.dailyGoals.count,
+            cardOfTheDayQuestion: goals.cardOfTheDay?.question ?? "Start studying to see your Card of the Day!",
+            cardOfTheDayCategory: goals.cardOfTheDay?.contentCategory.rawValue ?? "General"
+        )
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    /// Resets all in-memory state for a new user (called on logout)
+    func resetForNewUser() {
+        stats = UserStats()
     }
 }
 
@@ -7987,6 +9146,15 @@ class ReviewManager {
         checkAndRequestReview()
     }
 
+    /// Call this when user masters a card at certain milestones
+    func recordMasteryMilestone(totalMastered: Int) {
+        let milestones = [10, 25, 50, 100, 200, 500]
+        if milestones.contains(totalMastered) {
+            reviewRequestCount += 2 // Mastery milestones count double
+            checkAndRequestReview()
+        }
+    }
+
     private func checkAndRequestReview() {
         // Don't request too frequently - minimum 30 days between requests
         if let lastRequest = lastReviewRequestDate {
@@ -8019,15 +9187,55 @@ class ReviewManager {
 class SpeechManager: ObservableObject {
     private let synthesizer = AVSpeechSynthesizer()
 
+    /// Preferred female voices in order of quality (enhanced voices sound more natural)
+    private var preferredVoice: AVSpeechSynthesisVoice? {
+        // Try enhanced/premium Samantha first (most natural US female voice)
+        if let voice = AVSpeechSynthesisVoice(identifier: "com.apple.voice.enhanced.en-US.Samantha") {
+            return voice
+        }
+        // Fall back to premium Samantha
+        if let voice = AVSpeechSynthesisVoice(identifier: "com.apple.voice.premium.en-US.Samantha") {
+            return voice
+        }
+        // Fall back to compact Samantha
+        if let voice = AVSpeechSynthesisVoice(identifier: "com.apple.voice.compact.en-US.Samantha") {
+            return voice
+        }
+        // Last resort: default US English voice
+        return AVSpeechSynthesisVoice(language: "en-US")
+    }
+
     func speak(_ text: String) {
+        // Stop any current speech first
+        if synthesizer.isSpeaking {
+            synthesizer.stopSpeaking(at: .immediate)
+        }
+
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
-        utterance.rate = 0.5
+        utterance.voice = preferredVoice
+
+        // Natural speech rate (0.5 is default, 0.52 is slightly faster and more natural)
+        utterance.rate = 0.52
+
+        // Slight pitch adjustment for warmth (1.0 is default, 1.05 is slightly higher/warmer)
+        utterance.pitchMultiplier = 1.05
+
+        // Add small delays for more natural pacing
+        utterance.preUtteranceDelay = 0.1
+        utterance.postUtteranceDelay = 0.1
+
+        // Volume (1.0 is max)
+        utterance.volume = 0.9
+
         synthesizer.speak(utterance)
     }
 
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
+    }
+
+    var isSpeaking: Bool {
+        synthesizer.isSpeaking
     }
 }
 
@@ -8036,8 +9244,8 @@ class SpeechManager: ObservableObject {
 struct ContentView: View {
     @StateObject private var appManager = AppManager()
     @StateObject private var subscriptionManager = SubscriptionManager()
-    @StateObject private var cardManager = CardManager()
-    @StateObject private var statsManager = StatsManager()
+    @StateObject private var cardManager = CardManager.shared
+    @StateObject private var statsManager = StatsManager.shared
     @StateObject private var speechManager = SpeechManager()
     @StateObject private var appearanceManager = AppearanceManager.shared
 
@@ -8047,10 +9255,10 @@ struct ContentView: View {
 
             switch appManager.currentScreen {
             case .onboarding: OnboardingView()
+            case .auth: AuthView(onAuthenticated: { appManager.completeAuth() })
             case .menu: MainMenuView()
-            case .swipeGame: SwipeGameView()
-            case .quizGame: BearQuizView()
-            case .smartReview: SmartReviewView()
+            case .flashcardsGame: StudyFlashcardsView()
+            case .learnGame: BearLearnView()
             case .matchGame: CozyMatchView()
             case .cardBrowser: CardBrowserView()
             case .createCard: CreateCardView()
@@ -8059,6 +9267,7 @@ struct ContentView: View {
             case .writeMode: WriteModeView()
             case .stats: StatsView()
             case .search: SearchView()
+            case .blocksGame: CozyBlocksView()
             }
         }
         .environmentObject(appManager)
@@ -8067,8 +9276,13 @@ struct ContentView: View {
         .environmentObject(statsManager)
         .environmentObject(speechManager)
         .preferredColorScheme(appearanceManager.currentMode.colorScheme)
+        .task {
+            // Load content from Supabase on app startup
+            await SupabaseContentProvider.shared.loadContent()
+        }
     }
 }
+
 
 // MARK: - Onboarding View
 
@@ -8078,14 +9292,48 @@ struct OnboardingView: View {
     @State private var showContent = false
     @State private var mascotOffset: CGFloat = 50
     @State private var mascotOpacity: Double = 0
+    @State private var categoryAnimationProgress: [Bool] = [false, false, false, false]
+    @State private var typingText: String = ""
+    @State private var bearWiggle: Double = 0
+    @State private var promiseChecks: [Bool] = [false, false, false]
+    @State private var showPromiseButton = false
+    @State private var promiseHoldProgress: CGFloat = 0
+    @State private var isHoldingPromise = false
+    @State private var statCounters: [Int] = [0, 0, 0]
+    @State private var statsAnimated = false
+    @State private var featureAnimationProgress: [Bool] = [false, false, false, false]
+    @State private var pulseScale: CGFloat = 1.0
+    @State private var showPaywall = false
 
-    private let pages: [(title: String, subtitle: String, icon: String, color: Color, isSourcesPage: Bool)] = [
-        ("Welcome to CozyNCLEX!", "Your cozy companion for NCLEX success", "heart.fill", .pastelPink, false),
-        ("Trusted Sources", "Content compiled from leading NCLEX prep resources", "checkmark.seal.fill", .mintGreen, true),
-        ("Study Your Way", "Multiple study modes to fit your learning style", "books.vertical.fill", .skyBlue, false),
-        ("Track Progress", "Watch yourself grow with detailed stats", "chart.line.uptrend.xyaxis", .peachOrange, false),
-        ("Let's Get Started!", "Your nursing journey begins now", "star.fill", .softLavender, false)
+    enum PageType {
+        case welcome
+        case painPoint
+        case sources
+        case promise
+        case notifications
+        case getStarted
+    }
+
+    private let pages: [(title: String, subtitle: String, icon: String, color: Color, pageType: PageType)] = [
+        ("Hey future nurse!", "I'm CozyBear, and I'm here to help you crush the NCLEX", "hand.wave.fill", .pastelPink, .welcome),
+        ("The NCLEX is tough.", "42% of repeat test-takers fail again. But not you.", "exclamationmark.triangle.fill", .softLavender, .painPoint),
+        ("Exam-Grade Quality", "Built to meet the standard you need to pass", "checkmark.seal.fill", .skyBlue, .sources),
+        ("Make a Promise", "Students who commit to daily practice are 3x more likely to pass", "heart.fill", .pastelPink, .promise),
+        ("Let Bear Help You", "You promised to study daily. I'll send you one gentle nudge to keep that streak alive. No spam, just support.", "bell.fill", .peachOrange, .notifications),
+        ("You're Ready!", "Let's turn that anxiety into confidence", "star.fill", .mintGreen, .getStarted)
     ]
+
+    // NCLEX Categories data
+    private var nclexCategories: [(icon: String, name: String, description: String, color: Color)] {
+        [
+            ("shield.checkered", "Safe & Effective Care", "Infection control, safety, legal & ethical", .skyBlue),
+            ("heart.circle", "Health Promotion", "Wellness, prevention & screening", .mintGreen),
+            ("brain.head.profile", "Psychosocial Integrity", "Mental health & coping", .softLavender),
+            ("waveform.path.ecg", "Physiological Integrity", "Body systems & pharmacology", .pastelPink)
+        ]
+    }
+
+    private let fullWelcomeText = "I'm CozyBear, and I'm here to help you crush the NCLEX"
 
     var body: some View {
         ZStack {
@@ -8102,37 +9350,51 @@ struct OnboardingView: View {
             .ignoresSafeArea()
             .animation(.easeInOut(duration: 0.5), value: currentPage)
 
+            GeometryReader { geo in
             VStack(spacing: 0) {
-                // Fixed top spacing for consistent bear position
-                Spacer().frame(height: 60)
+                // Dynamic top spacing based on screen height
+                Spacer().frame(height: geo.size.height * 0.04)
 
-                // Mascot - fixed position
+                // Mascot - proportional to screen, with wiggle on welcome
                 Image("NurseBear")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 160, height: 160)
+                    .frame(width: min(geo.size.width * 0.35, 150), height: min(geo.size.width * 0.35, 150))
                     .shadow(color: .black.opacity(0.1), radius: 10, y: 5)
                     .offset(y: mascotOffset)
                     .opacity(mascotOpacity)
+                    .rotationEffect(.degrees(bearWiggle))
                     .onAppear {
                         withAnimation(.spring(response: 0.8, dampingFraction: 0.6).delay(0.2)) {
                             mascotOffset = 0
                             mascotOpacity = 1
                         }
+                        // Wiggle after landing
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            withAnimation(.easeInOut(duration: 0.1).repeatCount(5, autoreverses: true)) {
+                                bearWiggle = 3
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                withAnimation(.easeInOut(duration: 0.1)) {
+                                    bearWiggle = 0
+                                }
+                            }
+                        }
                     }
 
-                Spacer().frame(height: 24)
+                Spacer().frame(height: geo.size.height * 0.02)
 
-                // Page content - fixed height container for consistency
+                // Page content
                 VStack(spacing: 12) {
                     // Icon
                     ZStack {
                         Circle()
                             .fill(pages[currentPage].color.opacity(0.2))
-                            .frame(width: 70, height: 70)
+                            .frame(width: min(geo.size.width * 0.17, 70), height: min(geo.size.width * 0.17, 70))
+                            .scaleEffect(pulseScale)
 
                         Image(systemName: pages[currentPage].icon)
-                            .font(.system(size: 32))
+                            .font(.system(size: min(geo.size.width * 0.08, 32)))
                             .foregroundColor(pages[currentPage].color)
                     }
                     .scaleEffect(showContent ? 1 : 0.5)
@@ -8140,62 +9402,308 @@ struct OnboardingView: View {
 
                     // Title
                     Text(pages[currentPage].title)
-                        .font(.system(size: 26, weight: .bold, design: .rounded))
+                        .font(.system(size: min(geo.size.width * 0.065, 26), weight: .bold, design: .rounded))
                         .multilineTextAlignment(.center)
                         .offset(y: showContent ? 0 : 20)
                         .opacity(showContent ? 1 : 0)
 
-                    // Subtitle
-                    Text(pages[currentPage].subtitle)
-                        .font(.system(size: 15, design: .rounded))
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 40)
-                        .offset(y: showContent ? 0 : 20)
-                        .opacity(showContent ? 1 : 0)
+                    // Subtitle — typing effect on welcome page
+                    if pages[currentPage].pageType == .welcome {
+                        Text(typingText)
+                            .font(.system(size: 15, design: .rounded))
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 30)
+                            .frame(minHeight: 40)
+                    } else {
+                        Text(pages[currentPage].subtitle)
+                            .font(.system(size: 15, design: .rounded))
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 30)
+                            .offset(y: showContent ? 0 : 20)
+                            .opacity(showContent ? 1 : 0)
+                    }
 
-                    // Sources list for credentials page - scrollable if needed
-                    if pages[currentPage].isSourcesPage {
-                        ScrollView {
-                            VStack(spacing: 10) {
-                                SourceBadge(name: "Kaplan", color: .blue)
-                                SourceBadge(name: "Archer Review", color: .green)
-                                SourceBadge(name: "UWorld", color: .orange)
-                                SourceBadge(name: "NCSBN", color: .purple)
-                                SourceBadge(name: "CAT Methodology", color: .pink)
+                    // MARK: - Pain Point page
+                    if pages[currentPage].pageType == .painPoint {
+                        VStack(spacing: 16) {
+                            // Animated stat counters
+                            HStack(spacing: 20) {
+                                OnboardingStatBubble(
+                                    value: "1,000+",
+                                    label: "Questions",
+                                    color: .skyBlue,
+                                    isAnimated: statsAnimated
+                                )
+                                OnboardingStatBubble(
+                                    value: "9",
+                                    label: "Categories",
+                                    color: .mintGreen,
+                                    isAnimated: statsAnimated
+                                )
+                                OnboardingStatBubble(
+                                    value: "24/7",
+                                    label: "Access",
+                                    color: .softLavender,
+                                    isAnimated: statsAnimated
+                                )
                             }
-                            .padding(.horizontal)
+                            .padding(.top, 8)
+
+                            // Reassurance message
+                            HStack(spacing: 10) {
+                                Image(systemName: "shield.checkered")
+                                    .font(.system(size: 18))
+                                    .foregroundColor(.mintGreen)
+                                Text("We've got you covered")
+                                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                    .foregroundColor(.primary)
+                            }
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 14)
+                            .background(Color.mintGreen.opacity(0.12))
+                            .cornerRadius(20)
+                            .scaleEffect(statsAnimated ? 1 : 0.8)
+                            .opacity(statsAnimated ? 1 : 0)
                         }
-                        .frame(maxHeight: 200)
                         .offset(y: showContent ? 0 : 30)
                         .opacity(showContent ? 1 : 0)
+                        .onAppear {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
+                                    statsAnimated = true
+                                }
+                            }
+                        }
+                    }
+
+                    // (Categories slide removed)
+
+                    // MARK: - Sources page
+                    if pages[currentPage].pageType == .sources {
+                        VStack(spacing: 10) {
+                            SourceBadge(name: "Aligned with NCSBN Standards", color: .purple)
+                            SourceBadge(name: "Next Gen (NGN) Format", color: .blue)
+                            SourceBadge(name: "Detailed Rationales", color: .orange)
+                            SourceBadge(name: "Clinical Judgment Focus", color: .mintGreen)
+                        }
+                        .padding(.horizontal)
+                        .offset(y: showContent ? 0 : 30)
+                        .opacity(showContent ? 1 : 0)
+                    }
+
+                    // (Features slide removed)
+
+                    // MARK: - Promise page
+                    if pages[currentPage].pageType == .promise {
+                        VStack(spacing: 14) {
+                            OnboardingPromiseRow(
+                                text: "I'll study a little every day",
+                                isChecked: promiseChecks[0],
+                                delay: 0
+                            ) { }
+
+                            OnboardingPromiseRow(
+                                text: "I won't give up when it gets hard",
+                                isChecked: promiseChecks[1],
+                                delay: 1
+                            ) { }
+
+                            OnboardingPromiseRow(
+                                text: "I believe I can pass the NCLEX",
+                                isChecked: promiseChecks[2],
+                                delay: 2
+                            ) { }
+                        }
+                        .padding(.horizontal, 20)
+                        .offset(y: showContent ? 0 : 30)
+                        .opacity(showContent ? 1 : 0)
+                        .allowsHitTesting(false)
+                    }
+
+                    // MARK: - Notifications page
+                    if pages[currentPage].pageType == .notifications {
+                        VStack(spacing: 20) {
+                            Image(systemName: "bell.badge.fill")
+                                .font(.system(size: 50))
+                                .foregroundColor(.peachOrange)
+                                .scaleEffect(showContent ? 1 : 0.5)
+                                .opacity(showContent ? 1 : 0)
+
+                            Text("One gentle reminder a day.\nNo spam, just support.")
+                                .font(.system(size: 15, design: .rounded))
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 30)
+                        }
+                        .offset(y: showContent ? 0 : 30)
+                        .opacity(showContent ? 1 : 0)
+                    }
+
+                    // MARK: - Get Started page
+                    if pages[currentPage].pageType == .getStarted {
+                        VStack(spacing: 12) {
+                            HStack(spacing: 6) {
+                                ForEach(0..<5) { _ in
+                                    Image(systemName: "star.fill")
+                                        .foregroundColor(.yellow)
+                                        .font(.system(size: 16))
+                                }
+                            }
+                            .opacity(showContent ? 1 : 0)
+
+                            Text("\"This app made studying actually fun.\nI passed on my first try!\"")
+                                .font(.system(size: 14, design: .rounded))
+                                .italic()
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 30)
+                                .opacity(showContent ? 1 : 0)
+
+                            Text("— CozyNCLEX Student")
+                                .font(.system(size: 13, weight: .medium, design: .rounded))
+                                .foregroundColor(.primary.opacity(0.6))
+                                .opacity(showContent ? 1 : 0)
+                        }
+                        .padding(.top, 8)
                     }
                 }
                 .frame(maxHeight: .infinity)
                 .animation(.spring(response: 0.5, dampingFraction: 0.8), value: showContent)
                 .onChange(of: currentPage) { _, _ in
                     showContent = false
+                    statsAnimated = false
+                    promiseChecks = [false, false, false]
+                    showPromiseButton = false
+                    promiseHoldProgress = 0
+                    isHoldingPromise = false
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                         withAnimation { showContent = true }
+                        if pages[currentPage].pageType == .welcome {
+                            startTypingAnimation()
+                        }
+                        if pages[currentPage].pageType == .painPoint {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
+                                    statsAnimated = true
+                                }
+                            }
+                        }
+                        if pages[currentPage].pageType == .promise {
+                            animatePromisesSequentially()
+                        }
                     }
                 }
 
                 Spacer(minLength: 20)
 
-                // Page indicators
-                HStack(spacing: 8) {
+                // Page indicators — progress bar style
+                HStack(spacing: 6) {
                     ForEach(0..<pages.count, id: \.self) { index in
-                        Circle()
-                            .fill(index == currentPage ? pages[currentPage].color : Color.gray.opacity(0.3))
-                            .frame(width: index == currentPage ? 10 : 8, height: index == currentPage ? 10 : 8)
+                        Capsule()
+                            .fill(index <= currentPage ? pages[currentPage].color : Color.gray.opacity(0.25))
+                            .frame(width: index == currentPage ? 24 : 8, height: 8)
                             .animation(.spring(response: 0.3), value: currentPage)
                     }
                 }
-                .padding(.bottom, 30)
+                .padding(.bottom, geo.size.height * 0.02)
 
                 // Buttons
                 VStack(spacing: 12) {
-                    if currentPage < pages.count - 1 {
+                    if pages[currentPage].pageType == .promise {
+                        // Promise page: hold "I Promise" button to confirm
+                        ZStack(alignment: .leading) {
+                            // Background track
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(Color.pastelPink.opacity(0.3))
+
+                            // Fill progress
+                            GeometryReader { geo in
+                                RoundedRectangle(cornerRadius: 16)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [.pastelPink, .pastelPink.opacity(0.8)],
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        )
+                                    )
+                                    .frame(width: geo.size.width * promiseHoldProgress)
+                            }
+
+                            // Label
+                            HStack(spacing: 8) {
+                                Image(systemName: "heart.fill")
+                                    .font(.system(size: 16))
+                                Text(showPromiseButton ? "Hold to Promise" : "I Promise")
+                                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                        }
+                        .frame(height: 56)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .gesture(
+                            LongPressGesture(minimumDuration: 1.5)
+                                .onChanged { _ in
+                                    guard showPromiseButton, !isHoldingPromise else { return }
+                                    isHoldingPromise = true
+                                    HapticManager.shared.light()
+                                    withAnimation(.linear(duration: 1.5)) {
+                                        promiseHoldProgress = 1.0
+                                    }
+                                }
+                                .onEnded { _ in
+                                    guard showPromiseButton else { return }
+                                    HapticManager.shared.success()
+                                    nextPage()
+                                }
+                        )
+                        .simultaneousGesture(
+                            DragGesture(minimumDistance: 0)
+                                .onEnded { _ in
+                                    // Reset if released early
+                                    if promiseHoldProgress < 1.0 {
+                                        isHoldingPromise = false
+                                        withAnimation(.easeOut(duration: 0.2)) {
+                                            promiseHoldProgress = 0
+                                        }
+                                    }
+                                }
+                        )
+                        .opacity(showPromiseButton ? 1 : 0.4)
+                        .scaleEffect(showPromiseButton ? 1 : 0.95)
+                        .allowsHitTesting(showPromiseButton)
+                        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: showPromiseButton)
+                    } else if pages[currentPage].pageType == .notifications {
+                        VStack(spacing: 10) {
+                            Button(action: requestNotificationPermission) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "bell.fill")
+                                        .font(.system(size: 16))
+                                    Text("Turn on Reminders")
+                                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                                }
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 18)
+                                .background(
+                                    LinearGradient(
+                                        colors: [.peachOrange, .peachOrange.opacity(0.8)],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .cornerRadius(16)
+                            }
+
+                            Button(action: nextPage) {
+                                Text("Not now")
+                                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    } else if currentPage < pages.count - 1 {
                         Button(action: nextPage) {
                             Text("Continue")
                                 .font(.system(size: 18, weight: .bold, design: .rounded))
@@ -8211,17 +9719,10 @@ struct OnboardingView: View {
                                 )
                                 .cornerRadius(16)
                         }
-
-                        Button(action: { appManager.completeOnboarding() }) {
-                            Text("Skip")
-                                .font(.system(size: 15, weight: .medium, design: .rounded))
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(.top, 4)
                     } else {
-                        Button(action: { appManager.completeOnboarding() }) {
+                        Button(action: { showPaywall = true }) {
                             HStack {
-                                Text("Start Studying")
+                                Text("Let's Do This")
                                     .font(.system(size: 18, weight: .bold, design: .rounded))
                                 Image(systemName: "arrow.right")
                                     .font(.system(size: 16, weight: .bold))
@@ -8237,22 +9738,43 @@ struct OnboardingView: View {
                                 )
                             )
                             .cornerRadius(16)
+                            .scaleEffect(pulseScale)
+                            .onAppear {
+                                withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
+                                    pulseScale = 1.03
+                                }
+                            }
                         }
+                    }
+
+                    if currentPage < pages.count - 1 && pages[currentPage].pageType != .promise && pages[currentPage].pageType != .notifications {
+                        Button(action: { showPaywall = true }) {
+                            Text("Skip")
+                                .font(.system(size: 15, weight: .medium, design: .rounded))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.top, 4)
                     }
                 }
                 .padding(.horizontal, 30)
-                .padding(.bottom, 50)
+                .padding(.bottom, geo.size.height * 0.04)
             }
+            } // GeometryReader
         }
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 withAnimation { showContent = true }
+            }
+            // Start typing animation on first page
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                startTypingAnimation()
             }
         }
         .gesture(
             DragGesture()
                 .onEnded { value in
                     if value.translation.width < -50 && currentPage < pages.count - 1 {
+                        if pages[currentPage].pageType == .promise && !showPromiseButton { return }
                         nextPage()
                     } else if value.translation.width > 50 && currentPage > 0 {
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
@@ -8261,12 +9783,282 @@ struct OnboardingView: View {
                     }
                 }
         )
+        .sheet(isPresented: $showPaywall, onDismiss: {
+            appManager.completeOnboarding()
+        }) {
+            OnboardingPaywallView()
+        }
     }
 
     func nextPage() {
         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
             currentPage += 1
         }
+    }
+
+    private func requestNotificationPermission() {
+        NotificationManager.shared.requestPermissionAndSchedule {
+            nextPage()
+        }
+    }
+
+    private func startTypingAnimation() {
+        typingText = ""
+        let characters = Array(fullWelcomeText)
+        for (index, character) in characters.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.03) {
+                typingText += String(character)
+            }
+        }
+    }
+
+    private func animateCategoriesSequentially() {
+        for index in 0..<4 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.15 + 0.2) {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                    categoryAnimationProgress[index] = true
+                }
+            }
+        }
+    }
+
+    private func animateFeaturesSequentially() {
+        for index in 0..<4 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.18 + 0.2) {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                    featureAnimationProgress[index] = true
+                }
+            }
+        }
+    }
+
+    private func animatePromisesSequentially() {
+        let promiseTexts = ["I'll study a little every day", "I won't give up when it gets hard", "I believe I can pass the NCLEX"]
+        for index in 0..<3 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.6 + 0.5) {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                    promiseChecks[index] = true
+                }
+                HapticManager.shared.light()
+                if index == 2 {
+                    checkAllPromises()
+                }
+            }
+        }
+    }
+
+    private func checkAllPromises() {
+        if promiseChecks.allSatisfy({ $0 }) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) {
+                    showPromiseButton = true
+                }
+                // Wiggle the bear when all promises checked
+                withAnimation(.easeInOut(duration: 0.1).repeatCount(5, autoreverses: true)) {
+                    bearWiggle = 3
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    withAnimation(.easeInOut(duration: 0.1)) {
+                        bearWiggle = 0
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Onboarding Paywall View
+
+struct OnboardingPaywallView: View {
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 0) {
+                SubscriptionSheet()
+
+                Button(action: { dismiss() }) {
+                    Text("Maybe Later")
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.bottom, 24)
+            }
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 22))
+                            .foregroundColor(.gray.opacity(0.5))
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Onboarding Stat Bubble
+
+struct OnboardingStatBubble: View {
+    let value: String
+    let label: String
+    let color: Color
+    let isAnimated: Bool
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Text(value)
+                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .foregroundColor(color)
+            Text(label)
+                .font(.system(size: 12, design: .rounded))
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 16)
+        .background(Color.adaptiveWhite)
+        .cornerRadius(14)
+        .shadow(color: .black.opacity(0.05), radius: 5, y: 2)
+        .scaleEffect(isAnimated ? 1 : 0.7)
+        .opacity(isAnimated ? 1 : 0)
+    }
+}
+
+// MARK: - Onboarding Feature Row
+
+struct OnboardingFeatureRow: View {
+    let icon: String
+    let title: String
+    let description: String
+    let color: Color
+    let isAnimated: Bool
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(color.opacity(0.2))
+                    .frame(width: 44, height: 44)
+                Image(systemName: icon)
+                    .font(.system(size: 20))
+                    .foregroundColor(color)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundColor(.primary)
+                Text(description)
+                    .font(.system(size: 12, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(Color.adaptiveWhite)
+        .cornerRadius(14)
+        .shadow(color: .black.opacity(0.05), radius: 5, y: 2)
+        .scaleEffect(isAnimated ? 1 : 0.9)
+        .opacity(isAnimated ? 1 : 0.3)
+    }
+}
+
+// MARK: - Onboarding Promise Row
+
+struct OnboardingPromiseRow: View {
+    let text: String
+    let isChecked: Bool
+    let delay: Int
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: {
+            if !isChecked { onTap() }
+        }) {
+            HStack(spacing: 14) {
+                ZStack {
+                    Circle()
+                        .strokeBorder(isChecked ? Color.mintGreen : Color.gray.opacity(0.3), lineWidth: 2)
+                        .frame(width: 32, height: 32)
+
+                    if isChecked {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.mintGreen)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
+
+                Text(text)
+                    .font(.system(size: 16, weight: .medium, design: .rounded))
+                    .foregroundColor(isChecked ? .primary : .secondary)
+                    .strikethrough(false)
+
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .background(isChecked ? Color.mintGreen.opacity(0.08) : Color.adaptiveWhite)
+            .cornerRadius(14)
+            .shadow(color: .black.opacity(0.05), radius: 5, y: 2)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Onboarding Category Card (Inline version for ContentView)
+
+struct OnboardingCategoryCardInline: View {
+    let icon: String
+    let name: String
+    let description: String
+    let color: Color
+    let isAnimated: Bool
+
+    var body: some View {
+        HStack(spacing: 14) {
+            // Icon circle
+            ZStack {
+                Circle()
+                    .fill(color.opacity(0.2))
+                    .frame(width: 44, height: 44)
+
+                Image(systemName: icon)
+                    .font(.system(size: 20))
+                    .foregroundColor(color)
+            }
+
+            // Text
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundColor(.primary)
+
+                Text(description)
+                    .font(.system(size: 12, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            // Checkmark
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 22))
+                .foregroundColor(color)
+                .scaleEffect(isAnimated ? 1 : 0)
+                .opacity(isAnimated ? 1 : 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(Color.adaptiveWhite)
+        .cornerRadius(14)
+        .shadow(color: .black.opacity(0.05), radius: 5, y: 2)
+        .scaleEffect(isAnimated ? 1 : 0.9)
+        .opacity(isAnimated ? 1 : 0.3)
     }
 }
 
@@ -8299,14 +10091,308 @@ struct MainMenuView: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @StateObject private var coachMarkManager = CoachMarkManager.shared
+    @ObservedObject var authManager = AuthManager.shared
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showSubscriptionSheet = false
     @State private var showCategoryFilter = false
     @State private var showCardOfTheDay = false
     @State private var cardOfTheDayFlipped = false
     @State private var selectedTab = 0 // 0 = Study, 1 = Progress
+    @State private var showDailyMotivation = false
+    @State private var showShareProgress = false
+    @State private var showCardBrowse = false
+    @State private var selectedGameMode: GameMode?
+    @State private var showResumePrompt = false
+    @State private var pendingGameMode: GameMode?
+    @State private var sidebarSelection: SidebarItem? = .studyModes
+
+    enum SidebarItem: String, Hashable, CaseIterable {
+        case studyModes = "Study Modes"
+        case browseCards = "Browse Cards"
+        case createCard = "Create Card"
+        case studySets = "Study Sets"
+        case stats = "Stats"
+        case progress = "Progress"
+        case dailyGoals = "Daily Goals"
+        case nclexReadiness = "NCLEX Readiness"
+        case settings = "Settings"
+
+        var icon: String {
+            switch self {
+            case .studyModes: return "graduationcap.fill"
+            case .browseCards: return "rectangle.stack.fill"
+            case .createCard: return "plus.circle.fill"
+            case .studySets: return "folder.fill"
+            case .stats: return "chart.bar.fill"
+            case .progress: return "star.fill"
+            case .dailyGoals: return "target"
+            case .nclexReadiness: return "checkmark.seal.fill"
+            case .settings: return "gearshape.fill"
+            }
+        }
+
+        var color: Color {
+            switch self {
+            case .studyModes: return .mintGreen
+            case .browseCards: return .blue
+            case .createCard: return .mintGreen
+            case .studySets: return .peachOrange
+            case .stats: return .softLavender
+            case .progress: return .pastelPink
+            case .dailyGoals: return .mintGreen
+            case .nclexReadiness: return .green
+            case .settings: return .gray
+            }
+        }
+
+        static var studyItems: [SidebarItem] { [.studyModes, .browseCards, .createCard, .studySets] }
+        static var progressItems: [SidebarItem] { [.progress, .stats, .nclexReadiness] }
+    }
 
     var body: some View {
+        Group {
+            if horizontalSizeClass == .regular {
+                iPadLayout
+            } else {
+                iPhoneLayout
+            }
+        }
+        .sheet(isPresented: $showSubscriptionSheet) {
+            SubscriptionSheet()
+        }
+        .sheet(isPresented: $showCategoryFilter) {
+            CategoryFilterSheet()
+        }
+        .sheet(isPresented: $dailyGoalsManager.showLevelUpCelebration) {
+            LevelUpCelebrationView()
+        }
+        .sheet(isPresented: $showShareProgress) {
+            ShareProgressView(stats: ShareableStats(
+                level: dailyGoalsManager.currentLevel,
+                levelTitle: dailyGoalsManager.levelTitle,
+                totalXP: dailyGoalsManager.totalXP,
+                masteredCards: cardManager.validMasteredCount,
+                currentStreak: dailyGoalsManager.currentStreak,
+                accuracy: statsManager.stats.overallAccuracy / 100.0,
+                totalStudyTimeSeconds: statsManager.stats.totalTimeSpentSeconds
+            ))
+        }
+        .sheet(isPresented: $showDailyMotivation) {
+            DailyMotivationView {
+                markMotivationSeen()
+            }
+        }
+        .sheet(isPresented: $dailyGoalsManager.showMilestoneCelebration) {
+            MilestoneCelebrationView(milestone: dailyGoalsManager.milestoneCelebrationValue) {
+                dailyGoalsManager.showMilestoneCelebration = false
+            }
+        }
+        .sheet(isPresented: $showCardBrowse) {
+            BrowseCardsHomeView()
+        }
+        .sheet(item: $selectedGameMode) { mode in
+            StudySessionSetupView(gameMode: mode) { selectedCards in
+                startGameMode(mode, with: selectedCards)
+            }
+        }
+        .alert("Continue Session?", isPresented: $showResumePrompt) {
+            Button("Resume", role: nil) {
+                if let mode = pendingGameMode {
+                    resumeGameMode(mode)
+                }
+                pendingGameMode = nil
+            }
+            Button("Start New", role: .destructive) {
+                if let mode = pendingGameMode {
+                    SessionProgressManager.shared.clearProgress(for: mode)
+                    selectedGameMode = mode
+                }
+                pendingGameMode = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingGameMode = nil
+            }
+        } message: {
+            if let mode = pendingGameMode,
+               let progress = SessionProgressManager.shared.loadProgress(for: mode) {
+                if mode == .learn {
+                    let learned = progress.currentIndex
+                    let remaining = progress.cardIDs.count
+                    Text("You have \(learned) terms learned with \(remaining) remaining. Would you like to continue?")
+                } else {
+                    Text("You have a saved session with \(progress.currentIndex) of \(progress.cardIDs.count) cards completed. Would you like to continue?")
+                }
+            } else {
+                Text("Would you like to continue your previous session?")
+            }
+        }
+        .onAppear {
+            let cards = cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess)
+            dailyGoalsManager.selectCardOfTheDay(from: cards)
+            dailyGoalsManager.checkAndResetDailyGoals()
+            dailyGoalsManager.checkMilestone(masteredCount: cardManager.validMasteredCount)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                let seenToday = hasSeenMotivationToday()
+                let otherModalActive = dailyGoalsManager.showMilestoneCelebration || dailyGoalsManager.showLevelUpCelebration
+                if !seenToday && !otherModalActive {
+                    showDailyMotivation = true
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                if coachMarkManager.isFirstTime && !dailyGoalsManager.showMilestoneCelebration && !dailyGoalsManager.showLevelUpCelebration && !showDailyMotivation {
+                    coachMarkManager.showIfNeeded(.studyTab)
+                }
+            }
+        }
+        .overlay {
+            CoachMarkOverlay()
+        }
+        .onOpenURL { url in
+            if url.scheme == "cozynclex" && url.host == "cardoftheday" {
+                if dailyGoalsManager.cardOfTheDay != nil {
+                    appManager.currentScreen = .flashcardsGame
+                }
+            }
+        }
+    }
+
+    // MARK: - iPad Layout (NavigationSplitView)
+
+    private var iPadLayout: some View {
+        NavigationSplitView {
+            List(selection: $sidebarSelection) {
+                Section("Study") {
+                    ForEach(SidebarItem.studyItems, id: \.self) { item in
+                        Label {
+                            Text(item.rawValue)
+                        } icon: {
+                            Image(systemName: item.icon)
+                                .foregroundColor(item.color)
+                        }
+                    }
+                }
+                Section("Progress") {
+                    ForEach(SidebarItem.progressItems, id: \.self) { item in
+                        Label {
+                            Text(item.rawValue)
+                        } icon: {
+                            Image(systemName: item.icon)
+                                .foregroundColor(item.color)
+                        }
+                    }
+                }
+                Section {
+                    Label(SidebarItem.settings.rawValue, systemImage: SidebarItem.settings.icon)
+                        .tag(SidebarItem.settings)
+                }
+            }
+            .navigationTitle("CozyNCLEX")
+            .listStyle(.sidebar)
+        } detail: {
+            iPadDetailView
+        }
+        .background(Color.creamyBackground)
+    }
+
+    @ViewBuilder
+    private var iPadDetailView: some View {
+        switch sidebarSelection {
+        case .studyModes:
+            ScrollView {
+                VStack(spacing: 16) {
+                    CompactHeaderView(showCategoryFilter: $showCategoryFilter)
+
+                    if !subscriptionManager.hasPremiumAccess && !(authManager.userProfile?.isPremium ?? false) {
+                        LibraryAccessCard(showSubscriptionSheet: $showSubscriptionSheet, totalPremiumCardCount: cardManager.getAvailableCards(isSubscribed: true).count)
+                    }
+
+                    GameModesGridSection(
+                        showSubscriptionSheet: $showSubscriptionSheet,
+                        selectedGameMode: $selectedGameMode,
+                        showResumePrompt: $showResumePrompt,
+                        pendingGameMode: $pendingGameMode
+                    )
+
+                    QuickActionsSection(showCardBrowse: $showCardBrowse)
+                    CategoryFilterBadge(showCategoryFilter: $showCategoryFilter)
+                }
+                .padding()
+                .frame(maxWidth: 700)
+                .frame(maxWidth: .infinity)
+            }
+            .background(Color.creamyBackground)
+        case .browseCards:
+            BrowseCardsHomeView()
+        case .createCard:
+            CreateCardView()
+        case .studySets:
+            StudySetsView()
+        case .stats:
+            StatsView()
+        case .progress, .dailyGoals:
+            ScrollView {
+                VStack(spacing: 16) {
+                    LevelProgressSection()
+                    StreakBanner()
+                    DailyGoalsSection()
+
+                    Button(action: {
+                        HapticManager.shared.light()
+                        showShareProgress = true
+                    }) {
+                        HStack {
+                            Image(systemName: "square.and.arrow.up")
+                            Text("Share My Progress")
+                                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(
+                            LinearGradient(colors: [.blue, .purple], startPoint: .leading, endPoint: .trailing)
+                        )
+                        .cornerRadius(20)
+                    }
+
+                    CardOfTheDaySection(showCard: $showCardOfTheDay, isFlipped: $cardOfTheDayFlipped)
+                    CategoryProgressSection(categoryProgress: calculateCategoryProgress())
+                }
+                .padding()
+                .frame(maxWidth: 700)
+                .frame(maxWidth: .infinity)
+            }
+            .background(Color.creamyBackground)
+        case .nclexReadiness:
+            ScrollView {
+                NCLEXReadinessView(
+                    masteredCount: cardManager.validMasteredCount,
+                    totalCards: cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess).count,
+                    categoryProgress: calculateCategoryProgress(),
+                    averageAccuracy: statsManager.stats.overallAccuracy / 100.0,
+                    isPremium: subscriptionManager.hasPremiumAccess || (authManager.userProfile?.isPremium ?? false),
+                    onUpgradeTapped: { showSubscriptionSheet = true }
+                )
+                .padding()
+                .frame(maxWidth: 700)
+                .frame(maxWidth: .infinity)
+            }
+            .background(Color.creamyBackground)
+        case .settings:
+            NavigationStack {
+                SyncSettingsView()
+            }
+        case .none:
+            Text("Select an item from the sidebar")
+                .font(.system(size: 18, design: .rounded))
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: - iPhone Layout (existing TabView)
+
+    private var iPhoneLayout: some View {
         VStack(spacing: 0) {
             // Header with compact stats
             CompactHeaderView(showCategoryFilter: $showCategoryFilter)
@@ -8321,8 +10407,30 @@ struct MainMenuView: View {
             .pickerStyle(.segmented)
             .padding(.horizontal)
             .padding(.vertical, 12)
-            .onChange(of: selectedTab) { _, _ in
+            .onChange(of: selectedTab) { _, newTab in
                 HapticManager.shared.selection()
+                // Show coach marks for new tab
+                if newTab == 0 && coachMarkManager.isFirstTime {
+                    coachMarkManager.showIfNeeded(.flashcards)
+                } else if newTab == 1 {
+                    coachMarkManager.showIfNeeded(.progressTab)
+                }
+            }
+            .onChange(of: coachMarkManager.pendingNavigation) { _, navigation in
+                guard let navigation else { return }
+                coachMarkManager.pendingNavigation = nil
+                switch navigation {
+                case .switchToTab(let tab):
+                    withAnimation(.easeInOut(duration: 0.4)) {
+                        selectedTab = tab
+                    }
+                    // After tab switch settles, show the next coach mark
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        if tab == 1 {
+                            coachMarkManager.showIfNeeded(.progressTab)
+                        }
+                    }
+                }
             }
 
             // Tab Content
@@ -8330,12 +10438,24 @@ struct MainMenuView: View {
                 // STUDY TAB
                 ScrollView {
                     VStack(spacing: 16) {
-                        CategoryFilterBadge(showCategoryFilter: $showCategoryFilter)
-                        GameModesGridSection(showSubscriptionSheet: $showSubscriptionSheet)
-                        QuickActionsSection()
-                        if !subscriptionManager.isSubscribed {
-                            SubscribeButton(showSheet: $showSubscriptionSheet)
+                        // Premium Upsell (immediately visible for free users)
+                        if !subscriptionManager.hasPremiumAccess && !(authManager.userProfile?.isPremium ?? false) {
+                            LibraryAccessCard(showSubscriptionSheet: $showSubscriptionSheet, totalPremiumCardCount: cardManager.getAvailableCards(isSubscribed: true).count)
                         }
+
+                        // Study Modes Grid
+                        GameModesGridSection(
+                            showSubscriptionSheet: $showSubscriptionSheet,
+                            selectedGameMode: $selectedGameMode,
+                            showResumePrompt: $showResumePrompt,
+                            pendingGameMode: $pendingGameMode
+                        )
+
+                        // Quick Actions (Browse, Create, Sets, Stats)
+                        QuickActionsSection(showCardBrowse: $showCardBrowse)
+
+                        // Category Filter
+                        CategoryFilterBadge(showCategoryFilter: $showCategoryFilter)
                     }
                     .padding()
                 }
@@ -8347,8 +10467,40 @@ struct MainMenuView: View {
                         LevelProgressSection()
                         StreakBanner()
                         DailyGoalsSection()
+
+                        // Share Progress Button
+                        Button(action: {
+                            HapticManager.shared.light()
+                            showShareProgress = true
+                        }) {
+                            HStack {
+                                Image(systemName: "square.and.arrow.up")
+                                Text("Share My Progress")
+                                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 10)
+                            .background(
+                                LinearGradient(colors: [.blue, .purple], startPoint: .leading, endPoint: .trailing)
+                            )
+                            .cornerRadius(20)
+                        }
+
                         CardOfTheDaySection(showCard: $showCardOfTheDay, isFlipped: $cardOfTheDayFlipped)
-                        QuickStatsSection()
+
+                        // NCLEX Readiness (Premium Feature)
+                        NCLEXReadinessView(
+                            masteredCount: cardManager.validMasteredCount,
+                            totalCards: cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess).count,
+                            categoryProgress: calculateCategoryProgress(),
+                            averageAccuracy: statsManager.stats.overallAccuracy / 100.0,
+                            isPremium: subscriptionManager.hasPremiumAccess || (authManager.userProfile?.isPremium ?? false),
+                            onUpgradeTapped: { showSubscriptionSheet = true }
+                        )
+
+                        // Category Progress Section
+                        CategoryProgressSection(categoryProgress: calculateCategoryProgress())
                     }
                     .padding()
                 }
@@ -8357,19 +10509,87 @@ struct MainMenuView: View {
             .tabViewStyle(.page(indexDisplayMode: .never))
         }
         .background(Color.creamyBackground)
-        .sheet(isPresented: $showSubscriptionSheet) {
-            SubscriptionSheet()
+    }
+
+    private func calculateCategoryProgress() -> [ContentCategory: Double] {
+        var progress: [ContentCategory: Double] = [:]
+        let allCards = cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess)
+
+        for category in ContentCategory.allCases {
+            let categoryCards = allCards.filter { $0.contentCategory == category }
+            let masteredInCategory = categoryCards.filter { cardManager.masteredCardIDs.contains($0.id) }
+
+            if categoryCards.isEmpty {
+                progress[category] = 0
+            } else {
+                progress[category] = Double(masteredInCategory.count) / Double(categoryCards.count)
+            }
         }
-        .sheet(isPresented: $showCategoryFilter) {
-            CategoryFilterSheet()
+
+        return progress
+    }
+
+    private func hasSeenMotivationToday() -> Bool {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        if let lastSeen = UserDefaults.standard.object(forKey: "lastMotivationDate") as? Date {
+            return calendar.isDate(lastSeen, inSameDayAs: today)
         }
-        .sheet(isPresented: $dailyGoalsManager.showLevelUpCelebration) {
-            LevelUpCelebrationView()
+        return false
+    }
+
+    private func markMotivationSeen() {
+        UserDefaults.standard.set(Date(), forKey: "lastMotivationDate")
+    }
+
+    private func startGameMode(_ mode: GameMode, with cards: [Flashcard]) {
+        // Store selected cards for the game session
+        cardManager.sessionCards = cards
+
+        // Clear selectedGameMode to dismiss the sheet
+        selectedGameMode = nil
+
+        // Navigate to the appropriate screen
+        switch mode {
+        case .flashcards: appManager.currentScreen = .flashcardsGame
+        case .learn: appManager.currentScreen = .learnGame
+        case .match: appManager.currentScreen = .matchGame
+        case .write: appManager.currentScreen = .writeMode
+        case .test: appManager.currentScreen = .testMode
+        case .blocks: appManager.currentScreen = .blocksGame
         }
-        .onAppear {
-            let cards = cardManager.getAvailableCards(isSubscribed: subscriptionManager.isSubscribed)
-            dailyGoalsManager.selectCardOfTheDay(from: cards)
-            dailyGoalsManager.checkAndResetDailyGoals()
+    }
+
+    private func resumeGameMode(_ mode: GameMode) {
+        guard let progress = SessionProgressManager.shared.loadProgress(for: mode) else { return }
+
+        // Restore cards from saved IDs
+        let allCards = cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess)
+        let savedCardIDs = Set(progress.cardIDs.compactMap { UUID(uuidString: $0) })
+        let restoredCards = allCards.filter { savedCardIDs.contains($0.id) }
+
+        // Maintain the original order
+        var orderedCards: [Flashcard] = []
+        for idString in progress.cardIDs {
+            if let uuid = UUID(uuidString: idString),
+               let card = restoredCards.first(where: { $0.id == uuid }) {
+                orderedCards.append(card)
+            }
+        }
+
+        // Store cards for the session
+        cardManager.sessionCards = orderedCards
+        cardManager.resumeProgress = progress // Store progress for game view to pick up
+
+        // Navigate to game
+        switch mode {
+        case .flashcards: appManager.currentScreen = .flashcardsGame
+        case .learn: appManager.currentScreen = .learnGame
+        case .match: appManager.currentScreen = .matchGame
+        case .write: appManager.currentScreen = .writeMode
+        case .test: appManager.currentScreen = .testMode
+        case .blocks: appManager.currentScreen = .blocksGame
         }
     }
 }
@@ -8380,53 +10600,54 @@ struct CompactHeaderView: View {
     @EnvironmentObject var appManager: AppManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @StateObject private var authManager = AuthManager.shared
     @Binding var showCategoryFilter: Bool
+    @State private var showProfile = false
+    @State private var currentAffirmation: String = ""
+    @State private var showBubble = true
+    @State private var bubbleId = UUID()
 
     var isFiltered: Bool {
         cardManager.selectedCategories.count < ContentCategory.allCases.count
     }
 
     var body: some View {
-        HStack(spacing: 12) {
-            // Bear + Title
-            Image("NurseBear")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 44, height: 44)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text("CozyNCLEX")
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
-                HStack(spacing: 8) {
-                    // Level badge
-                    HStack(spacing: 3) {
-                        Image(systemName: "star.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.pastelPink)
-                        Text("Lv.\(dailyGoalsManager.currentLevel)")
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .foregroundColor(.secondary)
-                    }
-                    // Streak
-                    if statsManager.stats.currentStreak > 0 {
-                        HStack(spacing: 3) {
-                            Image(systemName: "flame.fill")
-                                .font(.system(size: 10))
-                                .foregroundColor(.orange)
-                            Text("\(statsManager.stats.currentStreak)")
-                                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                                .foregroundColor(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                // Bear + Title
+                Image("NurseBear")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 44, height: 44)
+                    .onTapGesture {
+                        HapticManager.shared.soft()
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                            showBubble = false
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                            currentAffirmation = NotificationManager.nursingAffirmations.randomElement() ?? ""
+                            bubbleId = UUID()
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                showBubble = true
+                            }
                         }
                     }
-                    // XP
-                    Text("\(dailyGoalsManager.totalXP) XP")
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .foregroundColor(.softLavender)
-                }
-            }
 
-            Spacer()
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("CozyNCLEX")
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
+                    HStack(spacing: 3) {
+                        Image(systemName: "flame.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.orange)
+                        Text("\(statsManager.stats.currentStreak)")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundColor(.orange)
+                    }
+                }
+
+                Spacer()
 
             // Filter button
             Button(action: {
@@ -8464,7 +10685,101 @@ struct CompactHeaderView: View {
                     .clipShape(Circle())
                     .shadow(color: .black.opacity(0.08), radius: 3)
             }
+
+            // Profile button
+            Button(action: {
+                HapticManager.shared.buttonTap()
+                showProfile = true
+            }) {
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [.mintGreen, .green.opacity(0.7)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 36, height: 36)
+                        .shadow(color: .black.opacity(0.08), radius: 3)
+
+                    Text(userInitials)
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                }
+            }
+            } // HStack
+
+            // Speech bubble
+            if showBubble && !currentAffirmation.isEmpty {
+                BearSpeechBubble(text: currentAffirmation)
+                    .id(bubbleId)
+                    .padding(.leading, 8)
+            }
+        } // VStack
+        .onAppear {
+            currentAffirmation = NotificationManager.nursingAffirmations.randomElement() ?? ""
         }
+        .sheet(isPresented: $showProfile) {
+            ProfileView(onSignOut: {
+                appManager.signOut()
+            })
+        }
+    }
+
+    private var userInitials: String {
+        let name = authManager.userProfile?.displayName ?? "S"
+        let components = name.components(separatedBy: " ")
+        if components.count >= 2 {
+            return String(components[0].prefix(1) + components[1].prefix(1)).uppercased()
+        }
+        return String(name.prefix(1)).uppercased()
+    }
+}
+
+// MARK: - Bear Speech Bubble
+
+struct BearSpeechBubble: View {
+    let text: String
+    @State private var appeared = false
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 0) {
+            // Tail pointing left
+            Triangle()
+                .fill(Color.adaptiveWhite)
+                .frame(width: 10, height: 12)
+                .rotationEffect(.degrees(-90))
+                .offset(x: 4, y: -8)
+
+            Text(text)
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .foregroundColor(.primary)
+                .multilineTextAlignment(.leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color.adaptiveWhite)
+                .cornerRadius(14)
+                .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+        }
+        .scaleEffect(appeared ? 1 : 0.5, anchor: .leading)
+        .opacity(appeared ? 1 : 0)
+        .onAppear {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) {
+                appeared = true
+            }
+        }
+    }
+}
+
+private struct Triangle: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+        return path
     }
 }
 
@@ -8473,9 +10788,21 @@ struct CompactHeaderView: View {
 struct GameModesGridSection: View {
     @EnvironmentObject var appManager: AppManager
     @EnvironmentObject var subscriptionManager: SubscriptionManager
+    @EnvironmentObject var statsManager: StatsManager
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Binding var showSubscriptionSheet: Bool
+    @Binding var selectedGameMode: GameMode?
+    @Binding var showResumePrompt: Bool
+    @Binding var pendingGameMode: GameMode?
 
-    let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+    var isNewUser: Bool {
+        statsManager.stats.totalCardsStudied == 0
+    }
+
+    var columns: [GridItem] {
+        let count = horizontalSizeClass == .regular ? 3 : 2
+        return Array(repeating: GridItem(.flexible(), spacing: 12), count: count)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -8484,7 +10811,14 @@ struct GameModesGridSection: View {
 
             LazyVGrid(columns: columns, spacing: 12) {
                 ForEach(GameMode.allCases, id: \.self) { mode in
-                    GameModeGridCard(mode: mode, showSubscriptionSheet: $showSubscriptionSheet)
+                    GameModeGridCard(
+                        mode: mode,
+                        isNewUser: isNewUser,
+                        showSubscriptionSheet: $showSubscriptionSheet,
+                        selectedGameMode: $selectedGameMode,
+                        showResumePrompt: $showResumePrompt,
+                        pendingGameMode: $pendingGameMode
+                    )
                 }
             }
         }
@@ -8495,20 +10829,34 @@ struct GameModeGridCard: View {
     @EnvironmentObject var appManager: AppManager
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     let mode: GameMode
+    let isNewUser: Bool
     @Binding var showSubscriptionSheet: Bool
+    @Binding var selectedGameMode: GameMode?
+    @Binding var showResumePrompt: Bool
+    @Binding var pendingGameMode: GameMode?
+
+    @State private var pulseAnimation = false
 
     var isLocked: Bool {
-        mode.isPaid && !subscriptionManager.isSubscribed
+        mode.isPaid && !subscriptionManager.hasPremiumAccess
+    }
+
+    var hasSavedProgress: Bool {
+        mode != .match && mode != .test && SessionProgressManager.shared.hasProgress(for: mode)
+    }
+
+    private var isSpotlit: Bool {
+        isNewUser && mode == .flashcards
     }
 
     var cardColor: Color {
         switch mode {
-        case .swipe: return .mintGreen
-        case .quiz: return .pastelPink
-        case .smartReview: return .softLavender
+        case .flashcards: return .mintGreen
+        case .learn: return .softLavender
         case .match: return .peachOrange
         case .write: return .skyBlue
         case .test: return .coralPink
+        case .blocks: return .peachOrange
         }
     }
 
@@ -8518,15 +10866,13 @@ struct GameModeGridCard: View {
             SoundManager.shared.buttonTap()
             if isLocked {
                 showSubscriptionSheet = true
+            } else if mode == .test {
+                appManager.currentScreen = .testMode
+            } else if hasSavedProgress {
+                pendingGameMode = mode
+                showResumePrompt = true
             } else {
-                switch mode {
-                case .swipe: appManager.currentScreen = .swipeGame
-                case .quiz: appManager.currentScreen = .quizGame
-                case .smartReview: appManager.currentScreen = .smartReview
-                case .match: appManager.currentScreen = .matchGame
-                case .write: appManager.currentScreen = .writeMode
-                case .test: appManager.currentScreen = .testMode
-                }
+                selectedGameMode = mode
             }
         }) {
             VStack(spacing: 10) {
@@ -8565,7 +10911,23 @@ struct GameModeGridCard: View {
                         .padding(.vertical, 2)
                         .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
                         .cornerRadius(6)
-                } else if !mode.isPaid {
+                } else if hasSavedProgress {
+                    Text("CONTINUE")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Color.orange)
+                        .cornerRadius(6)
+                } else if isSpotlit {
+                    Text("START HERE")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Color.green)
+                        .cornerRadius(6)
+                } else if !mode.isPaid && !subscriptionManager.hasPremiumAccess {
                     Text("FREE")
                         .font(.system(size: 9, weight: .bold, design: .rounded))
                         .foregroundColor(.mintGreen)
@@ -8582,13 +10944,44 @@ struct GameModeGridCard: View {
             .shadow(color: .black.opacity(0.05), radius: 6)
         }
         .buttonStyle(SoftBounceButtonStyle())
+        .highlightable(for: mode.coachMarkType)
+        .background(
+            Group {
+                if isSpotlit {
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color.mintGreen.opacity(0.3))
+                        .scaleEffect(pulseAnimation ? 1.05 : 1.0)
+                        .opacity(pulseAnimation ? 0.0 : 0.6)
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: false), value: pulseAnimation)
+                }
+            }
+        )
+        .opacity(isNewUser && mode != .flashcards ? 0.7 : 1.0)
+        .onAppear {
+            if isSpotlit {
+                pulseAnimation = true
+            }
+        }
+    }
+}
+
+// MARK: - GameMode Coach Mark Extension
+
+extension GameMode {
+    var coachMarkType: CoachMarkType {
+        switch self {
+        case .flashcards: return .flashcards
+        case .learn: return .quickQuiz
+        case .test: return .testYourself
+        case .match, .write, .blocks: return .browseCards // Group other modes
+        }
     }
 }
 
 // MARK: - Level Progress Section
 
 struct LevelProgressSection: View {
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
 
     var body: some View {
         VStack(spacing: 10) {
@@ -8643,13 +11036,14 @@ struct LevelProgressSection: View {
         .background(Color.cardBackground)
         .cornerRadius(16)
         .shadow(color: .black.opacity(0.05), radius: 8)
+        .highlightable(for: .xpAndLevel)
     }
 }
 
 // MARK: - Daily Goals Section
 
 struct DailyGoalsSection: View {
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
 
     var completedCount: Int {
         dailyGoalsManager.dailyGoals.filter { $0.isCompleted }.count
@@ -8744,7 +11138,7 @@ struct DailyGoalRow: View {
 
 struct CardOfTheDaySection: View {
     @EnvironmentObject var cardManager: CardManager
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
     @Binding var showCard: Bool
     @Binding var isFlipped: Bool
 
@@ -8854,7 +11248,7 @@ struct CardOfTheDaySection: View {
 // MARK: - Level Up Celebration View
 
 struct LevelUpCelebrationView: View {
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
     @Environment(\.dismiss) var dismiss
     @State private var showContent = false
     @State private var showConfetti = false
@@ -8919,8 +11313,8 @@ struct LevelUpCelebrationView: View {
                         .cornerRadius(16)
                 }
                 .buttonStyle(BounceButtonStyle())
-                .padding(.horizontal, 40)
-                .padding(.bottom, 50)
+                .padding(.horizontal, 30)
+                .padding(.bottom, 30)
                 .opacity(showContent ? 1 : 0)
             }
         }
@@ -8947,18 +11341,18 @@ struct LevelUpConfettiView: View {
                     LevelUpConfettiPieceAnimatedView(piece: piece, screenHeight: geo.size.height)
                 }
             }
-        }
-        .onAppear {
-            generateConfetti()
+            .onAppear {
+                generateConfetti(width: geo.size.width)
+            }
         }
     }
 
-    func generateConfetti() {
+    func generateConfetti(width: CGFloat) {
         let colors: [Color] = [.pastelPink, .mintGreen, .softLavender, .peachOrange, .skyBlue, .yellow]
         confettiPieces = (0..<60).map { _ in
             LevelUpConfettiPiece(
                 color: colors.randomElement() ?? .pastelPink,
-                x: CGFloat.random(in: 0...UIScreen.main.bounds.width),
+                x: CGFloat.random(in: 0...width),
                 delay: Double.random(in: 0...0.5)
             )
         }
@@ -9000,14 +11394,19 @@ struct LevelUpConfettiPieceAnimatedView: View {
 
 struct CategoryFilterBadge: View {
     @EnvironmentObject var cardManager: CardManager
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
     @Binding var showCategoryFilter: Bool
 
     var selectedCount: Int { cardManager.selectedCategories.count }
     var totalCount: Int { ContentCategory.allCases.count }
     var isFiltered: Bool { selectedCount < totalCount }
 
+    var isPremium: Bool {
+        subscriptionManager.hasPremiumAccess
+    }
+
     var body: some View {
-        if isFiltered {
+        if isFiltered && isPremium {
             Button(action: { showCategoryFilter = true }) {
                 HStack(spacing: 8) {
                     Image(systemName: "line.3.horizontal.decrease.circle.fill")
@@ -9106,6 +11505,458 @@ struct StreakBanner: View {
             .padding()
             .background(LinearGradient(colors: [.orange.opacity(0.2), .yellow.opacity(0.2)], startPoint: .leading, endPoint: .trailing))
             .cornerRadius(16)
+            .highlightable(for: .streaks)
+        }
+    }
+}
+
+// MARK: - Category Progress Section
+
+struct CategoryProgressSection: View {
+    let categoryProgress: [ContentCategory: Double]
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
+    @EnvironmentObject var cardManager: CardManager
+    @ObservedObject var authManager = AuthManager.shared
+    @State private var selectedCategory: ContentCategory?
+    @State private var showSubscriptionSheet = false
+
+    var isPremium: Bool {
+        subscriptionManager.hasPremiumAccess || (authManager.userProfile?.isPremium ?? false)
+    }
+
+    var starterDeckProgress: Double {
+        let freeCards = cardManager.getAvailableCards(isSubscribed: false)
+        guard !freeCards.isEmpty else { return 0 }
+        let mastered = freeCards.filter { cardManager.masteredCardIDs.contains($0.id) }.count
+        return Double(mastered) / Double(freeCards.count)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Category Mastery")
+                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .padding(.horizontal, 4)
+
+            VStack(spacing: 8) {
+                if !isPremium {
+                    // NCLEX Essentials row for free users
+                    Button(action: {
+                        HapticManager.shared.light()
+                        // Open with nil category to show all free cards
+                        selectedCategory = ContentCategory.allCases.first
+                    }) {
+                        HStack(spacing: 12) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.mintGreen.opacity(0.2))
+                                    .frame(width: 36, height: 36)
+                                Image(systemName: "book.fill")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.mintGreen)
+                            }
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("NCLEX Essentials")
+                                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                                    .foregroundColor(.primary)
+                                GeometryReader { geometry in
+                                    ZStack(alignment: .leading) {
+                                        RoundedRectangle(cornerRadius: 4)
+                                            .fill(Color.gray.opacity(0.2))
+                                            .frame(height: 6)
+                                        RoundedRectangle(cornerRadius: 4)
+                                            .fill(Color.mintGreen)
+                                            .frame(width: geometry.size.width * starterDeckProgress, height: 6)
+                                    }
+                                }
+                                .frame(height: 6)
+                            }
+                            Spacer()
+                            Text("\(Int(starterDeckProgress * 100))%")
+                                .font(.system(size: 14, weight: .bold, design: .rounded))
+                                .foregroundColor(starterDeckProgress >= 0.7 ? .green : (starterDeckProgress >= 0.4 ? .orange : .secondary))
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 4)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+
+                ForEach(ContentCategory.allCases, id: \.self) { category in
+                    if isPremium {
+                        CategoryProgressRow(
+                            category: category,
+                            progress: categoryProgress[category] ?? 0
+                        ) {
+                            selectedCategory = category
+                        }
+                    } else {
+                        // Locked category row for free users
+                        Button(action: {
+                            HapticManager.shared.light()
+                            showSubscriptionSheet = true
+                        }) {
+                            HStack(spacing: 12) {
+                                ZStack {
+                                    Circle()
+                                        .fill(category.color.opacity(0.2))
+                                        .frame(width: 36, height: 36)
+                                    Image(systemName: category.icon)
+                                        .font(.system(size: 14))
+                                        .foregroundColor(category.color)
+                                }
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(category.rawValue)
+                                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                                        .foregroundColor(.primary)
+                                    GeometryReader { geometry in
+                                        RoundedRectangle(cornerRadius: 4)
+                                            .fill(Color.gray.opacity(0.15))
+                                            .frame(height: 6)
+                                    }
+                                    .frame(height: 6)
+                                }
+                                Spacer()
+                                Image(systemName: "lock.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.vertical, 8)
+                            .padding(.horizontal, 4)
+                            .opacity(0.6)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    }
+                }
+            }
+        }
+        .padding()
+        .background(Color.adaptiveWhite)
+        .cornerRadius(16)
+        .sheet(item: $selectedCategory) { category in
+            CategoryDetailView(category: category)
+        }
+        .sheet(isPresented: $showSubscriptionSheet) {
+            SubscriptionSheet()
+        }
+    }
+}
+
+struct CategoryProgressRow: View {
+    let category: ContentCategory
+    let progress: Double
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: {
+            HapticManager.shared.light()
+            onTap()
+        }) {
+            HStack(spacing: 12) {
+                // Category icon
+                ZStack {
+                    Circle()
+                        .fill(category.color.opacity(0.2))
+                        .frame(width: 36, height: 36)
+                    Image(systemName: category.icon)
+                        .font(.system(size: 14))
+                        .foregroundColor(category.color)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(category.rawValue)
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundColor(.primary)
+
+                    // Progress bar
+                    GeometryReader { geometry in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.gray.opacity(0.2))
+                                .frame(height: 6)
+
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(category.color)
+                                .frame(width: geometry.size.width * progress, height: 6)
+                        }
+                    }
+                    .frame(height: 6)
+                }
+
+                Spacer()
+
+                // Percentage
+                Text("\(Int(progress * 100))%")
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .foregroundColor(progress >= 0.7 ? .green : (progress >= 0.4 ? .orange : .secondary))
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.vertical, 8)
+            .padding(.horizontal, 4)
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+// MARK: - Category Detail View
+
+struct CategoryDetailView: View {
+    @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var cardManager: CardManager
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
+    @ObservedObject var authManager = AuthManager.shared
+    let category: ContentCategory
+
+    var isPremium: Bool {
+        subscriptionManager.hasPremiumAccess || (authManager.userProfile?.isPremium ?? false)
+    }
+
+    var categoryCards: [Flashcard] {
+        cardManager.getAvailableCards(isSubscribed: isPremium)
+            .filter { $0.contentCategory == category }
+    }
+
+    var masteredCards: [Flashcard] {
+        categoryCards.filter { cardManager.masteredCardIDs.contains($0.id) }
+    }
+
+    var inProgressCards: [Flashcard] {
+        categoryCards.filter {
+            !cardManager.masteredCardIDs.contains($0.id) &&
+            cardManager.progressTowardsMastery($0) > 0
+        }
+    }
+
+    var notStartedCards: [Flashcard] {
+        categoryCards.filter {
+            !cardManager.masteredCardIDs.contains($0.id) &&
+            cardManager.progressTowardsMastery($0) == 0
+        }
+    }
+
+    var masteryProgress: Double {
+        guard !categoryCards.isEmpty else { return 0 }
+        return Double(masteredCards.count) / Double(categoryCards.count)
+    }
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(spacing: 20) {
+                    // Header with circular progress
+                    VStack(spacing: 16) {
+                        ZStack {
+                            Circle()
+                                .stroke(Color.gray.opacity(0.2), lineWidth: 12)
+                                .frame(width: 120, height: 120)
+
+                            Circle()
+                                .trim(from: 0, to: masteryProgress)
+                                .stroke(category.color, style: StrokeStyle(lineWidth: 12, lineCap: .round))
+                                .frame(width: 120, height: 120)
+                                .rotationEffect(.degrees(-90))
+
+                            VStack(spacing: 2) {
+                                Text("\(Int(masteryProgress * 100))%")
+                                    .font(.system(size: 28, weight: .black, design: .rounded))
+                                    .foregroundColor(category.color)
+                                Text("Mastered")
+                                    .font(.system(size: 12, design: .rounded))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        // Stats row
+                        HStack(spacing: 20) {
+                            CategoryStatBadge(
+                                icon: "checkmark.circle.fill",
+                                value: masteredCards.count,
+                                label: "Mastered",
+                                color: .green
+                            )
+                            CategoryStatBadge(
+                                icon: "arrow.triangle.2.circlepath",
+                                value: inProgressCards.count,
+                                label: "In Progress",
+                                color: .orange
+                            )
+                            CategoryStatBadge(
+                                icon: "circle.dashed",
+                                value: notStartedCards.count,
+                                label: "Not Started",
+                                color: .gray
+                            )
+                        }
+                    }
+                    .padding()
+                    .background(Color.adaptiveWhite)
+                    .cornerRadius(16)
+
+                    // Card lists
+                    if !masteredCards.isEmpty {
+                        CardListSection(
+                            title: "Mastered",
+                            cards: masteredCards,
+                            color: .green,
+                            cardManager: cardManager
+                        )
+                    }
+
+                    if !inProgressCards.isEmpty {
+                        CardListSection(
+                            title: "In Progress",
+                            cards: inProgressCards,
+                            color: .orange,
+                            cardManager: cardManager
+                        )
+                    }
+
+                    if !notStartedCards.isEmpty {
+                        CardListSection(
+                            title: "Not Started",
+                            cards: notStartedCards,
+                            color: .gray,
+                            cardManager: cardManager
+                        )
+                    }
+                }
+                .padding()
+            }
+            .background(Color.creamyBackground)
+            .navigationTitle(category.rawValue)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct CategoryStatBadge: View {
+    let icon: String
+    let value: Int
+    let label: String
+    let color: Color
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 18))
+                .foregroundColor(color)
+            Text("\(value)")
+                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .foregroundColor(.primary)
+            Text(label)
+                .font(.system(size: 10, design: .rounded))
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+struct CardListSection: View {
+    let title: String
+    let cards: [Flashcard]
+    let color: Color
+    let cardManager: CardManager
+    @State private var isExpanded = false
+
+    var displayCards: [Flashcard] {
+        isExpanded ? cards : Array(cards.prefix(3))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Circle()
+                    .fill(color)
+                    .frame(width: 10, height: 10)
+                Text(title)
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                Spacer()
+                Text("\(cards.count) cards")
+                    .font(.system(size: 13, design: .rounded))
+                    .foregroundColor(.secondary)
+            }
+
+            ForEach(displayCards) { card in
+                CardProgressRow(card: card, cardManager: cardManager)
+            }
+
+            if cards.count > 3 {
+                Button(action: { withAnimation { isExpanded.toggle() } }) {
+                    HStack {
+                        Text(isExpanded ? "Show Less" : "Show All \(cards.count) Cards")
+                            .font(.system(size: 14, weight: .medium, design: .rounded))
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 12))
+                    }
+                    .foregroundColor(.blue)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                }
+            }
+        }
+        .padding()
+        .background(Color.adaptiveWhite)
+        .cornerRadius(12)
+    }
+}
+
+struct CardProgressRow: View {
+    let card: Flashcard
+    let cardManager: CardManager
+    @State private var showDetail = false
+
+    var consecutiveCorrect: Int {
+        cardManager.progressTowardsMastery(card)
+    }
+
+    var body: some View {
+        Button(action: { showDetail = true }) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(card.question)
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundColor(.primary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+
+                    // Progress indicators
+                    HStack(spacing: 4) {
+                        ForEach(0..<3, id: \.self) { index in
+                            Circle()
+                                .fill(index < consecutiveCorrect ? Color.green : Color.gray.opacity(0.3))
+                                .frame(width: 8, height: 8)
+                        }
+                        if cardManager.masteredCardIDs.contains(card.id) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 10))
+                                .foregroundColor(.green)
+                        }
+                    }
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(PlainButtonStyle())
+        .sheet(isPresented: $showDetail) {
+            CardDetailSheet(card: card)
         }
     }
 }
@@ -9116,7 +11967,7 @@ struct QuickStatsSection: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
 
     var totalCards: Int {
-        cardManager.getAvailableCards(isSubscribed: subscriptionManager.isSubscribed).count
+        cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess).count
     }
 
     var body: some View {
@@ -9160,19 +12011,111 @@ struct TappableStatCard: View {
     }
 }
 
-struct QuickActionsSection: View {
+// MARK: - Study Flashcards Button (Primary Action)
+
+struct StudyFlashcardsButton: View {
     @EnvironmentObject var appManager: AppManager
+    @EnvironmentObject var cardManager: CardManager
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
+    @ObservedObject var authManager = AuthManager.shared
+    @Binding var selectedGameMode: GameMode?
+    @Binding var showResumePrompt: Bool
+    @Binding var pendingGameMode: GameMode?
+
+    var isPremium: Bool {
+        subscriptionManager.hasPremiumAccess ||
+        (authManager.userProfile?.isPremium ?? false)
+    }
+
+    var weakCardCount: Int {
+        let availableCards = cardManager.getAvailableCards(isSubscribed: isPremium)
+        return availableCards.filter { card in
+            !cardManager.masteredCardIDs.contains(card.id) &&
+            (cardManager.consecutiveCorrect[card.id] ?? 0) == 0
+        }.count
+    }
+
+    var hasSavedProgress: Bool {
+        SessionProgressManager.shared.hasProgress(for: .flashcards)
+    }
 
     var body: some View {
-        HStack(spacing: 12) {
-            QuickActionButton(icon: "plus.circle.fill", label: "Create Card", color: .mintGreen) {
-                appManager.currentScreen = .createCard
+        Button(action: {
+            HapticManager.shared.light()
+            if hasSavedProgress {
+                pendingGameMode = .flashcards
+                showResumePrompt = true
+            } else {
+                selectedGameMode = .flashcards
             }
-            QuickActionButton(icon: "folder.fill", label: "Study Sets", color: .peachOrange) {
-                appManager.currentScreen = .studySets
+        }) {
+            HStack(spacing: 16) {
+                ZStack {
+                    Circle()
+                        .fill(Color.mintGreen.opacity(0.15))
+                        .frame(width: 50, height: 50)
+                    Image(systemName: "rectangle.on.rectangle.angled")
+                        .font(.system(size: 22))
+                        .foregroundColor(.mintGreen)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Study Flashcards")
+                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                        .foregroundColor(.primary)
+                    if hasSavedProgress {
+                        Text("Continue where you left off")
+                            .font(.system(size: 13, design: .rounded))
+                            .foregroundColor(.orange)
+                    } else if weakCardCount > 0 {
+                        Text("\(weakCardCount) cards need review")
+                            .font(.system(size: 13, design: .rounded))
+                            .foregroundColor(.orange)
+                    } else {
+                        Text("Sort cards into Know & Still Learning")
+                            .font(.system(size: 13, design: .rounded))
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.secondary)
             }
-            QuickActionButton(icon: "chart.bar.fill", label: "Stats", color: .softLavender) {
-                appManager.currentScreen = .stats
+            .padding()
+            .background(Color.adaptiveWhite)
+            .cornerRadius(16)
+            .shadow(color: .black.opacity(0.05), radius: 5, y: 2)
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+// MARK: - Quick Actions Section
+
+struct QuickActionsSection: View {
+    @EnvironmentObject var appManager: AppManager
+    @Binding var showCardBrowse: Bool
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                QuickActionButton(icon: "rectangle.stack.fill", label: "Browse Cards", color: .blue) {
+                    showCardBrowse = true
+                }
+                QuickActionButton(icon: "plus.circle.fill", label: "Create Card", color: .mintGreen) {
+                    appManager.currentScreen = .createCard
+                }
+            }
+            HStack(spacing: 12) {
+                QuickActionButton(icon: "folder.fill", label: "Study Sets", color: .peachOrange) {
+                    appManager.currentScreen = .studySets
+                }
+                QuickActionButton(icon: "chart.bar.fill", label: "Stats", color: .softLavender) {
+                    appManager.currentScreen = .stats
+                }
             }
         }
     }
@@ -9221,7 +12164,7 @@ struct GameModesSection: View {
             }
 
             // Paid modes - collapsed compact row
-            if !subscriptionManager.isSubscribed {
+            if !subscriptionManager.hasPremiumAccess {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Premium Modes").font(.system(size: 14, weight: .medium, design: .rounded)).foregroundColor(.secondary)
                     HStack(spacing: 10) {
@@ -9246,16 +12189,16 @@ struct GameModesSection: View {
     }
 
     private func handleModeTap(_ mode: GameMode) {
-        if mode.isPaid && !subscriptionManager.isSubscribed {
+        if mode.isPaid && !subscriptionManager.hasPremiumAccess {
             showSubscriptionSheet = true
         } else {
             switch mode {
-            case .swipe: appManager.currentScreen = .swipeGame
-            case .quiz: appManager.currentScreen = .quizGame
-            case .smartReview: appManager.currentScreen = .smartReview
+            case .flashcards: appManager.currentScreen = .flashcardsGame
+            case .learn: appManager.currentScreen = .learnGame
             case .match: appManager.currentScreen = .matchGame
             case .write: appManager.currentScreen = .writeMode
             case .test: appManager.currentScreen = .testMode
+            case .blocks: appManager.currentScreen = .blocksGame
             }
         }
     }
@@ -9267,12 +12210,12 @@ struct CompactModeCard: View {
 
     var modeColor: Color {
         switch mode {
-        case .swipe: return .mintGreen
-        case .quiz: return .pastelPink
-        case .smartReview: return .softLavender
+        case .flashcards: return .mintGreen
+        case .learn: return .softLavender
         case .match: return .softLavender
         case .write: return .skyBlue
         case .test: return .peachOrange
+        case .blocks: return .peachOrange
         }
     }
 
@@ -9302,12 +12245,12 @@ struct GameModeCard: View {
 
     var modeColor: Color {
         switch mode {
-        case .swipe: return .mintGreen
-        case .quiz: return .pastelPink
-        case .smartReview: return .softLavender
+        case .flashcards: return .mintGreen
+        case .learn: return .softLavender
         case .match: return .softLavender
         case .write: return .skyBlue
         case .test: return .peachOrange
+        case .blocks: return .peachOrange
         }
     }
 
@@ -9335,8 +12278,102 @@ struct GameModeCard: View {
     }
 }
 
+struct LibraryAccessCard: View {
+    @EnvironmentObject var cardManager: CardManager
+    @Binding var showSubscriptionSheet: Bool
+    var totalPremiumCardCount: Int
+
+    var masteredCount: Int {
+        let freeCards = cardManager.getAvailableCards(isSubscribed: false)
+        return freeCards.filter { cardManager.masteredCardIDs.contains($0.id) }.count
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            // Starter Deck row
+            HStack {
+                HStack(spacing: 6) {
+                    Text("📚")
+                    Text("Starter Deck")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                }
+                Spacer()
+                Text("50 Cards")
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundColor(.secondary)
+            }
+
+            // Starter progress bar
+            HStack(spacing: 8) {
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.gray.opacity(0.2))
+                            .frame(height: 8)
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.mintGreen)
+                            .frame(width: geometry.size.width * min(Double(masteredCount) / 50.0, 1.0), height: 8)
+                    }
+                }
+                .frame(height: 8)
+
+                Text("\(Int(min(Double(masteredCount) / 50.0, 1.0) * 100))%")
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .foregroundColor(.mintGreen)
+            }
+
+            Divider()
+
+            // Full Library row
+            HStack {
+                HStack(spacing: 6) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.gray)
+                    Text("Full Library")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Text("\(totalPremiumCardCount)+ Cards")
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundColor(.secondary)
+            }
+            .opacity(0.6)
+
+            // Greyed progress bar
+            GeometryReader { geometry in
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.gray.opacity(0.15))
+                    .frame(height: 8)
+            }
+            .frame(height: 8)
+
+            // Unlock button
+            Button(action: { showSubscriptionSheet = true }) {
+                HStack(spacing: 6) {
+                    Text("Unlock Full Library")
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
+                .cornerRadius(12)
+            }
+        }
+        .padding()
+        .background(Color.adaptiveWhite)
+        .cornerRadius(16)
+        .shadow(color: .black.opacity(0.05), radius: 6)
+    }
+}
+
 struct SubscribeButton: View {
     @Binding var showSheet: Bool
+    var totalCardCount: Int = 0
 
     var body: some View {
         Button(action: { showSheet = true }) {
@@ -9344,9 +12381,9 @@ struct SubscribeButton: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
                         Image(systemName: "star.fill").foregroundColor(.yellow)
-                        Text("Unlock 500+ Cards").font(.system(size: 16, weight: .bold, design: .rounded))
+                        Text("Get NCLEX Ready").font(.system(size: 16, weight: .bold, design: .rounded))
                     }
-                    Text("$4.99/week • All Study Modes").font(.system(size: 13, design: .rounded)).opacity(0.9)
+                    Text("\(totalCardCount)+ cards • All study modes").font(.system(size: 13, design: .rounded)).opacity(0.9)
                 }
                 Spacer()
                 Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold))
@@ -9361,141 +12398,207 @@ struct SubscribeButton: View {
 
 struct SubscriptionSheet: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
+    @EnvironmentObject var cardManager: CardManager
     @Environment(\.dismiss) var dismiss
     @State private var selectedProduct: Product?
 
+    private let privacyPolicyURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/privacy.html"
+    private let termsOfServiceURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/terms.html"
+
+    private var totalCardCount: Int {
+        cardManager.getAvailableCards(isSubscribed: true).count
+    }
+
+    private var resolvedProduct: Product? {
+        selectedProduct ?? preferredDefault
+    }
+
+    /// Default to yearly, then monthly — never weekly
+    private var preferredDefault: Product? {
+        let sorted = subscriptionManager.products
+        let yearly = sorted.first { $0.id.lowercased().contains("yearly") }
+        let monthly = sorted.first { $0.id.lowercased().contains("monthly") }
+        return yearly ?? monthly ?? sorted.first
+    }
+
+    private func isMonthly(_ product: Product) -> Bool {
+        product.id.lowercased().contains("monthly")
+    }
+
+    private func isYearly(_ product: Product) -> Bool {
+        product.id.lowercased().contains("yearly")
+    }
+
     var body: some View {
-        VStack(spacing: 20) {
-            Spacer()
-            Image("NurseBear")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 120, height: 120)
-            Text("Unlock Everything!").font(.system(size: 26, weight: .bold, design: .rounded))
+        ScrollView {
+            VStack(spacing: 16) {
+                // Bear mascot — compact
+                Image("NurseBear")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 90, height: 90)
+                    .padding(.top, 24)
 
-            VStack(alignment: .leading, spacing: 10) {
-                FeatureRow(icon: "square.stack.3d.up.fill", text: "500+ NCLEX Questions")
-                FeatureRow(icon: "brain.head.profile", text: "Smart Review (Spaced Repetition)")
-                FeatureRow(icon: "gamecontroller.fill", text: "All Study Modes")
-                FeatureRow(icon: "doc.text.fill", text: "Practice Tests")
-            }
-            .padding()
-            .background(Color.adaptiveWhite)
-            .cornerRadius(16)
-
-            // Product options
-            if subscriptionManager.products.isEmpty && subscriptionManager.lifetimeProduct == nil {
-                // Loading state when products not yet loaded
-                VStack(spacing: 12) {
-                    ProgressView()
-                        .scaleEffect(1.2)
-                    Text("Loading subscription options...")
-                        .font(.system(size: 14, design: .rounded))
-                        .foregroundColor(.secondary)
-                }
-                .padding()
-            } else {
-                // Subscription products
-                VStack(spacing: 10) {
-                    ForEach(subscriptionManager.products, id: \.id) { product in
-                        SubscriptionProductRow(
-                            product: product,
-                            isSelected: selectedProduct?.id == product.id,
-                            isLifetime: false,
-                            action: { selectedProduct = product }
-                        )
-                    }
-
-                    // Lifetime option
-                    if let lifetime = subscriptionManager.lifetimeProduct {
-                        SubscriptionProductRow(
-                            product: lifetime,
-                            isSelected: selectedProduct?.id == lifetime.id,
-                            isLifetime: true,
-                            action: { selectedProduct = lifetime }
-                        )
-                    }
-                }
-
-                if let product = selectedProduct ?? subscriptionManager.products.first {
-                    Button(action: {
-                        Task {
-                            await subscriptionManager.purchase(product)
-                            if subscriptionManager.isSubscribed {
-                                dismiss()
-                            }
-                        }
-                    }) {
-                        HStack {
-                            if subscriptionManager.isLoading {
-                                ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                            } else {
-                                let isLifetime = product.type == .nonConsumable
-                                Text(isLifetime ? "Buy Lifetime - \(product.displayPrice)" : "Subscribe - \(product.displayPrice)")
-                            }
-                        }
-                        .font(.system(size: 17, weight: .bold, design: .rounded))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
-                        .cornerRadius(14)
-                    }
-                    .disabled(subscriptionManager.isLoading)
-                }
-
-                if let error = subscriptionManager.purchaseError {
-                    Text(error)
-                        .font(.system(size: 12, design: .rounded))
-                        .foregroundColor(.red)
+                // Headline
+                VStack(spacing: 6) {
+                    Text("Pass Your Boards. Keep Your Sanity.")
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
                         .multilineTextAlignment(.center)
-                }
-            }
-
-            Button(action: {
-                Task {
-                    await subscriptionManager.restore()
-                    if subscriptionManager.isSubscribed {
-                        dismiss()
-                    }
-                }
-            }) {
-                if subscriptionManager.isLoading {
-                    ProgressView()
-                        .progressViewStyle(CircularProgressViewStyle(tint: .secondary))
-                } else {
-                    Text("Restore Purchases")
+                    Text("Unlock the complete \(totalCardCount)+ Question Library & Smart AI Tutor.")
                         .font(.system(size: 15, design: .rounded))
                         .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
                 }
-            }
-            .disabled(subscriptionManager.isLoading)
+                .padding(.horizontal)
 
-            // Required legal links for App Store
-            HStack(spacing: 16) {
-                Link(destination: URL(string: "https://spycidicy.github.io/CozyNCLEXPrep2026/terms.html")!) {
-                    Text("Terms of Use")
-                        .font(.system(size: 12, design: .rounded))
+                // Feature list
+                VStack(alignment: .leading, spacing: 10) {
+                    FeatureRow(icon: "square.stack.3d.up.fill", text: "\(totalCardCount)+ NCLEX Questions")
+                    FeatureRow(icon: "lightbulb.fill", text: "Detailed Rationales for Every Card")
+                    FeatureRow(icon: "brain.head.profile", text: "Smart Bear Learn (Adaptive Study)")
+                    FeatureRow(icon: "checkmark.seal.fill", text: "NCLEX Readiness Tracker")
+                    FeatureRow(icon: "gamecontroller.fill", text: "All Study Modes")
+                    FeatureRow(icon: "doc.text.fill", text: "Practice Tests")
+                }
+                .padding()
+                .background(Color.adaptiveWhite)
+                .cornerRadius(16)
+                .padding(.horizontal)
+
+                // Trust badge
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.shield.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(.mintGreen)
+                    Text("Updated for Next Gen NCLEX (NGN)")
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
                         .foregroundColor(.secondary)
-                        .underline()
-                }
-
-                Link(destination: URL(string: "https://spycidicy.github.io/CozyNCLEXPrep2026/privacy.html")!) {
-                    Text("Privacy Policy")
-                        .font(.system(size: 12, design: .rounded))
+                    Text("•")
                         .foregroundColor(.secondary)
-                        .underline()
+                    Text("Cancel Anytime")
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundColor(.secondary)
                 }
-            }
-            .padding(.top, 8)
+                .padding(.horizontal)
 
-            Spacer()
+                // Product options
+                if subscriptionManager.products.isEmpty && subscriptionManager.lifetimeProduct == nil {
+                    VStack(spacing: 12) {
+                        ProgressView().scaleEffect(1.2)
+                        Text("Loading subscription options...")
+                            .font(.system(size: 14, design: .rounded))
+                            .foregroundColor(.secondary)
+                    }
+                    .padding()
+                } else {
+                    VStack(spacing: 10) {
+                        ForEach(subscriptionManager.products, id: \.id) { product in
+                            SubscriptionProductRow(
+                                product: product,
+                                isSelected: resolvedProduct?.id == product.id,
+                                isLifetime: false,
+                                badge: isMonthly(product) ? "MOST POPULAR" : nil,
+                                badgeColors: [.mintGreen, .blue],
+                                savingsText: isYearly(product) ? "Save 58%" : nil,
+                                action: { selectedProduct = product }
+                            )
+                        }
+
+                        if let lifetime = subscriptionManager.lifetimeProduct {
+                            SubscriptionProductRow(
+                                product: lifetime,
+                                isSelected: resolvedProduct?.id == lifetime.id,
+                                isLifetime: true,
+                                badge: "BEST VALUE",
+                                badgeColors: [.orange, .pink],
+                                savingsText: nil,
+                                action: { selectedProduct = lifetime }
+                            )
+                        }
+                    }
+                    .padding(.horizontal)
+
+                    // CTA Button
+                    if let product = resolvedProduct {
+                        Button(action: {
+                            Task {
+                                await subscriptionManager.purchase(product)
+                                if subscriptionManager.hasPremiumAccess { dismiss() }
+                            }
+                        }) {
+                            HStack {
+                                if subscriptionManager.isLoading {
+                                    ProgressView()
+                                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                } else {
+                                    let isLifetime = product.type == .nonConsumable
+                                    Text(isLifetime ? "Get Lifetime Access — One-Time" : "Start Full Access (Cancel Anytime)")
+                                }
+                            }
+                            .font(.system(size: 17, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
+                            .cornerRadius(14)
+                        }
+                        .disabled(subscriptionManager.isLoading)
+                        .padding(.horizontal)
+                    }
+
+                    if let error = subscriptionManager.purchaseError {
+                        Text(error)
+                            .font(.system(size: 12, design: .rounded))
+                            .foregroundColor(.red)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                    }
+                }
+
+                Button(action: {
+                    Task {
+                        await subscriptionManager.restore()
+                        if subscriptionManager.hasPremiumAccess { dismiss() }
+                    }
+                }) {
+                    if subscriptionManager.isLoading {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .secondary))
+                    } else {
+                        Text("Restore Purchases")
+                            .font(.system(size: 15, design: .rounded))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .disabled(subscriptionManager.isLoading)
+
+                // Auto-renewal disclosure (required by Apple)
+                Text("Subscriptions automatically renew unless cancelled at least 24 hours before the end of the current period. Your Apple ID account will be charged for renewal within 24 hours prior to the end of the current period. You can manage and cancel subscriptions in your App Store account settings.")
+                    .font(.system(size: 10, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 16)
+
+                // Required legal links
+                HStack(spacing: 20) {
+                    if let privacyURL = URL(string: privacyPolicyURL) {
+                        Link("Privacy Policy", destination: privacyURL)
+                            .font(.system(size: 12, design: .rounded))
+                            .foregroundColor(.blue)
+                    }
+                    Text("•").font(.system(size: 12)).foregroundColor(.secondary)
+                    if let termsURL = URL(string: termsOfServiceURL) {
+                        Link("Terms of Use", destination: termsURL)
+                            .font(.system(size: 12, design: .rounded))
+                            .foregroundColor(.blue)
+                    }
+                }
+                .padding(.bottom, 24)
+            }
         }
-        .padding()
         .background(Color.creamyBackground)
         .onAppear {
-            selectedProduct = subscriptionManager.products.first
+            selectedProduct = preferredDefault
         }
     }
 }
@@ -9504,16 +12607,16 @@ struct SubscriptionProductRow: View {
     let product: Product
     let isSelected: Bool
     let isLifetime: Bool
+    var badge: String? = nil
+    var badgeColors: [Color] = [.orange, .pink]
+    var savingsText: String? = nil
     let action: () -> Void
 
     var periodText: String {
-        // Use product ID to determine period (most reliable)
         let id = product.id.lowercased()
         if id.contains("weekly") { return "week" }
         if id.contains("monthly") { return "month" }
         if id.contains("yearly") { return "year" }
-
-        // Fallback to StoreKit subscription period
         if let unit = product.subscription?.subscriptionPeriod.unit {
             switch unit {
             case .day: return "day"
@@ -9534,19 +12637,26 @@ struct SubscriptionProductRow: View {
                         Text(product.displayName)
                             .font(.system(size: 15, weight: .semibold, design: .rounded))
                             .foregroundColor(.primary)
-                        if isLifetime {
-                            Text("BEST VALUE")
+                        if let badge = badge {
+                            Text(badge)
                                 .font(.system(size: 9, weight: .bold, design: .rounded))
                                 .foregroundColor(.white)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(LinearGradient(colors: [.orange, .pink], startPoint: .leading, endPoint: .trailing))
+                                .background(LinearGradient(colors: badgeColors, startPoint: .leading, endPoint: .trailing))
                                 .cornerRadius(4)
                         }
                     }
-                    Text(isLifetime ? "\(product.displayPrice) one-time" : "\(product.displayPrice)/\(periodText)")
-                        .font(.system(size: 13, design: .rounded))
-                        .foregroundColor(.secondary)
+                    HStack(spacing: 6) {
+                        Text(isLifetime ? "\(product.displayPrice) one-time" : "\(product.displayPrice)/\(periodText)")
+                            .font(.system(size: 13, design: .rounded))
+                            .foregroundColor(.secondary)
+                        if let savings = savingsText {
+                            Text(savings)
+                                .font(.system(size: 11, weight: .bold, design: .rounded))
+                                .foregroundColor(.green)
+                        }
+                    }
                 }
                 Spacer()
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
@@ -9583,11 +12693,17 @@ struct CardBrowserView: View {
     @EnvironmentObject var appManager: AppManager
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
+    @ObservedObject var authManager = AuthManager.shared
     @State private var selectedCard: Flashcard? = nil
     @State private var showCategoryFilter = false
 
+    var isPremium: Bool {
+        subscriptionManager.hasPremiumAccess ||
+        (authManager.userProfile?.isPremium ?? false)
+    }
+
     var filteredCards: [Flashcard] {
-        cardManager.getFilteredCards(isSubscribed: subscriptionManager.isSubscribed)
+        cardManager.getFilteredCards(isSubscribed: isPremium)
     }
 
     var isFiltered: Bool {
@@ -9620,6 +12736,7 @@ struct CardBrowserView: View {
                     .padding(.horizontal, 10).padding(.vertical, 5).background(Color.pastelPink).cornerRadius(10)
             }
             .padding()
+
 
             HStack(spacing: 8) {
                 ForEach(CardFilter.allCases, id: \.self) { filter in
@@ -9723,6 +12840,7 @@ struct CardListItem: View {
 
 struct CardDetailSheet: View {
     @EnvironmentObject var cardManager: CardManager
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var speechManager: SpeechManager
     @Environment(\.dismiss) var dismiss
     let card: Flashcard
@@ -9739,11 +12857,16 @@ struct CardDetailSheet: View {
                             .foregroundColor(.secondary).padding(10).background(Color.gray.opacity(0.1)).clipShape(Circle())
                     }
                     Spacer()
-                    HStack(spacing: 4) {
-                        Image(systemName: card.contentCategory.icon).foregroundColor(card.contentCategory.color)
-                        Text(card.contentCategory.rawValue).font(.system(size: 13, weight: .semibold, design: .rounded)).foregroundColor(.secondary)
+                    // Save button
+                    Button(action: {
+                        HapticManager.shared.light()
+                        cardManager.toggleSaved(card)
+                    }) {
+                        Image(systemName: cardManager.isSaved(card) ? "heart.fill" : "heart")
+                            .font(.system(size: 14))
+                            .foregroundColor(cardManager.isSaved(card) ? .red : .secondary)
+                            .padding(10).background(Color.gray.opacity(0.1)).clipShape(Circle())
                     }
-                    Spacer()
                     // Flag button
                     Button(action: { cardManager.toggleFlagged(card) }) {
                         Image(systemName: cardManager.isFlagged(card) ? "flag.fill" : "flag")
@@ -9760,6 +12883,16 @@ struct CardDetailSheet: View {
                 .padding()
 
                 VStack(spacing: 14) {
+                    // Category label
+                    HStack(spacing: 4) {
+                        Image(systemName: card.contentCategory.icon)
+                            .font(.system(size: 11))
+                            .foregroundColor(card.contentCategory.color)
+                        Text(card.contentCategory.rawValue)
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundColor(.secondary)
+                    }
+
                     HStack {
                         Text(card.difficulty.rawValue).font(.system(size: 11, weight: .semibold))
                             .foregroundColor(.white).padding(.horizontal, 8).padding(.vertical, 4)
@@ -9792,8 +12925,17 @@ struct CardDetailSheet: View {
                         HStack {
                             Image(systemName: "lightbulb.fill").foregroundColor(.yellow)
                             Text("Rationale").font(.system(size: 15, weight: .semibold, design: .rounded))
+                            if !subscriptionManager.hasPremiumAccess {
+                                Spacer()
+                                HStack(spacing: 4) {
+                                    Image(systemName: "lock.fill").font(.system(size: 10))
+                                    Text("Premium").font(.system(size: 11, weight: .semibold, design: .rounded))
+                                }
+                                .foregroundColor(.secondary)
+                            }
                         }
                         Text(card.rationale).font(.system(size: 14, design: .rounded)).foregroundColor(.secondary)
+                            .blur(radius: subscriptionManager.hasPremiumAccess ? 0 : 6)
                     }
                     .padding()
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -10076,7 +13218,7 @@ struct SearchView: View {
     @State private var selectedCard: Flashcard? = nil
 
     var searchResults: [Flashcard] {
-        cardManager.searchCards(query: searchText, isSubscribed: subscriptionManager.isSubscribed)
+        cardManager.searchCards(query: searchText, isSubscribed: subscriptionManager.hasPremiumAccess)
     }
 
     var body: some View {
@@ -10155,12 +13297,6 @@ struct StatsView: View {
                 HStack(spacing: 12) {
                     StatBox(title: "Cards Studied", value: "\(statsManager.stats.totalCardsStudied)", icon: "square.stack.fill", color: .softLavender)
                     StatBox(title: "Accuracy", value: String(format: "%.0f%%", statsManager.stats.overallAccuracy), icon: "target", color: .mintGreen)
-                }
-                .padding(.horizontal)
-
-                HStack(spacing: 12) {
-                    StatBox(title: "Current Streak", value: "\(statsManager.stats.currentStreak) days", icon: "flame.fill", color: .orange)
-                    StatBox(title: "Cards Mastered", value: "\(cardManager.validMasteredCount)", icon: "checkmark.seal.fill", color: .pastelPink)
                 }
                 .padding(.horizontal)
 
@@ -10408,7 +13544,7 @@ struct SettingsView: View {
     @EnvironmentObject var statsManager: StatsManager
     @StateObject private var notificationManager = NotificationManager.shared
     @StateObject private var soundManager = SoundManager.shared
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
     @StateObject private var appearanceManager = AppearanceManager.shared
     @State private var remindersEnabled = false
     @State private var selectedTime = Date()
@@ -10416,6 +13552,11 @@ struct SettingsView: View {
     @State private var restoreMessage = ""
     @State private var hapticsEnabled = HapticManager.shared.isEnabled
     @State private var showResetConfirmation = false
+    @State private var showDeleteAccountConfirmation = false
+    @State private var showDeleteAccountFinalConfirmation = false
+    @State private var deleteConfirmationText = ""
+    @State private var isDeletingAccount = false
+    @StateObject private var authManager = AuthManager.shared
 
     private let privacyPolicyURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/privacy.html"
     private let termsOfServiceURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/terms.html"
@@ -10493,22 +13634,36 @@ struct SettingsView: View {
                     HStack {
                         Text("Status")
                         Spacer()
-                        Text(subscriptionManager.isSubscribed ? "Premium" : "Free")
-                            .foregroundColor(subscriptionManager.isSubscribed ? .mintGreen : .secondary)
-                            .fontWeight(subscriptionManager.isSubscribed ? .semibold : .regular)
+                        Text(subscriptionManager.hasPremiumAccess ? "Premium" : "Free")
+                            .foregroundColor(subscriptionManager.hasPremiumAccess ? .mintGreen : .secondary)
+                            .fontWeight(subscriptionManager.hasPremiumAccess ? .semibold : .regular)
                     }
 
                     Button(action: {
                         HapticManager.shared.buttonTap()
                         Task {
                             await subscriptionManager.restore()
-                            restoreMessage = subscriptionManager.isSubscribed ? "Subscription restored successfully!" : "No active subscription found."
+                            restoreMessage = subscriptionManager.hasPremiumAccess ? "Subscription restored successfully!" : "No active subscription found."
                             showRestoreAlert = true
                         }
                     }) {
                         HStack {
                             Image(systemName: "arrow.clockwise")
                             Text("Restore Purchases")
+                        }
+                    }
+                }
+
+                Section("Sync & Backup") {
+                    NavigationLink {
+                        SyncSettingsView()
+                    } label: {
+                        HStack {
+                            Image(systemName: "icloud")
+                                .foregroundColor(.blue)
+                            Text("iCloud Sync")
+                            Spacer()
+                            SyncStatusBadge()
                         }
                     }
                 }
@@ -10627,6 +13782,26 @@ struct SettingsView: View {
                         }
                     }
                 }
+
+                Section(header: Text("Account"), footer: Text("Deleting your account will permanently remove all your data and cannot be undone.")) {
+                    Button(action: {
+                        HapticManager.shared.warning()
+                        showDeleteAccountConfirmation = true
+                    }) {
+                        HStack {
+                            Image(systemName: "person.crop.circle.badge.minus")
+                                .foregroundColor(.red)
+                            Text("Delete Account")
+                                .foregroundColor(.red)
+                            Spacer()
+                            if isDeletingAccount {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                            }
+                        }
+                    }
+                    .disabled(isDeletingAccount)
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -10656,6 +13831,46 @@ struct SettingsView: View {
             } message: {
                 Text("This will delete all your study progress, mastered cards, saved cards, stats, XP, and achievements. This cannot be undone.")
             }
+            .alert("Delete Account?", isPresented: $showDeleteAccountConfirmation) {
+                Button("Cancel", role: .cancel) { }
+                Button("Continue", role: .destructive) {
+                    showDeleteAccountFinalConfirmation = true
+                }
+            } message: {
+                Text("This will permanently delete your account, all study progress, and personal data. This action cannot be undone.")
+            }
+            .sheet(isPresented: $showDeleteAccountFinalConfirmation) {
+                DeleteAccountConfirmationView(
+                    deleteConfirmationText: $deleteConfirmationText,
+                    isDeletingAccount: $isDeletingAccount,
+                    onDelete: deleteAccount
+                )
+            }
+        }
+    }
+
+    private func deleteAccount() {
+        isDeletingAccount = true
+        Task {
+            // Reset all local progress first
+            resetAllProgress()
+
+            // Clear cached content
+            SupabaseContentProvider.shared.clearCache()
+
+            // Clear sync data
+            SyncManager.shared.resetSync()
+
+            // Delete the account from Supabase
+            do {
+                try await authManager.deleteAccount()
+            } catch {
+                print("Error deleting account: \(error)")
+            }
+
+            isDeletingAccount = false
+            showDeleteAccountFinalConfirmation = false
+            dismiss()
         }
     }
 
@@ -10692,6 +13907,138 @@ struct SettingsView: View {
     private func requestReview() {
         if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
             SKStoreReviewController.requestReview(in: windowScene)
+        }
+    }
+}
+
+// MARK: - Delete Account Confirmation View
+
+struct DeleteAccountConfirmationView: View {
+    @Environment(\.dismiss) var dismiss
+    @Binding var deleteConfirmationText: String
+    @Binding var isDeletingAccount: Bool
+    let onDelete: () -> Void
+
+    private let confirmationWord = "DELETE"
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 24) {
+                // Warning Icon
+                ZStack {
+                    Circle()
+                        .fill(Color.red.opacity(0.1))
+                        .frame(width: 80, height: 80)
+
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 40))
+                        .foregroundColor(.red)
+                }
+                .padding(.top, 20)
+
+                // Warning Text
+                VStack(spacing: 12) {
+                    Text("Permanently Delete Account")
+                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .foregroundColor(.red)
+
+                    Text("This action is irreversible. All your data will be permanently deleted including:")
+                        .font(.system(size: 15, design: .rounded))
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                }
+
+                // Data that will be deleted
+                VStack(alignment: .leading, spacing: 8) {
+                    DeleteItemRow(icon: "chart.line.uptrend.xyaxis", text: "Study progress & statistics")
+                    DeleteItemRow(icon: "star.fill", text: "XP, levels & achievements")
+                    DeleteItemRow(icon: "bookmark.fill", text: "Saved & mastered cards")
+                    DeleteItemRow(icon: "folder.fill", text: "Custom study sets & notes")
+                    DeleteItemRow(icon: "icloud.fill", text: "iCloud synced data")
+                    DeleteItemRow(icon: "person.fill", text: "Account & profile")
+                }
+                .padding()
+                .background(Color.red.opacity(0.05))
+                .cornerRadius(12)
+                .padding(.horizontal)
+
+                // Confirmation Input
+                VStack(spacing: 8) {
+                    Text("Type \"\(confirmationWord)\" to confirm")
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundColor(.secondary)
+
+                    TextField("", text: $deleteConfirmationText)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .autocapitalization(.allCharacters)
+                        .autocorrectionDisabled()
+                        .padding(.horizontal, 40)
+                }
+
+                Spacer()
+
+                // Buttons
+                VStack(spacing: 12) {
+                    Button(action: {
+                        HapticManager.shared.error()
+                        onDelete()
+                    }) {
+                        HStack {
+                            if isDeletingAccount {
+                                ProgressView()
+                                    .tint(.white)
+                            } else {
+                                Image(systemName: "trash.fill")
+                                Text("Delete My Account")
+                            }
+                        }
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(deleteConfirmationText == confirmationWord ? Color.red : Color.red.opacity(0.4))
+                        .cornerRadius(14)
+                    }
+                    .disabled(deleteConfirmationText != confirmationWord || isDeletingAccount)
+
+                    Button("Cancel") {
+                        deleteConfirmationText = ""
+                        dismiss()
+                    }
+                    .font(.system(size: 17, weight: .medium, design: .rounded))
+                    .foregroundColor(.blue)
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 20)
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct DeleteItemRow: View {
+    let icon: String
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 14))
+                .foregroundColor(.red)
+                .frame(width: 20)
+
+            Text(text)
+                .font(.system(size: 14, design: .rounded))
+                .foregroundColor(.primary)
         }
     }
 }
@@ -10787,153 +14134,659 @@ struct BackButton: View {
     }
 }
 
-// MARK: - Swipe Game View
+// MARK: - Shared Session Complete View
 
-struct SwipeGameView: View {
+struct SessionCompleteStat: Identifiable {
+    let id = UUID()
+    let value: String
+    let label: String
+    let color: Color
+}
+
+struct SessionCompleteView: View {
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
+    @EnvironmentObject var statsManager: StatsManager
+
+    let performancePercent: Int
+    let stats: [SessionCompleteStat]
+    let summaryText: String
+    let onPlayAgain: () -> Void
+    let onHome: () -> Void
+    var playAgainLabel: String = "Start Another Session"
+    var extraContent: AnyView? = nil
+
+    @State private var showSubscriptionSheet = false
+
+    private var isPremium: Bool {
+        subscriptionManager.hasPremiumAccess || (AuthManager.shared.userProfile?.isPremium ?? false)
+    }
+
+    private var celebrationIcon: String {
+        switch performancePercent {
+        case 90...100: return "star.fill"
+        case 70..<90: return "flame.fill"
+        case 50..<70: return "book.fill"
+        default: return "heart.fill"
+        }
+    }
+
+    private var celebrationIconColor: Color {
+        switch performancePercent {
+        case 90...100: return .yellow
+        case 70..<90: return .orange
+        case 50..<70: return .purple
+        default: return .mintGreen
+        }
+    }
+
+    private var celebrationTitle: String {
+        switch performancePercent {
+        case 100: return "Perfect Score!"
+        case 90..<100: return "Session Crushed!"
+        case 70..<90: return "Great Progress!"
+        case 50..<70: return "Keep It Up!"
+        case 30..<50: return "Building Foundations"
+        default: return "Every Card Counts"
+        }
+    }
+
+    private var celebrationSubtitle: String {
+        switch performancePercent {
+        case 90...100: return "You are one step closer to your RN license."
+        case 70..<90: return "You're getting the hang of this — keep going!"
+        case 50..<70: return "Solid effort. Review the tricky ones and try again."
+        case 30..<50: return "Tough cards! A few more rounds and you'll own them."
+        default: return "The hardest part is showing up — and you did. Try again!"
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                Spacer().frame(height: 20)
+
+                // Header
+                VStack(spacing: 8) {
+                    Image(systemName: celebrationIcon)
+                        .font(.system(size: 50, weight: .bold))
+                        .foregroundColor(celebrationIconColor)
+                    Text(celebrationTitle)
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                    Text(celebrationSubtitle)
+                        .font(.system(size: 16, design: .rounded))
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                // Stats Grid
+                HStack(spacing: 0) {
+                    ForEach(Array(stats.enumerated()), id: \.element.id) { index, stat in
+                        if index > 0 {
+                            Divider().frame(height: 40)
+                        }
+                        VStack(spacing: 6) {
+                            Text(stat.value)
+                                .font(.system(size: 20, weight: .bold, design: .rounded))
+                                .foregroundColor(stat.color)
+                            Text(stat.label)
+                                .font(.system(size: 12, design: .rounded))
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+                .padding()
+                .background(Color.adaptiveWhite)
+                .cornerRadius(16)
+                .padding(.horizontal, 20)
+
+                // Summary
+                Text(summaryText)
+                    .font(.system(size: 14, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 20)
+
+                // Extra content (e.g. Review Answers button for tests)
+                if let extraContent = extraContent {
+                    extraContent
+                }
+
+                // Upsell (only for free users scoring 50% or below)
+                if !isPremium && performancePercent <= 50 {
+                    VStack(spacing: 14) {
+                        Image(systemName: "lightbulb.fill")
+                            .font(.system(size: 28))
+                            .foregroundColor(.yellow)
+
+                        Text("Struggling with some cards? Unlock detailed rationales to understand the why behind every answer.")
+                            .font(.system(size: 15, weight: .medium, design: .rounded))
+                            .multilineTextAlignment(.center)
+                            .foregroundColor(.primary)
+
+                        Button(action: {
+                            showSubscriptionSheet = true
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "crown.fill")
+                                Text("Unlock Rationales & 1000+ Cards")
+                                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(
+                                LinearGradient(colors: [.orange, .pink], startPoint: .leading, endPoint: .trailing)
+                            )
+                            .cornerRadius(14)
+                        }
+
+                        Button(action: { onHome() }) {
+                            Text("Back to Home")
+                                .font(.system(size: 15, weight: .medium, design: .rounded))
+                                .foregroundColor(.secondary)
+                                .underline()
+                        }
+                    }
+                    .padding(20)
+                    .background(Color.yellow.opacity(0.08))
+                    .cornerRadius(16)
+                    .padding(.horizontal, 20)
+                }
+
+                // Action buttons (when no upsell showing)
+                if isPremium || performancePercent > 50 {
+                    VStack(spacing: 12) {
+                        Button(action: {
+                            HapticManager.shared.buttonTap()
+                            onPlayAgain()
+                        }) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "arrow.counterclockwise")
+                                Text(playAgainLabel)
+                                    .font(.system(size: 17, weight: .bold, design: .rounded))
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(
+                                LinearGradient(colors: [.mintGreen, .green], startPoint: .leading, endPoint: .trailing)
+                            )
+                            .cornerRadius(16)
+                        }
+
+                        Button(action: { onHome() }) {
+                            Text("Back to Home")
+                                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                                .foregroundColor(.primary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 16)
+                                .background(Color.adaptiveWhite)
+                                .cornerRadius(16)
+                                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.gray.opacity(0.2), lineWidth: 1))
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                }
+
+                Spacer().frame(height: 30)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.creamyBackground.ignoresSafeArea())
+        .sheet(isPresented: $showSubscriptionSheet) {
+            SubscriptionSheet()
+        }
+    }
+}
+
+// MARK: - Study Flashcards View (Quizlet-Style)
+
+struct StudyFlashcardsView: View {
     @EnvironmentObject var appManager: AppManager
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
-    @State private var currentIndex = 0
-    @State private var offset: CGSize = .zero
-    @State private var isFlipped = false
-    @State private var showStamp: String? = nil
-    @State private var showCelebration = false
-    @State private var correctCount = 0
-    @State private var startTime = Date()
-    @State private var swipeCards: [Flashcard] = []
-    @State private var isDragging = false
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
 
+    // Card data
+    @State private var allCards: [Flashcard] = []
+    @State private var currentRoundCards: [Flashcard] = []
+    @State private var currentIndex = 0
+    @State private var knowCards: [Flashcard] = []
+    @State private var stillLearningCards: [Flashcard] = []
+
+    // UI state
+    @State private var isFlipped = false
+    @State private var dragOffset: CGSize = .zero
+    @State private var isDragging = false
+    @State private var showStamp: String? = nil
+    @State private var showRoundSummary = false
+    @State private var roundNumber = 1
+    @State private var showCelebration = false
+    @State private var showConfetti = false
+    @State private var startTime = Date()
+    @State private var showKnowParticles = false
     var body: some View {
         ZStack {
             Color.creamyBackground.ignoresSafeArea()
-            VStack(spacing: 16) {
-                HStack {
-                    BackButton {
-                        HapticManager.shared.buttonTap()
-                        saveSession()
-                        appManager.currentScreen = .menu
-                    }
-                    Spacer()
-                    Text("Cozy Swipe").font(.system(size: 18, weight: .bold, design: .rounded))
-                    Spacer()
-                    Text("\(currentIndex + 1)/\(swipeCards.count)")
-                        .font(.system(size: 14, weight: .medium, design: .rounded)).foregroundColor(.secondary)
+
+            if showCelebration {
+                allKnownCelebrationView
+            } else if currentRoundCards.isEmpty {
+                AllMasteredView {
+                    HapticManager.shared.buttonTap()
+                    appManager.currentScreen = .cardBrowser
+                    cardManager.currentFilter = .mastered
                 }
-                .padding(.horizontal)
+            } else {
+                studyContentView
+            }
 
-                ProgressBar(current: currentIndex + 1, total: swipeCards.count)
-                    .padding(.horizontal)
-
-                Spacer()
-
-                if showCelebration {
-                    CelebrationView(score: correctCount, total: swipeCards.count) {
-                        HapticManager.shared.buttonTap()
-                        saveSession()
-                        setupSwipeCards()
-                    }
-                } else if swipeCards.isEmpty {
-                    AllMasteredView {
-                        HapticManager.shared.buttonTap()
-                        appManager.currentScreen = .cardBrowser
-                        cardManager.currentFilter = .mastered
-                    }
-                } else if currentIndex < swipeCards.count {
-                    ZStack {
-                        FlashcardView(card: swipeCards[currentIndex], isFlipped: $isFlipped,
-                                     isSaved: cardManager.isSaved(swipeCards[currentIndex])) {
-                            HapticManager.shared.light()
-                            cardManager.toggleSaved(swipeCards[currentIndex])
-                        }
-                        .offset(offset)
-                        .rotationEffect(.degrees(Double(offset.width / 20)))
-                        .gesture(
-                            DragGesture(minimumDistance: 10)
-                                .onChanged { g in
-                                    isDragging = true
-                                    offset = g.translation
-                                    let newStamp = g.translation.width > 50 ? "GOT IT!" : (g.translation.width < -50 ? "STUDY MORE" : nil)
-                                    if newStamp != showStamp && newStamp != nil {
-                                        HapticManager.shared.selection()
-                                    }
-                                    showStamp = newStamp
-                                }
-                                .onEnded { g in
-                                    isDragging = false
-                                    if g.translation.width > 100 { swipeRight() }
-                                    else if g.translation.width < -100 { swipeLeft() }
-                                    else { withAnimation(.spring()) { offset = .zero; showStamp = nil } }
-                                }
-                        )
-                        .onTapGesture {
-                            guard !isDragging else { return }
-                            HapticManager.shared.cardFlip()
-                            SoundManager.shared.cardFlip()
-                            withAnimation(.spring(response: 0.5)) { isFlipped.toggle() }
-                        }
-
-                        if let stamp = showStamp {
-                            StampOverlay(text: stamp, isPositive: stamp == "GOT IT!")
-                        }
-                    }
-                }
-                Spacer()
-
-                if !showCelebration && !swipeCards.isEmpty && currentIndex < swipeCards.count {
-                    SwipeInstructions()
-                }
+            if showConfetti {
+                QuizConfettiOverlay()
+                    .allowsHitTesting(false)
             }
         }
-        .onAppear { setupSwipeCards() }
+        .onAppear { setupSession() }
     }
 
-    func setupSwipeCards() {
-        swipeCards = cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed)
+    // MARK: - Study Content
+
+    private var studyContentView: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                BackButton {
+                    HapticManager.shared.buttonTap()
+                    saveSession()
+                    appManager.currentScreen = .menu
+                }
+                Spacer()
+                VStack(spacing: 2) {
+                    Text("Study Flashcards")
+                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                    if roundNumber > 1 {
+                        Text("Round \(roundNumber)")
+                            .font(.system(size: 12, design: .rounded))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                Spacer()
+                // Invisible spacer to balance back button
+                Color.clear.frame(width: 44, height: 44)
+            }
+            .padding(.horizontal)
+            .padding(.top, 4)
+
+            // Progress bar
+            ProgressBar(current: currentIndex, total: currentRoundCards.count)
+                .padding(.horizontal)
+                .padding(.top, 8)
+
+            // Counters row
+            HStack {
+                // Still Learning counter
+                HStack(spacing: 6) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.orange)
+                        .font(.system(size: 16))
+                    Text("\(stillLearningCards.count)")
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundColor(.orange)
+                    Text("Still Learning")
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundColor(.orange.opacity(0.8))
+                }
+
+                Spacer()
+
+                // Know counter
+                HStack(spacing: 6) {
+                    Text("Know")
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundColor(.green.opacity(0.8))
+                    Text("\(knowCards.count)")
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundColor(.green)
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                        .font(.system(size: 16))
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+
+            Spacer()
+
+            // Card area
+            if currentIndex < currentRoundCards.count {
+                ZStack {
+                    FlashcardView(
+                        card: currentRoundCards[currentIndex],
+                        isFlipped: $isFlipped,
+                        isSaved: cardManager.isSaved(currentRoundCards[currentIndex])
+                    ) {
+                        HapticManager.shared.light()
+                        cardManager.toggleSaved(currentRoundCards[currentIndex])
+                    }
+                    .offset(dragOffset)
+                    .rotationEffect(.degrees(Double(dragOffset.width / 20)))
+                    .gesture(
+                        DragGesture(minimumDistance: 10)
+                            .onChanged { g in
+                                isDragging = true
+                                dragOffset = g.translation
+                                let newStamp = g.translation.width > 50 ? "KNOW" : (g.translation.width < -50 ? "STILL LEARNING" : nil)
+                                if newStamp != showStamp && newStamp != nil {
+                                    if newStamp == "KNOW" {
+                                        HapticManager.shared.light()
+                                    } else {
+                                        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                                    }
+                                }
+                                showStamp = newStamp
+                            }
+                            .onEnded { g in
+                                isDragging = false
+                                if g.translation.width > 100 {
+                                    showKnowParticles = true
+                                    markKnow()
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { showKnowParticles = false }
+                                }
+                                else if g.translation.width < -100 { markStillLearning() }
+                                else { withAnimation(.spring()) { dragOffset = .zero; showStamp = nil } }
+                            }
+                    )
+                    .onTapGesture {
+                        guard !isDragging else { return }
+                        HapticManager.shared.cardFlip()
+                        SoundManager.shared.cardFlip()
+                        withAnimation(.spring(response: 0.5)) { isFlipped.toggle() }
+                    }
+
+                    if let stamp = showStamp {
+                        StampOverlay(text: stamp, isPositive: stamp == "KNOW")
+                    }
+
+                    if showKnowParticles {
+                        SwipeParticleEffect()
+                            .allowsHitTesting(false)
+                    }
+                }
+            }
+
+            Spacer()
+
+            // Bottom buttons
+            if currentIndex < currentRoundCards.count {
+                HStack(spacing: 16) {
+                    Button(action: { markStillLearning() }) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 16, weight: .bold))
+                            Text("Still Learning")
+                                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        }
+                        .foregroundColor(.orange)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(Color.orange.opacity(0.12))
+                        .cornerRadius(16)
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.orange.opacity(0.3), lineWidth: 1.5))
+                    }
+
+                    Button(action: {
+                        showKnowParticles = true
+                        markKnow()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { showKnowParticles = false }
+                    }) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 16, weight: .bold))
+                            Text("Know")
+                                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        }
+                        .foregroundColor(.green)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(Color.green.opacity(0.12))
+                        .cornerRadius(16)
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.green.opacity(0.3), lineWidth: 1.5))
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
+            }
+        }
+    }
+
+    // MARK: - Round Summary
+
+    private var roundSummaryView: some View {
+        VStack(spacing: 24) {
+            Spacer()
+
+            Text("🐻").font(.system(size: 60))
+
+            Text("Round \(roundNumber) Complete!")
+                .font(.system(size: 26, weight: .bold, design: .rounded))
+
+            // Score display
+            VStack(spacing: 8) {
+                Text("You know \(knowCards.count) of \(allCards.count) cards")
+                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    .foregroundColor(.primary)
+
+                // Visual split bar
+                GeometryReader { geo in
+                    HStack(spacing: 0) {
+                        let knowFraction = allCards.isEmpty ? 0 : CGFloat(knowCards.count) / CGFloat(allCards.count)
+                        Rectangle()
+                            .fill(Color.green)
+                            .frame(width: geo.size.width * knowFraction)
+                        Rectangle()
+                            .fill(Color.orange)
+                            .frame(width: geo.size.width * (1 - knowFraction))
+                    }
+                    .cornerRadius(6)
+                }
+                .frame(height: 12)
+                .padding(.horizontal, 40)
+            }
+
+            // Legend
+            HStack(spacing: 24) {
+                HStack(spacing: 6) {
+                    Circle().fill(Color.green).frame(width: 10, height: 10)
+                    Text("Know: \(knowCards.count)")
+                        .font(.system(size: 14, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+                HStack(spacing: 6) {
+                    Circle().fill(Color.orange).frame(width: 10, height: 10)
+                    Text("Still Learning: \(stillLearningCards.count)")
+                        .font(.system(size: 14, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Spacer()
+
+            // Action buttons
+            VStack(spacing: 12) {
+                if !stillLearningCards.isEmpty {
+                    Button(action: { startNextRound() }) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.counterclockwise")
+                            Text("Keep Studying (\(stillLearningCards.count) cards)")
+                                .font(.system(size: 17, weight: .bold, design: .rounded))
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(
+                            LinearGradient(colors: [.orange, .orange.opacity(0.8)], startPoint: .leading, endPoint: .trailing)
+                        )
+                        .cornerRadius(16)
+                    }
+                }
+
+                Button(action: { finishSession() }) {
+                    Text("Done")
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .foregroundColor(.primary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(Color.adaptiveWhite)
+                        .cornerRadius(16)
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.gray.opacity(0.2), lineWidth: 1))
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 30)
+        }
+        .background(Color.creamyBackground)
+    }
+
+    // MARK: - Session Complete
+
+    private var sessionAccuracy: Int {
+        let total = knowCards.count + stillLearningCards.count
+        guard total > 0 else { return 0 }
+        return Int(Double(knowCards.count) / Double(total) * 100)
+    }
+
+    private var allKnownCelebrationView: some View {
+        SessionCompleteView(
+            performancePercent: sessionAccuracy,
+            stats: [
+                SessionCompleteStat(value: "\(sessionAccuracy)%", label: "Accuracy", color: .mintGreen),
+                SessionCompleteStat(value: "\(statsManager.stats.currentStreak) Day\(statsManager.stats.currentStreak == 1 ? "" : "s")", label: "Streak", color: .orange),
+                SessionCompleteStat(value: "+\(knowCards.count * 10) XP", label: "XP Earned", color: .softLavender)
+            ],
+            summaryText: "You studied \(allCards.count) cards — \(knowCards.count) known, \(stillLearningCards.count) still learning",
+            onPlayAgain: { setupSession() },
+            onHome: { finishSession() }
+        )
+    }
+
+    // MARK: - Actions
+
+    private func markKnow() {
+        guard currentIndex < currentRoundCards.count else { return }
+        let card = currentRoundCards[currentIndex]
+        HapticManager.shared.correctAnswer()
+        SoundManager.shared.correctAnswer()
+        cardManager.recordCorrectAnswer(card)
+        knowCards.append(card)
+        advanceCard(positive: true)
+    }
+
+    private func markStillLearning() {
+        guard currentIndex < currentRoundCards.count else { return }
+        let card = currentRoundCards[currentIndex]
+        HapticManager.shared.wrongAnswer()
+        SoundManager.shared.wrongAnswer()
+        cardManager.recordWrongAnswer(card)
+        stillLearningCards.append(card)
+        advanceCard(positive: false)
+    }
+
+    private func advanceCard(positive: Bool) {
+        HapticManager.shared.swipe()
+        SoundManager.shared.swipe()
+        withAnimation(.easeOut(duration: 0.3)) {
+            dragOffset = CGSize(width: positive ? 500 : -500, height: 0)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            dragOffset = .zero
+            showStamp = nil
+            isFlipped = false
+            if currentIndex + 1 >= currentRoundCards.count {
+                // Session complete — single round like Quizlet
+                showCelebration = true
+                showConfetti = true
+                HapticManager.shared.achievement()
+                SoundManager.shared.celebration()
+            } else {
+                currentIndex += 1
+            }
+        }
+    }
+
+    private func startNextRound() {
+        HapticManager.shared.buttonTap()
+        roundNumber += 1
+        currentRoundCards = stillLearningCards.shuffled()
+        stillLearningCards = []
         currentIndex = 0
-        correctCount = 0
+        isFlipped = false
+        showRoundSummary = false
+    }
+
+    private func finishSession() {
+        HapticManager.shared.buttonTap()
+        saveSession()
+        SessionProgressManager.shared.clearProgress(for: .flashcards)
+        appManager.currentScreen = .menu
+    }
+
+    // MARK: - Setup
+
+    private func setupSession() {
+        if let progress = cardManager.resumeProgress, progress.gameMode == GameMode.flashcards.rawValue {
+            allCards = cardManager.sessionCards
+            currentRoundCards = allCards
+            cardManager.sessionCards = []
+            currentIndex = progress.currentIndex
+            // Restore know count from score
+            knowCards = Array(allCards.prefix(progress.score))
+            cardManager.resumeProgress = nil
+        } else if !cardManager.sessionCards.isEmpty {
+            allCards = cardManager.sessionCards
+            currentRoundCards = allCards
+            cardManager.sessionCards = []
+            currentIndex = 0
+        } else {
+            allCards = cardManager.getGameCards(isSubscribed: subscriptionManager.hasPremiumAccess)
+            currentRoundCards = allCards
+            currentIndex = 0
+        }
+        knowCards = []
+        stillLearningCards = []
         showCelebration = false
+        showConfetti = false
+        showRoundSummary = false
+        roundNumber = 1
         startTime = Date()
     }
 
-    func swipeRight() {
-        guard currentIndex < swipeCards.count else { return }
-        HapticManager.shared.correctAnswer()
-        SoundManager.shared.correctAnswer()
-        cardManager.recordCorrectAnswer(swipeCards[currentIndex])
-        correctCount += 1
-        nextCard(positive: true)
-    }
+    // MARK: - Save
 
-    func swipeLeft() {
-        guard currentIndex < swipeCards.count else { return }
-        HapticManager.shared.wrongAnswer()
-        SoundManager.shared.wrongAnswer()
-        cardManager.recordWrongAnswer(swipeCards[currentIndex])
-        nextCard(positive: false)
-    }
-
-    func nextCard(positive: Bool) {
-        HapticManager.shared.swipe()
-        SoundManager.shared.swipe()
-        withAnimation(.easeOut(duration: 0.3)) { offset = CGSize(width: positive ? 500 : -500, height: 0) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            offset = .zero; showStamp = nil; isFlipped = false
-            if currentIndex + 1 >= swipeCards.count {
-                showCelebration = true
-                HapticManager.shared.achievement()
-                SoundManager.shared.celebration()
-            }
-            else { currentIndex += 1 }
-        }
-    }
-
-    func saveSession() {
+    private func saveSession() {
+        let cardsStudied = knowCards.count + stillLearningCards.count
         let timeSpent = Int(Date().timeIntervalSince(startTime))
-        if currentIndex > 0 {
-            statsManager.recordSession(cardsStudied: currentIndex, correct: correctCount, timeSeconds: timeSpent, mode: "Swipe")
-            dailyGoalsManager.recordStudySession(cardsStudied: currentIndex, correct: correctCount, timeSeconds: timeSpent)
+        if cardsStudied > 0 {
+            statsManager.recordSession(cardsStudied: cardsStudied, correct: knowCards.count, timeSeconds: timeSpent, mode: "Flashcards")
+            dailyGoalsManager.recordStudySession(cardsStudied: cardsStudied, correct: knowCards.count, timeSeconds: timeSpent)
+
+            let categoriesStudied = Set((knowCards + stillLearningCards).map { $0.contentCategory })
+            for category in categoriesStudied {
+                dailyGoalsManager.recordCategoryStudied(category)
+            }
+        }
+
+        // Save progress for resume if mid-session
+        if !showCelebration && !showRoundSummary && currentIndex > 0 && currentIndex < currentRoundCards.count {
+            SessionProgressManager.shared.saveProgress(
+                gameMode: .flashcards,
+                cardIDs: currentRoundCards.map { $0.id },
+                currentIndex: currentIndex,
+                score: knowCards.count
+            )
+        } else {
+            SessionProgressManager.shared.clearProgress(for: .flashcards)
         }
     }
 }
@@ -10959,49 +14812,142 @@ struct FlashcardView: View {
     @Binding var isFlipped: Bool
     let isSaved: Bool
     let onSaveTap: () -> Void
+    @StateObject private var speechManager = SpeechManager()
+
+    private var spokenText: String {
+        isFlipped ? card.answer : card.question
+    }
 
     var body: some View {
-        ZStack {
-            CardFace(content: card.answer, category: card.contentCategory, isQuestion: false, rationale: card.rationale)
-                .rotation3DEffect(.degrees(isFlipped ? 0 : 180), axis: (x: 0, y: 1, z: 0)).opacity(isFlipped ? 1 : 0)
-            CardFace(content: card.question, category: card.contentCategory, isQuestion: true, rationale: "")
-                .rotation3DEffect(.degrees(isFlipped ? -180 : 0), axis: (x: 0, y: 1, z: 0)).opacity(isFlipped ? 0 : 1)
-        }
-        .frame(width: 300, height: 400)
-        .overlay(alignment: .topTrailing) {
-            Button(action: onSaveTap) {
-                Image(systemName: isSaved ? "heart.fill" : "heart").font(.system(size: 22))
-                    .foregroundColor(isSaved ? .red : .gray).padding(14)
+        GeometryReader { geo in
+            let cardWidth = min(geo.size.width - 32, 500)
+            let cardHeight = min(geo.size.height * 0.85, 520)
+            ZStack {
+                CardFace(content: card.answer, category: card.contentCategory, isQuestion: false, rationale: card.rationale)
+                    .rotation3DEffect(.degrees(isFlipped ? 0 : 180), axis: (x: 0, y: 1, z: 0)).opacity(isFlipped ? 1 : 0)
+                CardFace(content: card.question, category: card.contentCategory, isQuestion: true, rationale: "")
+                    .rotation3DEffect(.degrees(isFlipped ? -180 : 0), axis: (x: 0, y: 1, z: 0)).opacity(isFlipped ? 0 : 1)
             }
+            .frame(width: cardWidth, height: cardHeight)
+            .overlay(alignment: .topTrailing) {
+                Button(action: onSaveTap) {
+                    Image(systemName: isSaved ? "heart.fill" : "heart").font(.system(size: 22))
+                        .foregroundColor(isSaved ? .red : .gray).padding(14)
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                Button(action: {
+                    HapticManager.shared.light()
+                    speechManager.speak(spokenText)
+                }) {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.system(size: 18))
+                        .foregroundColor(.secondary)
+                        .padding(14)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }
 
 struct CardFace: View {
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
     let content: String
     let category: ContentCategory
     let isQuestion: Bool
     let rationale: String
 
+    private let cardCream = Color(red: 1.0, green: 0.996, blue: 0.973) // #FFFEF8
+
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(alignment: .leading, spacing: 14) {
+            // Category header (centered)
             HStack {
-                Image(systemName: category.icon).foregroundColor(category.color)
-                Text(category.rawValue).font(.system(size: 13, weight: .semibold, design: .rounded)).foregroundColor(.secondary)
+                Spacer()
+                HStack(spacing: 4) {
+                    Image(systemName: category.icon).foregroundColor(category.color)
+                    Text(category.rawValue).font(.system(size: 13, weight: .semibold, design: .rounded)).foregroundColor(.secondary)
+                }
+                Spacer()
             }
-            Spacer()
-            Text(content).font(.system(size: 20, weight: .medium, design: .rounded)).multilineTextAlignment(.center).padding(.horizontal)
-            Spacer()
-            if !isQuestion && !rationale.isEmpty {
-                Text(rationale).font(.system(size: 12, design: .rounded)).foregroundColor(.secondary)
-                    .multilineTextAlignment(.center).padding(.horizontal).lineLimit(4)
+
+            if isQuestion {
+                // Question side - left-aligned for clinical readability
+                Spacer()
+                Text(content)
+                    .font(.system(size: 20, weight: .medium, design: .rounded))
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
+                Spacer()
+                Text("Tap to reveal")
+                    .font(.system(size: 13, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            } else {
+                // Answer side - scrollable, left-aligned
+                ScrollView(showsIndicators: true) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text(content)
+                            .font(.system(size: 20, weight: .medium, design: .rounded))
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 10)
+
+                        if !rationale.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "lightbulb.fill")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.yellow)
+                                    Text("Rationale")
+                                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                        .foregroundColor(.secondary)
+                                    if !subscriptionManager.hasPremiumAccess {
+                                        Image(systemName: "lock.fill")
+                                            .font(.system(size: 9))
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+
+                                Text(rationale)
+                                    .font(.system(size: 13, design: .rounded))
+                                    .foregroundColor(.secondary)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .blur(radius: subscriptionManager.hasPremiumAccess ? 0 : 6)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(Color.yellow.opacity(0.1))
+                            .cornerRadius(10)
+                        }
+                    }
+                    .padding(.bottom, 10)
+                }
+
+                Text("Answer")
+                    .font(.system(size: 13, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
-            Text(isQuestion ? "Tap to reveal" : "Answer").font(.system(size: 13, design: .rounded)).foregroundColor(.secondary)
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(RoundedRectangle(cornerRadius: 22).fill(Color.adaptiveWhite).shadow(color: .black.opacity(0.1), radius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 22).stroke(category.color.opacity(0.3), lineWidth: 2))
+        .background(
+            RoundedRectangle(cornerRadius: 22)
+                .fill(cardCream)
+                .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 22)
+                .stroke(Color.black.opacity(0.05), lineWidth: 1)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 22)
+                .stroke(category.color.opacity(0.2), lineWidth: 1.5)
+        )
     }
 }
 
@@ -11015,6 +14961,34 @@ struct StampOverlay: View {
             .padding()
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(isPositive ? Color.green : Color.red, lineWidth: 4))
             .rotationEffect(.degrees(isPositive ? -15 : 15))
+    }
+}
+
+struct SwipeParticleEffect: View {
+    @State private var particles: [(id: Int, x: CGFloat, y: CGFloat, opacity: Double, symbol: String)] = []
+    private let symbols = ["star.fill", "heart.fill", "sparkle", "star.fill", "heart.fill"]
+
+    var body: some View {
+        ZStack {
+            ForEach(particles, id: \.id) { p in
+                Image(systemName: p.symbol)
+                    .font(.system(size: CGFloat.random(in: 12...20)))
+                    .foregroundColor(.green.opacity(p.opacity))
+                    .offset(x: p.x, y: p.y)
+            }
+        }
+        .onAppear {
+            for i in 0..<12 {
+                let startX = CGFloat.random(in: -60...60)
+                let startY = CGFloat.random(in: -20...20)
+                particles.append((id: i, x: startX, y: startY, opacity: 1.0, symbol: symbols[i % symbols.count]))
+            }
+            withAnimation(.easeOut(duration: 0.6)) {
+                particles = particles.map { p in
+                    (id: p.id, x: p.x + CGFloat.random(in: -40...40), y: p.y - CGFloat.random(in: 40...120), opacity: 0.0, symbol: p.symbol)
+                }
+            }
+        }
     }
 }
 
@@ -11059,6 +15033,7 @@ struct CelebrationView: View {
     let score: Int
     let total: Int
     let onRestart: () -> Void
+    var onHome: (() -> Void)? = nil
 
     var percentage: Int { total > 0 ? Int(Double(score) / Double(total) * 100) : 0 }
 
@@ -11075,42 +15050,66 @@ struct CelebrationView: View {
                     .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
                     .cornerRadius(22)
             }
+            if let onHome {
+                Button(action: onHome) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "house.fill").font(.system(size: 14))
+                        Text("Home").font(.system(size: 16, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 30).padding(.vertical, 12)
+                }
+            }
         }
     }
 }
 
-// MARK: - Bear Quiz View
+// MARK: - Bear Learn View (Adaptive Learning)
 
-struct BearQuizView: View {
+struct BearLearnView: View {
     @EnvironmentObject var appManager: AppManager
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
-    @StateObject private var dailyGoalsManager = DailyGoalsManager.shared
-    @State private var currentIndex = 0
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
+
+    // Session card tracking
+    @State private var sessionCards: [LearnSessionCard] = []
+    @State private var cardQueue: [UUID] = []           // Order to show cards
+    @State private var currentCardId: UUID? = nil
+    @State private var learnedCount: Int = 0
+    @State private var totalCards: Int = 0
+
+    // UI state
     @State private var shuffledAnswers: [String] = []
     @State private var selectedAnswer: String? = nil
     @State private var showResult = false
     @State private var isCorrect = false
-    @State private var score = 0
-    @State private var showCelebration = false
-    @State private var startTime = Date()
     @State private var showRationale = false
-    @State private var cardScale: CGFloat = 1.0
-    @State private var cardOpacity: Double = 1.0
+    @State private var showCelebration = false
     @State private var showConfetti = false
     @State private var streakCount = 0
-    @State private var quizCards: [Flashcard] = []
+    @State private var startTime = Date()
+    @State private var cardScale: CGFloat = 1.0
+    @State private var cardOpacity: Double = 1.0
+    @State private var aboutToLearn = false  // Card is level 1, about to become learned
 
-    private let maxQuestions = 10
+    var currentSessionCard: LearnSessionCard? {
+        guard let id = currentCardId else { return nil }
+        return sessionCards.first { $0.id == id }
+    }
 
-    var currentCard: Flashcard? { currentIndex < quizCards.count ? quizCards[currentIndex] : nil }
+    var currentCard: Flashcard? { currentSessionCard?.card }
+
+    var totalAttempts: Int {
+        sessionCards.reduce(0) { $0 + $1.attempts }
+    }
 
     var body: some View {
         ZStack {
             // Background gradient
             LinearGradient(
-                colors: [Color.creamyBackground, Color.pastelPink.opacity(0.1)],
+                colors: [Color.creamyBackground, Color.softLavender.opacity(0.1)],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -11118,10 +15117,9 @@ struct BearQuizView: View {
 
             VStack(spacing: 0) {
                 // Header
-                QuizHeader(
-                    score: score,
-                    currentIndex: currentIndex,
-                    total: quizCards.count,
+                LearnHeader(
+                    learnedCount: learnedCount,
+                    totalCards: totalCards,
                     streakCount: streakCount,
                     onBack: {
                         HapticManager.shared.buttonTap()
@@ -11131,11 +15129,26 @@ struct BearQuizView: View {
                 )
 
                 if showCelebration {
-                    QuizCelebrationView(score: score, total: quizCards.count, onPlayAgain: {
-                        HapticManager.shared.buttonTap()
-                        resetQuiz()
-                    })
-                } else if quizCards.isEmpty {
+                    SessionCompleteView(
+                        performancePercent: totalAttempts > 0 ? Int(Double(totalCards) / Double(totalAttempts) * 100) : 0,
+                        stats: [
+                            SessionCompleteStat(value: "\(totalCards)", label: "Terms Learned", color: .mintGreen),
+                            SessionCompleteStat(value: "\(totalAttempts > 0 ? Int(Double(totalCards) / Double(totalAttempts) * 100) : 0)%", label: "Efficiency", color: .softLavender),
+                            SessionCompleteStat(value: "\(StatsManager.shared.stats.currentStreak) Day\(StatsManager.shared.stats.currentStreak == 1 ? "" : "s")", label: "Streak", color: .orange)
+                        ],
+                        summaryText: "Mastered \(totalCards) terms in \(totalAttempts) attempts",
+                        onPlayAgain: {
+                            HapticManager.shared.buttonTap()
+                            resetLearn()
+                        },
+                        onHome: {
+                            HapticManager.shared.buttonTap()
+                            saveSession()
+                            appManager.currentScreen = .menu
+                        },
+                        playAgainLabel: "Learn More"
+                    )
+                } else if sessionCards.isEmpty {
                     Spacer()
                     AllMasteredView {
                         HapticManager.shared.buttonTap()
@@ -11145,31 +15158,72 @@ struct BearQuizView: View {
                     Spacer()
                 } else if let card = currentCard {
                     Spacer()
+                        .frame(maxHeight: 20)
+
+                    // About to learn indicator
+                    if aboutToLearn {
+                        HStack(spacing: 6) {
+                            Image(systemName: "star.fill")
+                                .foregroundColor(.yellow)
+                            Text("Get this right to learn it!")
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .foregroundColor(.yellow)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.yellow.opacity(0.15))
+                        .cornerRadius(20)
+                        .transition(.scale.combined(with: .opacity))
+                    }
 
                     // Main Question Modal Card
-                    QuizModalCard(
+                    LearnModalCard(
                         card: card,
                         shuffledAnswers: shuffledAnswers,
                         selectedAnswer: selectedAnswer,
                         showResult: showResult,
                         isCorrect: isCorrect,
                         showRationale: showRationale,
+                        aboutToLearn: aboutToLearn,
                         onSelectAnswer: { answer in
                             selectAnswer(answer, correctAnswer: card.answer)
                         },
                         onNext: {
                             HapticManager.shared.buttonTap()
-                            nextQuestion()
+                            nextCard()
                         }
                     )
                     .scaleEffect(cardScale)
                     .opacity(cardOpacity)
 
                     Spacer()
+                        .frame(maxHeight: 16)
 
-                    // Progress dots
-                    QuizProgressDots(current: currentIndex, total: quizCards.count)
-                        .padding(.bottom, 20)
+                    // Remaining cards indicator
+                    HStack(spacing: 4) {
+                        Image(systemName: "rectangle.stack")
+                            .font(.system(size: 12))
+                        Text("\(cardQueue.count) cards remaining")
+                            .font(.system(size: 13, design: .rounded))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.bottom, 20)
+                } else {
+                    // Fallback
+                    Spacer()
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .scaleEffect(1.5)
+                        Text("Loading...")
+                            .font(.system(size: 16, design: .rounded))
+                            .foregroundColor(.secondary)
+                    }
+                    .onAppear {
+                        if !sessionCards.isEmpty {
+                            loadNextCard()
+                        }
+                    }
+                    Spacer()
                 }
             }
 
@@ -11179,27 +15233,90 @@ struct BearQuizView: View {
                     .allowsHitTesting(false)
             }
         }
-        .onAppear { setupQuiz() }
+        .onAppear { setupLearnSession() }
     }
 
-    func setupQuiz() {
-        let allCards = cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed)
-        quizCards = Array(allCards.prefix(maxQuestions))
-        currentIndex = 0
-        score = 0
-        streakCount = 0
+    func setupLearnSession() {
+        // Check if resuming from saved progress
+        if let progress = cardManager.resumeProgress, progress.gameMode == GameMode.learn.rawValue {
+            // Resuming a previous session
+            // progress.cardIDs contains the unlearned cards (remaining to study)
+            // progress.currentIndex stores the learnedCount
+            // progress.cardsReviewed stores the original totalCards
+            // progress.streakCount stores the streak
+
+            let allCards = cardManager.getAvailableCards(isSubscribed: subscriptionManager.hasPremiumAccess)
+            let remainingCardIDs = Set(progress.cardIDs.compactMap { UUID(uuidString: $0) })
+            // Filter out SATA questions - reserved for Practice Test only
+            let remainingCards = allCards.filter { remainingCardIDs.contains($0.id) && $0.questionType != .sata }
+
+            // Restore order from saved progress
+            var orderedCards: [Flashcard] = []
+            for idString in progress.cardIDs {
+                if let uuid = UUID(uuidString: idString),
+                   let card = remainingCards.first(where: { $0.id == uuid }) {
+                    orderedCards.append(card)
+                }
+            }
+
+            // Convert to LearnSessionCards (starting at level 0 for remaining cards)
+            sessionCards = orderedCards.map { LearnSessionCard(id: $0.id, card: $0) }
+            cardQueue = sessionCards.map { $0.id }  // Keep the saved order
+
+            // Restore progress
+            learnedCount = progress.currentIndex  // We stored learnedCount here
+            totalCards = progress.cardsReviewed   // We stored totalCards here
+            streakCount = progress.streakCount
+
+            cardManager.resumeProgress = nil // Clear after use
+            cardManager.sessionCards = []
+        } else if !cardManager.sessionCards.isEmpty {
+            // New session with selected cards (from setup screen)
+            // Filter out SATA questions - reserved for Practice Test only
+            let cards = cardManager.sessionCards.filter { $0.questionType != .sata }
+            cardManager.sessionCards = []
+
+            sessionCards = cards.map { LearnSessionCard(id: $0.id, card: $0) }
+            totalCards = sessionCards.count
+            cardQueue = sessionCards.map { $0.id }.shuffled()
+            learnedCount = 0
+            streakCount = 0
+        } else {
+            // New session with default cards
+            // Filter out SATA questions - reserved for Practice Test only
+            let cards = cardManager.getGameCards(isSubscribed: subscriptionManager.hasPremiumAccess)
+                .filter { $0.questionType != .sata }
+
+            sessionCards = cards.map { LearnSessionCard(id: $0.id, card: $0) }
+            totalCards = sessionCards.count
+            cardQueue = sessionCards.map { $0.id }.shuffled()
+            learnedCount = 0
+            streakCount = 0
+        }
+
         startTime = Date()
-        loadQuestion()
+        loadNextCard()
     }
 
-    func loadQuestion() {
-        guard let card = currentCard else { return }
+    func loadNextCard() {
+        guard !cardQueue.isEmpty else {
+            showCelebration = true
+            HapticManager.shared.achievement()
+            SoundManager.shared.celebration()
+            return
+        }
+
+        currentCardId = cardQueue.removeFirst()
+        guard let sessionCard = currentSessionCard else { return }
+
+        // Check if card is about to be learned
+        aboutToLearn = sessionCard.sessionLevel == 1
 
         // Animate card in
         cardScale = 0.8
         cardOpacity = 0
 
-        shuffledAnswers = card.shuffledAnswers()
+        shuffledAnswers = sessionCard.card.shuffledAnswers()
         selectedAnswer = nil
         showResult = false
         isCorrect = false
@@ -11213,7 +15330,8 @@ struct BearQuizView: View {
     }
 
     func selectAnswer(_ answer: String, correctAnswer: String) {
-        guard !showResult, let card = currentCard else { return }
+        guard !showResult, let cardId = currentCardId,
+              let index = sessionCards.firstIndex(where: { $0.id == cardId }) else { return }
 
         // Haptic feedback
         HapticManager.shared.medium()
@@ -11225,22 +15343,48 @@ struct BearQuizView: View {
             showResult = true
         }
 
-        if isCorrect {
-            score += 1
-            streakCount += 1
-            cardManager.recordCorrectAnswer(card)
+        // Update session card
+        sessionCards[index].attempts += 1
 
-            // Show confetti for correct answer
-            withAnimation(.easeOut(duration: 0.2)) {
-                showConfetti = true
+        if isCorrect {
+            sessionCards[index].correctStreak += 1
+            sessionCards[index].sessionLevel += 1
+            streakCount += 1
+
+            if sessionCards[index].isLearned {
+                learnedCount += 1
+                // Card is learned - don't add back to queue
+                // Show extra celebration for learning
+                withAnimation(.easeOut(duration: 0.2)) {
+                    showConfetti = true
+                }
+            } else {
+                // Move card further back (5-8 positions)
+                reinsertCard(cardId, positions: Int.random(in: 5...8))
+                // Still show confetti for correct
+                withAnimation(.easeOut(duration: 0.2)) {
+                    showConfetti = true
+                }
             }
+
+            // Update spaced rep (quality 4 for correct)
+            cardManager.recordSpacedRepResponse(card: sessionCards[index].card, quality: 4)
+            cardManager.recordCorrectAnswer(sessionCards[index].card)
 
             // Success feedback
             HapticManager.shared.correctAnswer()
             SoundManager.shared.correctAnswer()
         } else {
+            sessionCards[index].correctStreak = 0
+            sessionCards[index].sessionLevel = 0  // Reset to beginning
             streakCount = 0
-            cardManager.recordWrongAnswer(card)
+
+            // Card returns soon (3-5 positions)
+            reinsertCard(cardId, positions: Int.random(in: 3...5))
+
+            // Update spaced rep (quality 1 for wrong)
+            cardManager.recordSpacedRepResponse(card: sessionCards[index].card, quality: 1)
+            cardManager.recordWrongAnswer(sessionCards[index].card)
 
             // Error feedback
             HapticManager.shared.wrongAnswer()
@@ -11257,60 +15401,131 @@ struct BearQuizView: View {
             }
         }
 
-        statsManager.recordCategoryResult(category: card.contentCategory.rawValue, correct: isCorrect)
+        statsManager.recordCategoryResult(category: sessionCards[index].card.contentCategory.rawValue, correct: isCorrect)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            withAnimation(.easeInOut(duration: 0.3)) {
-                showRationale = true
+        // Check if session complete
+        if learnedCount >= totalCards {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                showCelebration = true
+                HapticManager.shared.achievement()
+                SoundManager.shared.celebration()
+            }
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    showRationale = true
+                }
             }
         }
     }
 
-    func nextQuestion() {
+    func reinsertCard(_ cardId: UUID, positions: Int) {
+        let insertIndex = min(positions, cardQueue.count)
+        cardQueue.insert(cardId, at: insertIndex)
+    }
+
+    func nextCard() {
         // Animate card out
         withAnimation(.easeInOut(duration: 0.2)) {
             cardScale = 0.9
             cardOpacity = 0
+            aboutToLearn = false
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            if currentIndex + 1 >= quizCards.count {
-                showCelebration = true
-                HapticManager.shared.achievement()
-                SoundManager.shared.celebration()
-            } else {
-                currentIndex += 1
-                loadQuestion()
-            }
+            loadNextCard()
         }
     }
 
-    func resetQuiz() {
+    func resetLearn() {
         saveSession()
-        showCelebration = false
-        setupQuiz()
+        // Navigate back to menu so user goes through setup flow again
+        appManager.currentScreen = .menu
     }
 
     func saveSession() {
         let timeSpent = Int(Date().timeIntervalSince(startTime))
-        if currentIndex > 0 {
-            statsManager.recordSession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent, mode: "Quiz")
-            dailyGoalsManager.recordStudySession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent)
+        let cardsStudied = sessionCards.filter { $0.attempts > 0 }.count
+
+        if cardsStudied > 0 {
+            let correctAnswers = sessionCards.filter { $0.isLearned }.count
+            statsManager.recordSession(cardsStudied: cardsStudied, correct: correctAnswers, timeSeconds: timeSpent, mode: "Learn")
+            dailyGoalsManager.recordStudySession(cardsStudied: cardsStudied, correct: correctAnswers, timeSeconds: timeSpent)
+
+            // Track categories studied
+            let categoriesStudied = Set(sessionCards.filter { $0.attempts > 0 }.map { $0.card.contentCategory })
+            for category in categoriesStudied {
+                dailyGoalsManager.recordCategoryStudied(category)
+            }
+
+            // Track correct streak
+            dailyGoalsManager.recordCorrectStreak(streakCount: streakCount)
+
+            // Check for perfect session (all learned with no mistakes)
+            if showCelebration && totalAttempts == totalCards && totalCards >= 5 {
+                dailyGoalsManager.recordPerfectQuiz()
+            }
+        }
+
+        // Save progress for resume (only if not completed and user has made progress)
+        let unlearnedCards = sessionCards.filter { !$0.isLearned }
+        let hasStartedSession = cardsStudied > 0 || learnedCount > 0
+
+        if !showCelebration && !unlearnedCards.isEmpty && hasStartedSession {
+            // Build the remaining card queue: current card (if any) + queue + unlearned cards not in queue
+            var remainingCardIDs: [UUID] = []
+
+            // Add current card if exists
+            if let currentId = currentCardId {
+                remainingCardIDs.append(currentId)
+            }
+
+            // Add cards in queue
+            remainingCardIDs.append(contentsOf: cardQueue)
+
+            // Add any unlearned cards that might not be in queue yet
+            let inQueueOrCurrent = Set(remainingCardIDs)
+            for card in unlearnedCards {
+                if !inQueueOrCurrent.contains(card.id) {
+                    remainingCardIDs.append(card.id)
+                }
+            }
+
+            // Use max(1, learnedCount) to ensure the guard in saveProgress passes
+            // The actual learnedCount is stored in currentIndex, totalCards in cardsReviewed
+            let indexToSave = max(1, learnedCount)
+
+            // Save directly to UserDefaults to bypass the guard that requires currentIndex > 0
+            let progress = SessionProgress(
+                gameMode: GameMode.learn.rawValue,
+                cardIDs: remainingCardIDs.map { $0.uuidString },
+                currentIndex: learnedCount,
+                score: cardsStudied,  // Store cardsStudied for display
+                cardsReviewed: totalCards,
+                streakCount: streakCount,
+                savedAt: Date()
+            )
+
+            if let encoded = try? JSONEncoder().encode(progress) {
+                UserDefaults.standard.set(encoded, forKey: "sessionProgress_\(GameMode.learn.rawValue)")
+            }
+        } else {
+            // Clear progress if completed or no progress made
+            SessionProgressManager.shared.clearProgress(for: .learn)
         }
     }
 }
 
-// MARK: - Quiz Header
+// MARK: - Learn Header
 
-struct QuizHeader: View {
-    let score: Int
-    let currentIndex: Int
-    let total: Int
+struct LearnHeader: View {
+    let learnedCount: Int
+    let totalCards: Int
     let streakCount: Int
     let onBack: () -> Void
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 8) {
             HStack {
                 Button(action: onBack) {
                     HStack(spacing: 4) {
@@ -11319,7 +15534,7 @@ struct QuizHeader: View {
                         Text("Back")
                             .font(.system(size: 14, weight: .semibold, design: .rounded))
                     }
-                    .foregroundColor(.pastelPink)
+                    .foregroundColor(.softLavender)
                 }
 
                 Spacer()
@@ -11330,57 +15545,338 @@ struct QuizHeader: View {
                         .resizable()
                         .scaledToFit()
                         .frame(width: 32, height: 32)
-                    Text("Bear Quiz")
+                    Text("Bear Learn")
                         .font(.system(size: 18, weight: .bold, design: .rounded))
                 }
 
                 Spacer()
 
-                // Score badge
-                HStack(spacing: 4) {
-                    Image(systemName: "star.fill")
-                        .font(.system(size: 12))
-                        .foregroundColor(.yellow)
-                    Text("\(score)")
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color.cardBackground)
-                .cornerRadius(16)
-                .shadow(color: .black.opacity(0.05), radius: 4)
-            }
-            .padding(.horizontal)
-
-            // Progress and streak
-            HStack {
-                Text("Question \(currentIndex + 1) of \(total)")
-                    .font(.system(size: 13, design: .rounded))
-                    .foregroundColor(.secondary)
-
-                Spacer()
-
+                // Streak indicator
                 if streakCount > 1 {
                     HStack(spacing: 4) {
                         Image(systemName: "flame.fill")
                             .foregroundColor(.orange)
-                        Text("\(streakCount) streak!")
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
-                            .foregroundColor(.orange)
+                        Text("\(streakCount)")
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
                     }
-                    .transition(.scale.combined(with: .opacity))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.cardBackground)
+                    .cornerRadius(16)
+                    .shadow(color: .black.opacity(0.05), radius: 4)
+                } else {
+                    // Placeholder for alignment
+                    Color.clear.frame(width: 44, height: 1)
                 }
             }
             .padding(.horizontal)
+
+            // Progress section
+            VStack(spacing: 6) {
+                // Progress text
+                Text("\(learnedCount) of \(totalCards) terms learned")
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .foregroundColor(.secondary)
+
+                // Progress bar
+                GeometryReader { barGeo in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.gray.opacity(0.2))
+                            .frame(height: 8)
+
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(LinearGradient(colors: [.mintGreen, .softLavender], startPoint: .leading, endPoint: .trailing))
+                            .frame(width: max(0, CGFloat(learnedCount) / CGFloat(max(1, totalCards))) * barGeo.size.width, height: 8)
+                            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: learnedCount)
+                    }
+                }
+                .frame(height: 8)
+                .padding(.horizontal)
+            }
         }
         .padding(.top, 8)
-        .padding(.bottom, 16)
+        .padding(.bottom, 12)
     }
 }
 
-// MARK: - Quiz Modal Card
+// MARK: - Learn Modal Card
+
+struct LearnModalCard: View {
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
+    let card: Flashcard
+    let shuffledAnswers: [String]
+    let selectedAnswer: String?
+    let showResult: Bool
+    let isCorrect: Bool
+    let showRationale: Bool
+    let aboutToLearn: Bool
+    let onSelectAnswer: (String) -> Void
+    let onNext: () -> Void
+
+    // Filter answers when showing result: only show selected + correct answer
+    var visibleAnswers: [(index: Int, answer: String)] {
+        if showResult {
+            return shuffledAnswers.enumerated().filter { (_, answer) in
+                answer == selectedAnswer || answer == card.answer
+            }.map { (index: $0.offset, answer: $0.element) }
+        } else {
+            return shuffledAnswers.enumerated().map { (index: $0.offset, answer: $0.element) }
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Question Section
+            VStack(spacing: 16) {
+                // Category and difficulty badges
+                HStack {
+                    HStack(spacing: 6) {
+                        Image(systemName: card.contentCategory.icon)
+                            .font(.system(size: 12))
+                            .foregroundColor(card.contentCategory.color)
+                        Text(card.contentCategory.rawValue)
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundColor(card.contentCategory.color)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(card.contentCategory.color.opacity(0.15))
+                    .cornerRadius(12)
+
+                    Spacer()
+
+                    Text(card.difficulty.rawValue)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(card.difficulty.color)
+                        .cornerRadius(12)
+                }
+
+                // Question text
+                Text(card.question)
+                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(4)
+                    .padding(.vertical, 8)
+            }
+            .padding(20)
+            .background(Color.cardBackground)
+
+            Divider()
+
+            // Answers Section (scrollable with constrained height)
+            ScrollViewReader { scrollProxy in
+                ScrollView(showsIndicators: true) {
+                    VStack(spacing: 10) {
+                        ForEach(visibleAnswers, id: \.answer) { item in
+                            LearnAnswerOption(
+                                answer: item.answer,
+                                index: item.index,
+                                isSelected: selectedAnswer == item.answer,
+                                isCorrectAnswer: item.answer == card.answer,
+                                showResult: showResult,
+                                aboutToLearn: aboutToLearn && !showResult,
+                                action: { onSelectAnswer(item.answer) }
+                            )
+                        }
+                        .animation(.easeInOut(duration: 0.3), value: showResult)
+
+                        // Rationale (inside scroll so it's viewable)
+                        if showResult && showRationale && !card.rationale.isEmpty {
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "lightbulb.fill")
+                                        .foregroundColor(.yellow)
+                                    Text("Rationale")
+                                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                    if !subscriptionManager.hasPremiumAccess {
+                                        Spacer()
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "lock.fill").font(.system(size: 10))
+                                            Text("Premium").font(.system(size: 11, weight: .semibold, design: .rounded))
+                                        }
+                                        .foregroundColor(.secondary)
+                                    }
+                                }
+                                Text(card.rationale)
+                                    .font(.system(size: 14, design: .rounded))
+                                    .foregroundColor(.secondary)
+                                    .lineSpacing(3)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .blur(radius: subscriptionManager.hasPremiumAccess ? 0 : 6)
+                            }
+                            .padding()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.yellow.opacity(0.1))
+                            .cornerRadius(12)
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                            .id("rationale")
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 20)
+                    .padding(.bottom, 10)
+                }
+                .frame(maxHeight: UIScreen.main.bounds.height * 0.45)
+                .background(Color.cardBackground.opacity(0.5))
+                .onChange(of: showRationale) { newValue in
+                    if newValue {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            scrollProxy.scrollTo("rationale", anchor: .bottom)
+                        }
+                    }
+                }
+            }
+
+            // Continue button (fixed at bottom, outside scroll)
+            if showResult {
+                Button(action: onNext) {
+                    HStack {
+                        Text("Continue")
+                            .font(.system(size: 16, weight: .bold, design: .rounded))
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 14, weight: .bold))
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(
+                        LinearGradient(
+                            colors: isCorrect ? [.mintGreen, .green.opacity(0.8)] : [.softLavender, .pastelPink],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .cornerRadius(14)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(Color.cardBackground)
+                .transition(.scale.combined(with: .opacity))
+            }
+
+            // Result Banner
+            if showResult {
+                LearnResultBanner(isCorrect: isCorrect)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .background(Color.cardBackground)
+        .cornerRadius(24)
+        .shadow(color: .black.opacity(0.15), radius: 20, y: 10)
+        .padding(.horizontal, 16)
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: showResult)
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: showRationale)
+    }
+}
+
+// MARK: - Learn Answer Option
+
+struct LearnAnswerOption: View {
+    let answer: String
+    let index: Int
+    let isSelected: Bool
+    let isCorrectAnswer: Bool
+    let showResult: Bool
+    let aboutToLearn: Bool
+    let action: () -> Void
+
+    var backgroundColor: Color {
+        if showResult {
+            if isCorrectAnswer { return .mintGreen.opacity(0.2) }
+            if isSelected { return .coralPink.opacity(0.2) }
+        }
+        if isSelected { return .softLavender.opacity(0.3) }
+        return Color.cardBackground
+    }
+
+    var borderColor: Color {
+        if showResult {
+            if isCorrectAnswer { return .mintGreen }
+            if isSelected { return .coralPink }
+        }
+        if aboutToLearn { return .yellow.opacity(0.5) }
+        if isSelected { return .softLavender }
+        return Color.gray.opacity(0.2)
+    }
+
+    var letterLabels: [String] { ["A", "B", "C", "D"] }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                // Letter badge
+                ZStack {
+                    Circle()
+                        .fill(showResult && isCorrectAnswer ? Color.mintGreen :
+                                showResult && isSelected ? Color.coralPink :
+                                aboutToLearn ? Color.yellow.opacity(0.3) :
+                                Color.gray.opacity(0.15))
+                        .frame(width: 32, height: 32)
+                    Text(index < letterLabels.count ? letterLabels[index] : "?")
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundColor(showResult && (isCorrectAnswer || isSelected) ? .white : .primary)
+                }
+
+                Text(answer)
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .multilineTextAlignment(.leading)
+                    .foregroundColor(.primary)
+
+                Spacer()
+
+                if showResult {
+                    if isCorrectAnswer {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.mintGreen)
+                            .font(.system(size: 22))
+                    } else if isSelected {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.coralPink)
+                            .font(.system(size: 22))
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(backgroundColor)
+            .cornerRadius(14)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(borderColor, lineWidth: aboutToLearn && !showResult ? 2 : 1.5)
+            )
+        }
+        .disabled(showResult)
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+// MARK: - Learn Result Banner
+
+struct LearnResultBanner: View {
+    let isCorrect: Bool
+
+    var body: some View {
+        HStack {
+            Image(systemName: isCorrect ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .font(.system(size: 20))
+            Text(isCorrect ? "Correct!" : "Not quite - keep practicing!")
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+        }
+        .foregroundColor(.white)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
+        .background(isCorrect ? Color.mintGreen : Color.coralPink)
+    }
+}
+
+// MARK: - Quiz Modal Card (Legacy - used by other views)
 
 struct QuizModalCard: View {
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
     let card: Flashcard
     let shuffledAnswers: [String]
     let selectedAnswer: String?
@@ -11443,47 +15939,69 @@ struct QuizModalCard: View {
 
             Divider()
 
-            // Answers Section (scrollable)
-            ScrollView {
-                VStack(spacing: 10) {
-                    ForEach(visibleAnswers, id: \.answer) { item in
-                        QuizAnswerOption(
-                            answer: item.answer,
-                            index: item.index,
-                            isSelected: selectedAnswer == item.answer,
-                            isCorrectAnswer: item.answer == card.answer,
-                            showResult: showResult,
-                            action: { onSelectAnswer(item.answer) }
-                        )
-                    }
-                    .animation(.easeInOut(duration: 0.3), value: showResult)
-
-                    // Rationale (inside scroll so it's viewable)
-                    if showResult && showRationale && !card.rationale.isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "lightbulb.fill")
-                                    .foregroundColor(.yellow)
-                                Text("Rationale")
-                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            }
-                            Text(card.rationale)
-                                .font(.system(size: 14, design: .rounded))
-                                .foregroundColor(.secondary)
-                                .lineSpacing(3)
+            // Answers Section (scrollable with constrained height)
+            ScrollViewReader { scrollProxy in
+                ScrollView(showsIndicators: true) {
+                    VStack(spacing: 10) {
+                        ForEach(visibleAnswers, id: \.answer) { item in
+                            QuizAnswerOption(
+                                answer: item.answer,
+                                index: item.index,
+                                isSelected: selectedAnswer == item.answer,
+                                isCorrectAnswer: item.answer == card.answer,
+                                showResult: showResult,
+                                action: { onSelectAnswer(item.answer) }
+                            )
                         }
-                        .padding()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.yellow.opacity(0.1))
-                        .cornerRadius(12)
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        .animation(.easeInOut(duration: 0.3), value: showResult)
+
+                        // Rationale (inside scroll so it's viewable)
+                        if showResult && showRationale && !card.rationale.isEmpty {
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "lightbulb.fill")
+                                        .foregroundColor(.yellow)
+                                    Text("Rationale")
+                                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                    if !subscriptionManager.hasPremiumAccess {
+                                        Spacer()
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "lock.fill").font(.system(size: 10))
+                                            Text("Premium").font(.system(size: 11, weight: .semibold, design: .rounded))
+                                        }
+                                        .foregroundColor(.secondary)
+                                    }
+                                }
+                                Text(card.rationale)
+                                    .font(.system(size: 14, design: .rounded))
+                                    .foregroundColor(.secondary)
+                                    .lineSpacing(3)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .blur(radius: subscriptionManager.hasPremiumAccess ? 0 : 6)
+                            }
+                            .padding()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.yellow.opacity(0.1))
+                            .cornerRadius(12)
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                            .id("rationale")
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 20)
+                    .padding(.bottom, 10)
+                }
+                .frame(maxHeight: UIScreen.main.bounds.height * 0.45)
+                .background(Color.cardBackground.opacity(0.5))
+                .onChange(of: showRationale) { newValue in
+                    if newValue {
+                        // Auto-scroll to show rationale when it appears
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            scrollProxy.scrollTo("rationale", anchor: .bottom)
+                        }
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 20)
-                .padding(.bottom, 10)
             }
-            .background(Color.cardBackground.opacity(0.5))
 
             // Continue button (fixed at bottom, outside scroll)
             if showResult {
@@ -11668,24 +16186,26 @@ struct QuizConfettiOverlay: View {
     @State private var confettiPieces: [ConfettiPiece] = []
 
     var body: some View {
-        ZStack {
-            ForEach(confettiPieces) { piece in
-                ConfettiPieceView(piece: piece)
+        GeometryReader { geo in
+            ZStack {
+                ForEach(confettiPieces) { piece in
+                    ConfettiPieceView(piece: piece, screenHeight: geo.size.height)
+                }
             }
-        }
-        .onAppear {
-            createConfetti()
+            .onAppear {
+                createConfetti(width: geo.size.width)
+            }
         }
     }
 
-    func createConfetti() {
+    func createConfetti(width: CGFloat) {
         let colors: [Color] = [.pastelPink, .mintGreen, .softLavender, .peachOrange, .skyBlue, .yellow, .red, .orange, .green, .blue, .purple]
         let shapes: [ConfettiShape] = [.rectangle, .circle, .triangle, .strip]
 
         for i in 0..<50 {
             let piece = ConfettiPiece(
                 id: i,
-                x: CGFloat.random(in: 0...UIScreen.main.bounds.width),
+                x: CGFloat.random(in: 0...width),
                 color: colors.randomElement() ?? .pastelPink,
                 shape: shapes.randomElement() ?? .rectangle,
                 size: CGFloat.random(in: 8...14),
@@ -11715,6 +16235,7 @@ struct ConfettiPiece: Identifiable {
 
 struct ConfettiPieceView: View {
     let piece: ConfettiPiece
+    var screenHeight: CGFloat = 900
     @State private var yOffset: CGFloat = -50
     @State private var xOffset: CGFloat = 0
     @State private var opacity: Double = 1
@@ -11732,7 +16253,7 @@ struct ConfettiPieceView: View {
             .rotation3DEffect(.degrees(rotation3D), axis: (x: 1, y: 0, z: 0))
             .onAppear {
                 withAnimation(.easeIn(duration: 2.5).delay(piece.delay)) {
-                    yOffset = UIScreen.main.bounds.height + 100
+                    yOffset = screenHeight + 100
                     xOffset = piece.horizontalMovement
                     rotation = piece.rotationSpeed
                     rotation3D = Double.random(in: 180...540)
@@ -11769,12 +16290,124 @@ struct TriangleShape: Shape {
     }
 }
 
-// MARK: - Quiz Celebration View
+// MARK: - Learn Celebration View
+
+struct LearnCelebrationView: View {
+    let totalCards: Int
+    let totalAttempts: Int
+    let onPlayAgain: () -> Void
+    var onHome: (() -> Void)? = nil
+    @State private var showContent = false
+
+    var efficiency: Int {
+        totalAttempts > 0 ? Int(Double(totalCards) / Double(totalAttempts) * 100) : 0
+    }
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Spacer()
+
+            // Mascot
+            Image("NurseBear")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 120, height: 120)
+                .scaleEffect(showContent ? 1 : 0.5)
+                .opacity(showContent ? 1 : 0)
+
+            // Result text
+            VStack(spacing: 8) {
+                Text("All Terms Learned!")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+
+                Text("Great job mastering these terms!")
+                    .font(.system(size: 16, design: .rounded))
+                    .foregroundColor(.secondary)
+            }
+            .scaleEffect(showContent ? 1 : 0.8)
+            .opacity(showContent ? 1 : 0)
+
+            // Stats display
+            HStack(spacing: 40) {
+                VStack(spacing: 4) {
+                    Text("\(totalCards)")
+                        .font(.system(size: 36, weight: .bold, design: .rounded))
+                        .foregroundColor(.mintGreen)
+                    Text("Terms")
+                        .font(.system(size: 14, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+
+                VStack(spacing: 4) {
+                    Text("\(efficiency)%")
+                        .font(.system(size: 36, weight: .bold, design: .rounded))
+                        .foregroundColor(.softLavender)
+                    Text("Efficiency")
+                        .font(.system(size: 14, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding()
+            .background(Color.cardBackground)
+            .cornerRadius(20)
+            .shadow(color: .black.opacity(0.08), radius: 10)
+            .scaleEffect(showContent ? 1 : 0.8)
+            .opacity(showContent ? 1 : 0)
+
+            Spacer()
+
+            // Learn more button
+            Button(action: onPlayAgain) {
+                HStack {
+                    Image(systemName: "arrow.counterclockwise")
+                    Text("Learn More")
+                }
+                .font(.system(size: 17, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+                .background(
+                    LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing)
+                )
+                .cornerRadius(16)
+            }
+            .padding(.horizontal, 40)
+            .scaleEffect(showContent ? 1 : 0.8)
+            .opacity(showContent ? 1 : 0)
+
+            if let onHome {
+                Button(action: onHome) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "house.fill").font(.system(size: 14))
+                        Text("Home").font(.system(size: 16, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 30).padding(.vertical, 12)
+                }
+                .scaleEffect(showContent ? 1 : 0.8)
+                .opacity(showContent ? 1 : 0)
+            }
+
+            Spacer()
+        }
+        .onAppear {
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.7).delay(0.1)) {
+                showContent = true
+            }
+
+            // Trigger review prompt for completing learn session
+            ReviewManager.shared.recordPositiveExperience()
+        }
+    }
+}
+
+// MARK: - Quiz Celebration View (Legacy)
 
 struct QuizCelebrationView: View {
     let score: Int
     let total: Int
     let onPlayAgain: () -> Void
+    var onHome: (() -> Void)? = nil
     @State private var showContent = false
 
     var percentage: Int { total > 0 ? Int(Double(score) / Double(total) * 100) : 0 }
@@ -11852,6 +16485,19 @@ struct QuizCelebrationView: View {
             .scaleEffect(showContent ? 1 : 0.8)
             .opacity(showContent ? 1 : 0)
 
+            if let onHome {
+                Button(action: onHome) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "house.fill").font(.system(size: 14))
+                        Text("Home").font(.system(size: 16, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 30).padding(.vertical, 12)
+                }
+                .scaleEffect(showContent ? 1 : 0.8)
+                .opacity(showContent ? 1 : 0)
+            }
+
             Spacer()
         }
         .onAppear {
@@ -11894,12 +16540,25 @@ struct QuestionCard: View {
 }
 
 struct RationaleBox: View {
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
     let rationale: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack { Image(systemName: "lightbulb.fill").foregroundColor(.yellow); Text("Rationale").font(.system(size: 14, weight: .semibold, design: .rounded)) }
+            HStack {
+                Image(systemName: "lightbulb.fill").foregroundColor(.yellow)
+                Text("Rationale").font(.system(size: 14, weight: .semibold, design: .rounded))
+                if !subscriptionManager.hasPremiumAccess {
+                    Spacer()
+                    HStack(spacing: 4) {
+                        Image(systemName: "lock.fill").font(.system(size: 10))
+                        Text("Premium").font(.system(size: 11, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundColor(.secondary)
+                }
+            }
             Text(rationale).font(.system(size: 13, design: .rounded)).foregroundColor(.secondary)
+                .blur(radius: subscriptionManager.hasPremiumAccess ? 0 : 6)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -11940,7 +16599,18 @@ struct WriteModeView: View {
                 .padding(.horizontal)
 
                 if showCelebration {
-                    CelebrationView(score: score, total: writeCards.count) { resetMode() }
+                    SessionCompleteView(
+                        performancePercent: writeCards.count > 0 ? Int(Double(score) / Double(writeCards.count) * 100) : 0,
+                        stats: [
+                            SessionCompleteStat(value: "\(score)/\(writeCards.count)", label: "Score", color: .mintGreen),
+                            SessionCompleteStat(value: "\(StatsManager.shared.stats.currentStreak) Day\(StatsManager.shared.stats.currentStreak == 1 ? "" : "s")", label: "Streak", color: .orange),
+                            SessionCompleteStat(value: "+\(score * 10) XP", label: "XP Earned", color: .softLavender)
+                        ],
+                        summaryText: "You typed \(score) of \(writeCards.count) answers correctly",
+                        onPlayAgain: { resetMode() },
+                        onHome: { saveSession(); appManager.currentScreen = .menu },
+                        playAgainLabel: "Study Again"
+                    )
                 } else if writeCards.isEmpty {
                     Spacer()
                     AllMasteredView { appManager.currentScreen = .cardBrowser; cardManager.currentFilter = .mastered }
@@ -12014,9 +16684,25 @@ struct WriteModeView: View {
     }
 
     func setupWriteMode() {
-        writeCards = cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed)
-        currentIndex = 0
-        score = 0
+        // Check if resuming from saved progress
+        if let progress = cardManager.resumeProgress, progress.gameMode == GameMode.write.rawValue {
+            // Use session cards (already restored by resumeGameMode)
+            writeCards = cardManager.sessionCards
+            cardManager.sessionCards = []
+            currentIndex = progress.currentIndex
+            score = progress.score
+            cardManager.resumeProgress = nil // Clear after use
+        } else if !cardManager.sessionCards.isEmpty {
+            // Use session cards if available (from setup screen)
+            writeCards = cardManager.sessionCards
+            cardManager.sessionCards = [] // Clear after use
+            currentIndex = 0
+            score = 0
+        } else {
+            writeCards = cardManager.getGameCards(isSubscribed: subscriptionManager.hasPremiumAccess)
+            currentIndex = 0
+            score = 0
+        }
         userAnswer = ""
         showResult = false
         isCorrect = false
@@ -12089,6 +16775,30 @@ struct WriteModeView: View {
         if currentIndex > 0 {
             statsManager.recordSession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent, mode: "Write")
             DailyGoalsManager.shared.recordStudySession(cardsStudied: currentIndex, correct: score, timeSeconds: timeSpent)
+
+            // Track categories studied
+            let categoriesStudied = Set(writeCards.prefix(currentIndex).map { $0.contentCategory })
+            for category in categoriesStudied {
+                DailyGoalsManager.shared.recordCategoryStudied(category)
+            }
+
+            // Check for perfect score
+            if showCelebration && score == writeCards.count && writeCards.count >= 5 {
+                DailyGoalsManager.shared.recordPerfectQuiz()
+            }
+        }
+
+        // Save progress for resume (only if not completed)
+        if !showCelebration && currentIndex > 0 && currentIndex < writeCards.count {
+            SessionProgressManager.shared.saveProgress(
+                gameMode: .write,
+                cardIDs: writeCards.map { $0.id },
+                currentIndex: currentIndex,
+                score: score
+            )
+        } else {
+            // Clear progress if completed
+            SessionProgressManager.shared.clearProgress(for: .write)
         }
     }
 }
@@ -12110,6 +16820,7 @@ struct TestModeView: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var testCards: [Flashcard] = []
     @State private var shuffledAnswers: [UUID: [String]] = [:] // Pre-shuffled answers
     @State private var currentIndex = 0
@@ -12120,6 +16831,7 @@ struct TestModeView: View {
     @State private var timer: Timer?
     @State private var showExitConfirmation = false
     @State private var selectedFormat: TestFormat? = nil
+    @State private var showReviewSheet = false
 
     // CAT (Computer Adaptive Testing) State
     @State private var isCATMode = true
@@ -12137,7 +16849,7 @@ struct TestModeView: View {
         TestFormat(name: "CAT Simulation", questionCount: 75, timeMinutes: 90)  // Variable length like real NCLEX
     ]
 
-    var availableCards: [Flashcard] { cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed) }
+    var availableCards: [Flashcard] { cardManager.getGameCards(isSubscribed: subscriptionManager.hasPremiumAccess) }
     var currentCard: Flashcard? { currentIndex < testCards.count ? testCards[currentIndex] : nil }
     var correctCount: Int { testCards.filter { answers[$0.id] == $0.answer }.count }
 
@@ -12273,9 +16985,36 @@ struct TestModeView: View {
                     }
                     Spacer()
                 } else if showResults {
-                    TestResultsView(correct: correctCount, total: testCards.count, onRetry: {
-                        testCards = []; shuffledAnswers = [:]; showResults = false; selectedFormat = nil
-                    }, testAnswers: getTestAnswers())
+                    SessionCompleteView(
+                        performancePercent: testCards.count > 0 ? Int(Double(correctCount) / Double(testCards.count) * 100) : 0,
+                        stats: [
+                            SessionCompleteStat(value: "\(correctCount)/\(testCards.count)", label: "Score", color: .mintGreen),
+                            SessionCompleteStat(value: "\(testCards.count > 0 ? Int(Double(correctCount) / Double(testCards.count) * 100) : 0)%", label: "Accuracy", color: (testCards.count > 0 && Double(correctCount) / Double(testCards.count) >= 0.7) ? .mintGreen : .peachOrange),
+                            SessionCompleteStat(value: "\(StatsManager.shared.stats.currentStreak) Day\(StatsManager.shared.stats.currentStreak == 1 ? "" : "s")", label: "Streak", color: .orange)
+                        ],
+                        summaryText: (testCards.count > 0 && Double(correctCount) / Double(testCards.count) >= 0.7) ? "You passed! Great job — you're on track." : "You need 70% to pass. Review and try again!",
+                        onPlayAgain: {
+                            testCards = []; shuffledAnswers = [:]; showResults = false; selectedFormat = nil
+                        },
+                        onHome: {
+                            saveSession()
+                            appManager.currentScreen = .menu
+                        },
+                        playAgainLabel: "Take Another Test",
+                        extraContent: AnyView(
+                            Button(action: { showReviewSheet = true }) {
+                                HStack {
+                                    Image(systemName: "doc.text.magnifyingglass")
+                                    Text("Review Answers")
+                                }
+                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                                .foregroundColor(.pastelPink)
+                                .padding(.horizontal, 30).padding(.vertical, 14)
+                                .background(Color.pastelPink.opacity(0.15))
+                                .cornerRadius(22)
+                            }
+                        )
+                    )
                 } else if let card = currentCard, let cardAnswers = shuffledAnswers[card.id] {
                     ProgressBar(current: currentIndex + 1, total: testCards.count).padding(.horizontal)
                     ScrollView {
@@ -12362,6 +17101,8 @@ struct TestModeView: View {
                             }
                         }
                         .padding()
+                        .frame(maxWidth: 700)
+                        .frame(maxWidth: .infinity)
                     }
                 }
             }
@@ -12378,6 +17119,9 @@ struct TestModeView: View {
             }
         } message: {
             Text("Your progress will be saved but you'll need to start a new test.")
+        }
+        .sheet(isPresented: $showReviewSheet) {
+            TestReviewView(answers: getTestAnswers())
         }
     }
 
@@ -12480,6 +17224,17 @@ struct TestModeView: View {
         let timeSpent = Int(Date().timeIntervalSince(startTime))
         statsManager.recordSession(cardsStudied: testCards.count, correct: correctCount, timeSeconds: timeSpent, mode: "Test")
         DailyGoalsManager.shared.recordStudySession(cardsStudied: testCards.count, correct: correctCount, timeSeconds: timeSpent)
+
+        // Track categories studied
+        let categoriesStudied = Set(testCards.map { $0.contentCategory })
+        for category in categoriesStudied {
+            DailyGoalsManager.shared.recordCategoryStudied(category)
+        }
+
+        // Check for perfect test
+        if correctCount == testCards.count && testCards.count >= 5 {
+            DailyGoalsManager.shared.recordPerfectQuiz()
+        }
     }
 
     func getTestAnswers() -> [TestAnswer] {
@@ -12531,6 +17286,7 @@ struct TestResultsView: View {
     let total: Int
     let onRetry: () -> Void
     var testAnswers: [TestAnswer] = []
+    var onHome: (() -> Void)? = nil
     @State private var showReview = false
 
     var percentage: Int { total > 0 ? Int(Double(correct) / Double(total) * 100) : 0 }
@@ -12564,6 +17320,16 @@ struct TestResultsView: View {
                     .foregroundColor(.white).padding(.horizontal, 30).padding(.vertical, 14)
                     .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
                     .cornerRadius(22)
+            }
+            if let onHome {
+                Button(action: onHome) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "house.fill").font(.system(size: 14))
+                        Text("Home").font(.system(size: 16, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 30).padding(.vertical, 12)
+                }
             }
             Spacer()
         }
@@ -12628,6 +17394,7 @@ struct TestReviewView: View {
 }
 
 struct TestReviewCard: View {
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
     let answer: TestAnswer
     let questionNumber: Int
     @State private var isExpanded = false
@@ -12675,12 +17442,23 @@ struct TestReviewCard: View {
 
             if isExpanded && !answer.rationale.isEmpty {
                 Divider()
-                Text("Rationale:")
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundColor(.secondary)
-                Text(answer.rationale)
-                    .font(.system(size: 13, design: .rounded))
-                    .foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Rationale:")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundColor(.secondary)
+                        if !subscriptionManager.hasPremiumAccess {
+                            Text("🔒 Premium")
+                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    Text(answer.rationale)
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundColor(.secondary)
+                        .blur(radius: subscriptionManager.hasPremiumAccess ? 0 : 6)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             if !answer.rationale.isEmpty {
@@ -12701,350 +17479,6 @@ struct TestReviewCard: View {
     }
 }
 
-// MARK: - Smart Review View (Spaced Repetition)
-
-struct SmartReviewView: View {
-    @EnvironmentObject var appManager: AppManager
-    @EnvironmentObject var subscriptionManager: SubscriptionManager
-    @EnvironmentObject var cardManager: CardManager
-    @EnvironmentObject var statsManager: StatsManager
-    @State private var reviewCards: [Flashcard] = []
-    @State private var currentIndex = 0
-    @State private var showAnswer = false
-    @State private var score = 0
-    @State private var cardsReviewed = 0
-    @State private var startTime = Date()
-    @State private var showCelebration = false
-
-    var currentCard: Flashcard? {
-        currentIndex < reviewCards.count ? reviewCards[currentIndex] : nil
-    }
-
-    var dueCount: Int {
-        cardManager.getDueCardCount(isSubscribed: subscriptionManager.isSubscribed)
-    }
-
-    var body: some View {
-        ZStack {
-            Color.creamyBackground.ignoresSafeArea()
-
-            VStack(spacing: 16) {
-                // Header
-                HStack {
-                    BackButton { saveSession(); appManager.currentScreen = .menu }
-                    Spacer()
-                    Text("Smart Review 🧠").font(.system(size: 18, weight: .bold, design: .rounded))
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text("\(score)/\(cardsReviewed)")
-                            .font(.system(size: 14, weight: .bold, design: .rounded))
-                            .foregroundColor(.mintGreen)
-                        Text("\(dueCount) due")
-                            .font(.system(size: 11, design: .rounded))
-                            .foregroundColor(.secondary)
-                    }
-                }
-                .padding(.horizontal)
-
-                if showCelebration {
-                    SmartReviewCelebration(cardsReviewed: cardsReviewed, score: score) {
-                        resetReview()
-                    }
-                } else if reviewCards.isEmpty {
-                    Spacer()
-                    NoCardsDueView {
-                        appManager.currentScreen = .menu
-                    }
-                    Spacer()
-                } else if let card = currentCard {
-                    // Progress bar
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(Color.gray.opacity(0.2))
-                                .frame(height: 8)
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(LinearGradient(colors: [.mintGreen, .softLavender], startPoint: .leading, endPoint: .trailing))
-                                .frame(width: geo.size.width * CGFloat(currentIndex) / CGFloat(max(1, reviewCards.count)), height: 8)
-                        }
-                    }
-                    .frame(height: 8)
-                    .padding(.horizontal)
-
-                    // Spaced Rep Info
-                    if let srData = cardManager.getSpacedRepInfo(card: card) {
-                        HStack {
-                            Label("Interval: \(srData.interval) days", systemImage: "calendar")
-                            Spacer()
-                            Label("Reviews: \(srData.repetitions)", systemImage: "arrow.counterclockwise")
-                        }
-                        .font(.system(size: 11, design: .rounded))
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal)
-                    }
-
-                    ScrollView {
-                        VStack(spacing: 20) {
-                            // Question Card
-                            VStack(spacing: 12) {
-                                HStack {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: card.contentCategory.icon)
-                                            .foregroundColor(card.contentCategory.color)
-                                        Text(card.contentCategory.rawValue)
-                                            .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                            .foregroundColor(.secondary)
-                                    }
-                                    Spacer()
-                                    Text(card.difficulty.rawValue)
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .foregroundColor(.white)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 4)
-                                        .background(card.difficulty.color)
-                                        .cornerRadius(8)
-                                }
-
-                                Text(card.question)
-                                    .font(.system(size: 18, weight: .semibold, design: .rounded))
-                                    .multilineTextAlignment(.center)
-                                    .padding(.vertical, 10)
-                            }
-                            .padding(20)
-                            .background(Color.adaptiveWhite)
-                            .cornerRadius(18)
-                            .shadow(color: .black.opacity(0.08), radius: 6)
-
-                            if showAnswer {
-                                // Answer Card
-                                VStack(spacing: 12) {
-                                    Text("Answer")
-                                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                        .foregroundColor(.secondary)
-
-                                    Text(card.answer)
-                                        .font(.system(size: 17, weight: .medium, design: .rounded))
-                                        .multilineTextAlignment(.center)
-                                        .foregroundColor(.mintGreen)
-
-                                    if !card.rationale.isEmpty {
-                                        Divider().padding(.vertical, 8)
-                                        Text(card.rationale)
-                                            .font(.system(size: 14, design: .rounded))
-                                            .foregroundColor(.secondary)
-                                            .multilineTextAlignment(.leading)
-                                    }
-                                }
-                                .padding(20)
-                                .background(Color.mintGreen.opacity(0.1))
-                                .cornerRadius(18)
-
-                                // Rating Buttons
-                                VStack(spacing: 10) {
-                                    Text("How well did you know this?")
-                                        .font(.system(size: 13, weight: .medium, design: .rounded))
-                                        .foregroundColor(.secondary)
-
-                                    HStack(spacing: 12) {
-                                        RatingButton(title: "Again", subtitle: "1 day", color: .coralPink) {
-                                            rateCard(quality: 1)
-                                        }
-                                        RatingButton(title: "Hard", subtitle: "3 days", color: .peachOrange) {
-                                            rateCard(quality: 3)
-                                        }
-                                        RatingButton(title: "Good", subtitle: "1 week", color: .mintGreen) {
-                                            rateCard(quality: 4)
-                                        }
-                                        RatingButton(title: "Easy", subtitle: "2 weeks", color: .skyBlue) {
-                                            rateCard(quality: 5)
-                                        }
-                                    }
-                                }
-                                .padding(.top, 10)
-                            } else {
-                                // Show Answer Button
-                                Button(action: { withAnimation { showAnswer = true } }) {
-                                    Text("Show Answer")
-                                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                                        .foregroundColor(.white)
-                                        .frame(maxWidth: .infinity)
-                                        .padding()
-                                        .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
-                                        .cornerRadius(14)
-                                }
-                            }
-                        }
-                        .padding()
-                    }
-                }
-            }
-        }
-        .onAppear { loadReviewCards() }
-    }
-
-    func loadReviewCards() {
-        reviewCards = cardManager.getCardsForSpacedReview(isSubscribed: subscriptionManager.isSubscribed).shuffled()
-        currentIndex = 0
-        showAnswer = false
-    }
-
-    func rateCard(quality: Int) {
-        guard let card = currentCard else { return }
-
-        // Haptic feedback based on rating
-        if quality >= 4 {
-            HapticManager.shared.correctAnswer()
-            SoundManager.shared.correctAnswer()
-        } else if quality >= 3 {
-            HapticManager.shared.light()
-        } else {
-            HapticManager.shared.wrongAnswer()
-            SoundManager.shared.wrongAnswer()
-        }
-
-        cardsReviewed += 1
-        if quality >= 3 {
-            score += 1
-            cardManager.recordCorrectAnswer(card)
-        } else {
-            cardManager.recordWrongAnswer(card)
-        }
-
-        // Record spaced rep response
-        cardManager.recordSpacedRepResponse(card: card, quality: quality)
-        statsManager.recordCategoryResult(category: card.contentCategory.rawValue, correct: quality >= 3)
-
-        // Move to next card
-        if currentIndex + 1 >= reviewCards.count {
-            showCelebration = true
-            HapticManager.shared.achievement()
-            SoundManager.shared.celebration()
-        } else {
-            currentIndex += 1
-            showAnswer = false
-        }
-    }
-
-    func resetReview() {
-        HapticManager.shared.buttonTap()
-        saveSession()
-        score = 0
-        cardsReviewed = 0
-        currentIndex = 0
-        showCelebration = false
-        startTime = Date()
-        loadReviewCards()
-    }
-
-    func saveSession() {
-        let timeSpent = Int(Date().timeIntervalSince(startTime))
-        if cardsReviewed > 0 {
-            statsManager.recordSession(cardsStudied: cardsReviewed, correct: score, timeSeconds: timeSpent, mode: "Smart Review")
-            DailyGoalsManager.shared.recordStudySession(cardsStudied: cardsReviewed, correct: score, timeSeconds: timeSpent)
-        }
-    }
-}
-
-struct RatingButton: View {
-    let title: String
-    let subtitle: String
-    let color: Color
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Text(title)
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
-                Text(subtitle)
-                    .font(.system(size: 10, design: .rounded))
-                    .foregroundColor(.white.opacity(0.8))
-            }
-            .foregroundColor(.white)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-            .background(color)
-            .cornerRadius(12)
-        }
-    }
-}
-
-struct NoCardsDueView: View {
-    let action: () -> Void
-
-    var body: some View {
-        VStack(spacing: 16) {
-            Text("🎉").font(.system(size: 60))
-            Text("All Caught Up!")
-                .font(.system(size: 24, weight: .bold, design: .rounded))
-            Text("No cards due for review.\nCome back later or try another study mode!")
-                .font(.system(size: 15, design: .rounded))
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-            Button(action: action) {
-                Text("Back to Menu")
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 30)
-                    .padding(.vertical, 14)
-                    .background(LinearGradient(colors: [.mintGreen, .softLavender], startPoint: .leading, endPoint: .trailing))
-                    .cornerRadius(22)
-            }
-            .padding(.top, 10)
-        }
-        .padding()
-    }
-}
-
-struct SmartReviewCelebration: View {
-    let cardsReviewed: Int
-    let score: Int
-    let onContinue: () -> Void
-
-    var body: some View {
-        VStack(spacing: 20) {
-            Spacer()
-            Text("🧠").font(.system(size: 70))
-            Text("Review Complete!")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-            Text("You reviewed \(cardsReviewed) cards")
-                .font(.system(size: 16, design: .rounded))
-                .foregroundColor(.secondary)
-
-            HStack(spacing: 30) {
-                VStack {
-                    Text("\(score)")
-                        .font(.system(size: 32, weight: .bold, design: .rounded))
-                        .foregroundColor(.mintGreen)
-                    Text("Correct")
-                        .font(.system(size: 13, design: .rounded))
-                        .foregroundColor(.secondary)
-                }
-                VStack {
-                    Text("\(cardsReviewed > 0 ? Int(Double(score) / Double(cardsReviewed) * 100) : 0)%")
-                        .font(.system(size: 32, weight: .bold, design: .rounded))
-                        .foregroundColor(.softLavender)
-                    Text("Accuracy")
-                        .font(.system(size: 13, design: .rounded))
-                        .foregroundColor(.secondary)
-                }
-            }
-            .padding(.vertical)
-
-            Button(action: onContinue) {
-                Text("Continue Studying")
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 35)
-                    .padding(.vertical, 14)
-                    .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
-                    .cornerRadius(22)
-            }
-            Spacer()
-        }
-    }
-}
-
 // MARK: - Cozy Match View
 
 struct CozyMatchView: View {
@@ -13052,52 +17486,110 @@ struct CozyMatchView: View {
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var statsManager: StatsManager
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var tiles: [MatchTile] = []
     @State private var gameCards: [Flashcard] = []
+    @State private var allSessionCards: [Flashcard] = [] // All cards for both rounds
     @State private var selectedTile: MatchTile? = nil
     @State private var matchedPairs = 0
     @State private var moves = 0
+    @State private var totalMoves = 0 // Track moves across rounds
     @State private var showWin = false
     @State private var isProcessing = false
     @State private var startTime = Date()
+    @State private var currentRound = 1
+    @State private var showRoundTransition = false
 
-    var availableCards: [Flashcard] { cardManager.getGameCards(isSubscribed: subscriptionManager.isSubscribed) }
+    private let cardsPerRound = 5
+    private let totalRounds = 2
 
-    let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
+    var availableCards: [Flashcard] { cardManager.getGameCards(isSubscribed: subscriptionManager.hasPremiumAccess) }
+
+    let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
 
     var body: some View {
         ZStack {
             Color.creamyBackground.ignoresSafeArea()
             VStack(spacing: 16) {
+                // Header
                 HStack {
                     BackButton { saveSession(); appManager.currentScreen = .menu }
                     Spacer()
                     Text("Cozy Match 🧩").font(.system(size: 18, weight: .bold, design: .rounded))
                     Spacer()
-                    Text("Moves: \(moves)").font(.system(size: 14, weight: .bold, design: .rounded)).foregroundColor(.softLavender)
+                    Text("Moves: \(totalMoves + moves)").font(.system(size: 14, weight: .bold, design: .rounded)).foregroundColor(.softLavender)
                 }
                 .padding(.horizontal)
+
+                // Round indicator
+                HStack(spacing: 8) {
+                    ForEach(1...totalRounds, id: \.self) { round in
+                        Circle()
+                            .fill(round <= currentRound ? Color.softLavender : Color.gray.opacity(0.3))
+                            .frame(width: 10, height: 10)
+                    }
+                    Text("Round \(currentRound) of \(totalRounds)")
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
 
                 Text("Match questions with answers!").font(.system(size: 13, design: .rounded)).foregroundColor(.secondary)
 
                 if showWin {
-                    MatchWinView(moves: moves) { resetGame() }
+                    SessionCompleteView(
+                        performancePercent: matchedPairs > 0 ? 100 : 0,
+                        stats: [
+                            SessionCompleteStat(value: "\(totalMoves)", label: "Moves", color: .mintGreen),
+                            SessionCompleteStat(value: "\(StatsManager.shared.stats.currentStreak) Day\(StatsManager.shared.stats.currentStreak == 1 ? "" : "s")", label: "Streak", color: .orange),
+                            SessionCompleteStat(value: "+\(matchedPairs * 10) XP", label: "XP Earned", color: .softLavender)
+                        ],
+                        summaryText: "Matched all pairs in \(totalMoves) moves across \(totalRounds) rounds",
+                        onPlayAgain: { resetGame() },
+                        onHome: { saveSession(); appManager.currentScreen = .menu },
+                        playAgainLabel: "Play Again"
+                    )
+                } else if showRoundTransition {
+                    // Round transition screen
+                    Spacer()
+                    VStack(spacing: 20) {
+                        Text("🎉").font(.system(size: 60))
+                        Text("Round \(currentRound - 1) Complete!").font(.system(size: 22, weight: .bold, design: .rounded))
+                        Text("Get ready for Round \(currentRound)").font(.system(size: 15, design: .rounded)).foregroundColor(.secondary)
+
+                        Button(action: {
+                            withAnimation { showRoundTransition = false }
+                        }) {
+                            Text("Continue")
+                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 32)
+                                .padding(.vertical, 14)
+                                .background(Color.softLavender)
+                                .cornerRadius(25)
+                        }
+                        .padding(.top, 10)
+                    }
+                    Spacer()
                 } else if tiles.isEmpty {
                     Spacer()
                     VStack(spacing: 14) {
                         Text("🎉").font(.system(size: 50))
                         Text("Need more cards").font(.system(size: 18, weight: .semibold, design: .rounded))
-                        Text("You need at least 6 unmastered cards").font(.system(size: 13, design: .rounded)).foregroundColor(.secondary)
+                        Text("You need at least \(cardsPerRound * totalRounds) unmastered cards").font(.system(size: 13, design: .rounded)).foregroundColor(.secondary)
                     }
                     Spacer()
                 } else {
+                    // Game grid
                     ScrollView {
-                        LazyVGrid(columns: columns, spacing: 10) {
+                        LazyVGrid(columns: columns, spacing: 16) {
                             ForEach(tiles) { tile in
-                                MatchTileView(tile: tile, isSelected: selectedTile?.id == tile.id) { handleTileTap(tile) }
+                                MatchTileView(tile: tile, isSelected: selectedTile?.id == tile.id, isIPad: horizontalSizeClass == .regular) { handleTileTap(tile) }
                             }
                         }
-                        .padding()
+                        .padding(.horizontal, horizontalSizeClass == .regular ? 40 : 16)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: 700)
+                        .frame(maxWidth: .infinity)
                     }
 
                     Button(action: resetGame) {
@@ -13114,16 +17606,45 @@ struct CozyMatchView: View {
     }
 
     func setupGame() {
-        guard availableCards.count >= 6 else { tiles = []; return }
-        let selected = Array(availableCards.shuffled().prefix(6))
-        gameCards = selected
+        // Use session cards if available (from setup screen), otherwise get all cards
+        let cardsToUse: [Flashcard]
+        if !cardManager.sessionCards.isEmpty {
+            cardsToUse = cardManager.sessionCards
+            cardManager.sessionCards = [] // Clear after use
+        } else {
+            cardsToUse = availableCards
+        }
+
+        let requiredCards = cardsPerRound * totalRounds
+        guard cardsToUse.count >= requiredCards else { tiles = []; return }
+
+        // Store all cards for both rounds
+        allSessionCards = Array(cardsToUse.shuffled().prefix(requiredCards))
+        currentRound = 1
+        totalMoves = 0
+        showRoundTransition = false
+        setupRound()
+    }
+
+    func setupRound() {
+        // Get cards for current round
+        let startIndex = (currentRound - 1) * cardsPerRound
+        let endIndex = min(startIndex + cardsPerRound, allSessionCards.count)
+        let roundCards = Array(allSessionCards[startIndex..<endIndex])
+
+        gameCards = roundCards
         var newTiles: [MatchTile] = []
-        for card in selected {
+        for card in roundCards {
             newTiles.append(MatchTile(cardId: card.id, content: card.question, isQuestion: true))
             newTiles.append(MatchTile(cardId: card.id, content: card.answer, isQuestion: false))
         }
         tiles = newTiles.shuffled()
-        selectedTile = nil; matchedPairs = 0; moves = 0; showWin = false; isProcessing = false; startTime = Date()
+        selectedTile = nil
+        matchedPairs = 0
+        moves = 0
+        showWin = false
+        isProcessing = false
+        if currentRound == 1 { startTime = Date() }
     }
 
     func handleTileTap(_ tile: MatchTile) {
@@ -13146,11 +17667,26 @@ struct CozyMatchView: View {
                     if let idx2 = tiles.firstIndex(where: { $0.id == tile.id }) { tiles[idx2].isMatched = true }
                 }
                 matchedPairs += 1; selectedTile = nil; isProcessing = false
-                if matchedPairs == 6 {
+
+                // Check if round is complete
+                if matchedPairs == cardsPerRound {
+                    totalMoves += moves
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                        showWin = true
-                        HapticManager.shared.achievement()
-                        SoundManager.shared.celebration()
+                        if currentRound < totalRounds {
+                            // Move to next round
+                            currentRound += 1
+                            withAnimation { showRoundTransition = true }
+                            HapticManager.shared.achievement()
+                            // Setup next round after transition
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                setupRound()
+                            }
+                        } else {
+                            // Game complete!
+                            showWin = true
+                            HapticManager.shared.achievement()
+                            SoundManager.shared.celebration()
+                        }
                     }
                 }
             } else {
@@ -13175,9 +17711,21 @@ struct CozyMatchView: View {
 
     func saveSession() {
         let timeSpent = Int(Date().timeIntervalSince(startTime))
-        if matchedPairs > 0 {
-            statsManager.recordSession(cardsStudied: matchedPairs * 2, correct: matchedPairs, timeSeconds: timeSpent, mode: "Match")
-            DailyGoalsManager.shared.recordStudySession(cardsStudied: matchedPairs * 2, correct: matchedPairs, timeSeconds: timeSpent)
+        let totalPairs = (currentRound - 1) * cardsPerRound + matchedPairs // Pairs matched across all rounds
+        if totalPairs > 0 {
+            statsManager.recordSession(cardsStudied: totalPairs * 2, correct: totalPairs, timeSeconds: timeSpent, mode: "Match")
+            DailyGoalsManager.shared.recordStudySession(cardsStudied: totalPairs * 2, correct: totalPairs, timeSeconds: timeSpent)
+
+            // Track categories studied from all session cards
+            let categoriesStudied = Set(allSessionCards.map { $0.contentCategory })
+            for category in categoriesStudied {
+                DailyGoalsManager.shared.recordCategoryStudied(category)
+            }
+
+            // Perfect match game (all pairs matched in both rounds)
+            if showWin && currentRound == totalRounds && matchedPairs == cardsPerRound {
+                DailyGoalsManager.shared.recordPerfectQuiz()
+            }
         }
     }
 }
@@ -13185,13 +17733,14 @@ struct CozyMatchView: View {
 struct MatchTileView: View {
     let tile: MatchTile
     let isSelected: Bool
+    var isIPad: Bool = false
     let action: () -> Void
 
     var bgColor: Color {
         if tile.isMatched { return .green.opacity(0.3) }
         if tile.showError { return .red.opacity(0.3) }
         if isSelected { return .softLavender.opacity(0.3) }
-        return .white
+        return .cardBackground
     }
 
     var borderColor: Color {
@@ -13203,30 +17752,30 @@ struct MatchTileView: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 6) {
+            VStack(spacing: isIPad ? 10 : 6) {
                 // Badge showing Q or A
                 Text(tile.isQuestion ? "Q" : "A")
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .font(.system(size: isIPad ? 14 : 12, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
+                    .padding(.horizontal, isIPad ? 12 : 8)
+                    .padding(.vertical, isIPad ? 5 : 3)
                     .background(tile.isQuestion ? Color.mintGreen : Color.pastelPink)
                     .cornerRadius(8)
 
                 // Content text - larger and more readable
                 Text(tile.content)
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .font(.system(size: isIPad ? 16 : 13, weight: .medium, design: .rounded))
                     .foregroundColor(.primary)
                     .multilineTextAlignment(.center)
-                    .lineLimit(5)
+                    .lineLimit(6)
                     .minimumScaleFactor(0.6)
             }
-            .padding(10)
-            .frame(height: 120)
+            .padding(isIPad ? 16 : 10)
+            .frame(minHeight: isIPad ? 160 : 120)
             .frame(maxWidth: .infinity)
             .background(bgColor)
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(borderColor, lineWidth: 2))
+            .cornerRadius(isIPad ? 16 : 12)
+            .overlay(RoundedRectangle(cornerRadius: isIPad ? 16 : 12).stroke(borderColor, lineWidth: 2))
             .shadow(color: isSelected ? borderColor.opacity(0.3) : .clear, radius: 4)
             .opacity(tile.isMatched ? 0 : 1)
             .scaleEffect(tile.isMatched ? 0.5 : 1)
@@ -13238,6 +17787,9 @@ struct MatchTileView: View {
 struct MatchWinView: View {
     let moves: Int
     let onPlayAgain: () -> Void
+    var onHome: (() -> Void)? = nil
+    var isPremium: Bool = true
+    var onUpgrade: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 18) {
@@ -13245,11 +17797,50 @@ struct MatchWinView: View {
             Text("🎉").font(.system(size: 60))
             Text("You Win!").font(.system(size: 30, weight: .bold, design: .rounded))
             Text("Completed in \(moves) moves").font(.system(size: 16, design: .rounded)).foregroundColor(.secondary)
+
+            if !isPremium {
+                VStack(spacing: 10) {
+                    Text("You've mastered the Demo Deck!")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .multilineTextAlignment(.center)
+                    Text("Unlock 20+ categories to keep playing.")
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button(action: { onUpgrade?() }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "crown.fill")
+                                .font(.system(size: 13))
+                            Text("Upgrade to Premium")
+                                .font(.system(size: 14, weight: .bold, design: .rounded))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 10)
+                        .background(LinearGradient(colors: [.orange, .pink], startPoint: .leading, endPoint: .trailing))
+                        .cornerRadius(12)
+                    }
+                }
+                .padding()
+                .background(Color.orange.opacity(0.1))
+                .cornerRadius(14)
+            }
+
             Button(action: onPlayAgain) {
                 Text("Play Again").font(.system(size: 16, weight: .bold, design: .rounded))
                     .foregroundColor(.white).padding(.horizontal, 35).padding(.vertical, 14)
                     .background(LinearGradient(colors: [.mintGreen, .softLavender], startPoint: .leading, endPoint: .trailing))
                     .cornerRadius(22)
+            }
+            if let onHome {
+                Button(action: onHome) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "house.fill").font(.system(size: 14))
+                        Text("Home").font(.system(size: 16, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 30).padding(.vertical, 12)
+                }
             }
             Spacer()
         }
@@ -13260,7 +17851,14 @@ struct MatchWinView: View {
 
 struct CategoryFilterSheet: View {
     @EnvironmentObject var cardManager: CardManager
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
+    @ObservedObject var authManager = AuthManager.shared
     @Environment(\.dismiss) var dismiss
+    @State private var showUpgradeSheet = false
+
+    var isPremium: Bool {
+        subscriptionManager.hasPremiumAccess || (authManager.userProfile?.isPremium ?? false)
+    }
 
     var selectedCount: Int {
         cardManager.selectedCategories.count
@@ -13273,33 +17871,78 @@ struct CategoryFilterSheet: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
-                // Header with count
-                HStack {
-                    Text("\(selectedCount) of \(totalCount) selected")
-                        .font(.system(size: 14, weight: .medium, design: .rounded))
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Button(action: {
-                        if selectedCount == totalCount {
-                            cardManager.deselectAllCategories()
-                        } else {
-                            cardManager.selectAllCategories()
+                if isPremium {
+                    // Header with count
+                    HStack {
+                        Text("\(selectedCount) of \(totalCount) selected")
+                            .font(.system(size: 14, weight: .medium, design: .rounded))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Button(action: {
+                            if selectedCount == totalCount {
+                                cardManager.deselectAllCategories()
+                            } else {
+                                cardManager.selectAllCategories()
+                            }
+                        }) {
+                            Text(selectedCount == totalCount ? "Deselect All" : "Select All")
+                                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                .foregroundColor(.pastelPink)
                         }
-                    }) {
-                        Text(selectedCount == totalCount ? "Deselect All" : "Select All")
-                            .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            .foregroundColor(.pastelPink)
                     }
+                    .padding()
+                    .background(Color.creamyBackground)
                 }
-                .padding()
-                .background(Color.creamyBackground)
 
                 // Category list
                 ScrollView {
                     LazyVStack(spacing: 8) {
+                        if !isPremium {
+                            // Free sample row (always on)
+                            HStack(spacing: 14) {
+                                Circle()
+                                    .fill(Color.mintGreen)
+                                    .frame(width: 12, height: 12)
+                                Text("NCLEX Essentials (Free Sample)")
+                                    .font(.system(size: 16, weight: .medium, design: .rounded))
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.mintGreen)
+                                    .font(.system(size: 20))
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 14)
+                            .background(Color.adaptiveWhite)
+                            .cornerRadius(12)
+                        }
+
                         ForEach(ContentCategory.allCases, id: \.self) { category in
-                            CategoryFilterRow(category: category, isSelected: cardManager.selectedCategories.contains(category)) {
-                                cardManager.toggleCategory(category)
+                            if isPremium {
+                                CategoryFilterRow(category: category, isSelected: cardManager.selectedCategories.contains(category)) {
+                                    cardManager.toggleCategory(category)
+                                }
+                            } else {
+                                // Locked category row
+                                Button(action: { showUpgradeSheet = true }) {
+                                    HStack(spacing: 14) {
+                                        Circle()
+                                            .fill(category.color)
+                                            .frame(width: 12, height: 12)
+                                        Text(category.rawValue)
+                                            .font(.system(size: 16, weight: .medium, design: .rounded))
+                                            .foregroundColor(.primary)
+                                        Spacer()
+                                        Image(systemName: "lock.fill")
+                                            .foregroundColor(.gray)
+                                            .font(.system(size: 16))
+                                    }
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 14)
+                                    .background(Color.adaptiveWhite)
+                                    .cornerRadius(12)
+                                    .opacity(0.6)
+                                }
                             }
                         }
                     }
@@ -13315,6 +17958,9 @@ struct CategoryFilterSheet: View {
                         .font(.system(size: 16, weight: .semibold, design: .rounded))
                         .foregroundColor(.pastelPink)
                 }
+            }
+            .sheet(isPresented: $showUpgradeSheet) {
+                SubscriptionSheet()
             }
         }
     }
