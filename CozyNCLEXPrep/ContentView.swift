@@ -12399,6 +12399,7 @@ struct SubscriptionSheet: View {
     @EnvironmentObject var cardManager: CardManager
     @Environment(\.dismiss) var dismiss
     @State private var selectedProduct: Product?
+    @State private var yearlyIsEligibleForTrial = false
 
     private let privacyPolicyURL = "https://www.cozynclex.com/privacy.html"
     private let termsOfServiceURL = "https://www.cozynclex.com/terms"
@@ -12425,6 +12426,11 @@ struct SubscriptionSheet: View {
 
     private func isYearly(_ product: Product) -> Bool {
         product.id.lowercased().contains("yearly")
+    }
+
+    private var selectedIsYearlyWithTrial: Bool {
+        guard let product = resolvedProduct else { return false }
+        return isYearly(product) && yearlyIsEligibleForTrial
     }
 
     var body: some View {
@@ -12495,9 +12501,10 @@ struct SubscriptionSheet: View {
                                 product: product,
                                 isSelected: resolvedProduct?.id == product.id,
                                 isLifetime: false,
-                                badge: isMonthly(product) ? "MOST POPULAR" : nil,
-                                badgeColors: [.mintGreen, .blue],
+                                badge: isYearly(product) && yearlyIsEligibleForTrial ? "3-DAY FREE TRIAL" : (isMonthly(product) ? "MOST POPULAR" : nil),
+                                badgeColors: isYearly(product) && yearlyIsEligibleForTrial ? [.pastelPink, .softLavender] : [.mintGreen, .blue],
                                 savingsText: isYearly(product) ? "Save 58%" : nil,
+                                trialText: isYearly(product) && yearlyIsEligibleForTrial ? "3 days free, then \(product.displayPrice)/year" : nil,
                                 action: { selectedProduct = product }
                             )
                         }
@@ -12530,7 +12537,13 @@ struct SubscriptionSheet: View {
                                         .progressViewStyle(CircularProgressViewStyle(tint: .white))
                                 } else {
                                     let isLifetime = product.type == .nonConsumable
-                                    Text(isLifetime ? "Get Lifetime Access — One-Time" : "Start Full Access (Cancel Anytime)")
+                                    if isLifetime {
+                                        Text("Get Lifetime Access — One-Time")
+                                    } else if selectedIsYearlyWithTrial {
+                                        Text("Start 3-Day Free Trial")
+                                    } else {
+                                        Text("Start Full Access (Cancel Anytime)")
+                                    }
                                 }
                             }
                             .font(.system(size: 17, weight: .bold, design: .rounded))
@@ -12542,6 +12555,15 @@ struct SubscriptionSheet: View {
                         }
                         .disabled(subscriptionManager.isLoading)
                         .padding(.horizontal)
+
+                        // Trial disclaimer
+                        if selectedIsYearlyWithTrial {
+                            Text("3 days free, then \(product.displayPrice)/year. Cancel anytime.")
+                                .font(.system(size: 12, weight: .medium, design: .rounded))
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal)
+                        }
                     }
 
                     if let error = subscriptionManager.purchaseError {
@@ -12597,6 +12619,21 @@ struct SubscriptionSheet: View {
         .background(Color.creamyBackground)
         .onAppear {
             selectedProduct = preferredDefault
+            checkTrialEligibility()
+        }
+    }
+
+    private func checkTrialEligibility() {
+        guard let yearly = subscriptionManager.products.first(where: { isYearly($0) }),
+              yearly.subscription?.introductoryOffer != nil else {
+            yearlyIsEligibleForTrial = false
+            return
+        }
+        Task {
+            let eligible = await yearly.subscription?.isEligibleForIntroOffer ?? false
+            await MainActor.run {
+                yearlyIsEligibleForTrial = eligible
+            }
         }
     }
 }
@@ -12608,6 +12645,7 @@ struct SubscriptionProductRow: View {
     var badge: String? = nil
     var badgeColors: [Color] = [.orange, .pink]
     var savingsText: String? = nil
+    var trialText: String? = nil
     let action: () -> Void
 
     var periodText: String {
@@ -12646,9 +12684,15 @@ struct SubscriptionProductRow: View {
                         }
                     }
                     HStack(spacing: 6) {
-                        Text(isLifetime ? "\(product.displayPrice) one-time" : "\(product.displayPrice)/\(periodText)")
-                            .font(.system(size: 13, design: .rounded))
-                            .foregroundColor(.secondary)
+                        if let trial = trialText {
+                            Text(trial)
+                                .font(.system(size: 13, weight: .medium, design: .rounded))
+                                .foregroundColor(.pastelPink)
+                        } else {
+                            Text(isLifetime ? "\(product.displayPrice) one-time" : "\(product.displayPrice)/\(periodText)")
+                                .font(.system(size: 13, design: .rounded))
+                                .foregroundColor(.secondary)
+                        }
                         if let savings = savingsText {
                             Text(savings)
                                 .font(.system(size: 11, weight: .bold, design: .rounded))
