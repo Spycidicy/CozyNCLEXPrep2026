@@ -12402,8 +12402,8 @@ struct SubscriptionSheet: View {
     @Environment(\.dismiss) var dismiss
     @State private var selectedProduct: Product?
 
-    private let privacyPolicyURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/privacy.html"
-    private let termsOfServiceURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/terms.html"
+    private let privacyPolicyURL = "https://www.cozynclex.com/privacy.html"
+    private let termsOfServiceURL = "https://www.cozynclex.com/terms"
 
     private var totalCardCount: Int {
         cardManager.getAvailableCards(isSubscribed: true).count
@@ -13558,8 +13558,8 @@ struct SettingsView: View {
     @State private var isDeletingAccount = false
     @StateObject private var authManager = AuthManager.shared
 
-    private let privacyPolicyURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/privacy.html"
-    private let termsOfServiceURL = "https://spycidicy.github.io/CozyNCLEXPrep2026/terms.html"
+    private let privacyPolicyURL = "https://www.cozynclex.com/privacy.html"
+    private let termsOfServiceURL = "https://www.cozynclex.com/terms"
 
     var body: some View {
         NavigationView {
@@ -13720,7 +13720,7 @@ struct SettingsView: View {
                 Section("Support") {
                     Button(action: {
                         HapticManager.shared.buttonTap()
-                        if let url = URL(string: "mailto:longxethan@gmail.com?subject=CozyNCLEX%20Prep%20Support") {
+                        if let url = URL(string: "mailto:ethan@cozynclex.com?subject=CozyNCLEX%20Prep%20Support") {
                             UIApplication.shared.open(url)
                         }
                     }) {
