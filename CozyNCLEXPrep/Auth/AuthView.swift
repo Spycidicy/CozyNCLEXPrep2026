@@ -292,20 +292,17 @@ struct AuthView: View {
     }
 
     private func signInWithGoogle() {
+        #if DEBUG
         print("DEBUG: signInWithGoogle called")
+        #endif
 
         guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
               let rootViewController = windowScene.windows.first?.rootViewController else {
             errorMessage = "Unable to find root view controller"
             showError = true
-            print("DEBUG: No root view controller")
             return
         }
 
-        print("DEBUG: Got root view controller")
-
-        // Configure with iOS client ID and Web (server) client ID
-        // The serverClientID ensures the ID token is valid for Supabase
         let config = GIDConfiguration(
             clientID: "40859403275-9o180g17crnm3fliqul26tsuqqd95dce.apps.googleusercontent.com",
             serverClientID: "40859403275-rjjma3n9r3go374bmgnm7piir7ljniiv.apps.googleusercontent.com"
@@ -313,13 +310,8 @@ struct AuthView: View {
 
         GIDSignIn.sharedInstance.configuration = config
 
-        print("DEBUG: Starting Google Sign-In...")
-
         GIDSignIn.sharedInstance.signIn(withPresenting: rootViewController) { result, error in
-            print("DEBUG: Google Sign-In callback received")
-
             if let error = error {
-                print("DEBUG: Google error: \(error.localizedDescription)")
                 errorMessage = error.localizedDescription
                 showError = true
                 return
@@ -327,21 +319,17 @@ struct AuthView: View {
 
             guard let user = result?.user,
                   let idToken = user.idToken?.tokenString else {
-                print("DEBUG: No ID token received")
                 errorMessage = "Failed to get Google credentials"
                 showError = true
                 return
             }
 
-            print("DEBUG: Got ID token, calling Supabase...")
             let accessToken = user.accessToken.tokenString
 
             Task {
                 do {
                     try await authManager.signInWithGoogle(idToken: idToken, accessToken: accessToken)
-                    print("DEBUG: Supabase sign-in successful")
                 } catch {
-                    print("DEBUG: Supabase error: \(error.localizedDescription)")
                     errorMessage = error.localizedDescription
                     showError = true
                 }
@@ -577,7 +565,7 @@ struct ResetPasswordSheet: View {
             do {
                 try await SupabaseConfig.client.auth.resetPasswordForEmail(
                     email,
-                    redirectTo: URL(string: "https://spycidicy.github.io/cozynclex-auth-redirect/")
+                    redirectTo: URL(string: "https://www.cozynclex.com/auth-redirect/")
                 )
                 await MainActor.run {
                     isLoading = false

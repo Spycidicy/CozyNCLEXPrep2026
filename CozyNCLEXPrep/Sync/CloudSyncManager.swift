@@ -247,8 +247,10 @@ class CloudSyncManager: ObservableObject {
                 DailyGoalsManager.shared.checkAndResetDailyGoals()
             }
 
+            #if DEBUG
             print("☁️ Starting cloud sync for user: \(userId)")
             print("☁️ Session valid, user email: \(session.user.email ?? "unknown")")
+            #endif
 
             isSyncing = true
             syncError = nil

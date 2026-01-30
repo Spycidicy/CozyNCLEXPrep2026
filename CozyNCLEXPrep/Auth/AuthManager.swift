@@ -137,7 +137,7 @@ class AuthManager: ObservableObject {
         do {
             try await client.auth.resetPasswordForEmail(
                 email,
-                redirectTo: URL(string: "https://spycidicy.github.io/cozynclex-auth-redirect/")
+                redirectTo: URL(string: "https://www.cozynclex.com/auth-redirect/")
             )
         } catch {
             let mapped = AuthError.from(error)
@@ -172,7 +172,9 @@ class AuthManager: ObservableObject {
 
         do {
             let session = try await client.auth.session(from: url)
+            #if DEBUG
             print("🔐 Session created for user: \(session.user.email ?? "unknown")")
+            #endif
             currentUser = session.user
             isAuthenticated = true
 

@@ -18,5 +18,7 @@
 	<array>
 		<string>group.EthanLong.CozyNCLEXPrep</string>
 	</array>
+	<key>aps-environment</key>
+	<string>production</string>
 </dict>
 </plist>

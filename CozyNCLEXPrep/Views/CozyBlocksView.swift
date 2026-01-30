@@ -180,7 +180,7 @@ struct CozyBlocksView: View {
 
         // Piece shape dimensions
         let rows = piece.shape.count
-        let cols = piece.shape[0].count
+        let cols = piece.shape.first?.count ?? 0
 
         // We want the piece centered under the finger, so offset by half the piece size
         let anchorX = localX - (CGFloat(cols) * gridCellSize) / 2.0
@@ -448,7 +448,7 @@ struct CozyBlocksView: View {
 
     private func miniPieceView(piece: BlockPiece, cellSize: CGFloat? = nil) -> some View {
         let rows = piece.shape.count
-        let cols = piece.shape[0].count
+        let cols = piece.shape.first?.count ?? 0
         let maxDim = max(rows, cols)
         let miniSize: CGFloat = cellSize ?? (50 / CGFloat(maxDim))
 
@@ -906,8 +906,8 @@ struct CozyBlocksView: View {
     private func generatePieces() {
         var newPieces: [BlockPiece?] = []
         for _ in 0..<3 {
-            let randomShape = BlockShape.allCases.randomElement()!
-            let randomColor = pieceColors.randomElement()!
+            guard let randomShape = BlockShape.allCases.randomElement(),
+                  let randomColor = pieceColors.randomElement() else { continue }
             let piece = BlockPiece(shape: randomShape.shape, color: randomColor)
             newPieces.append(piece)
         }

@@ -625,7 +625,7 @@ class NotificationManager: ObservableObject {
     func scheduleDailyAffirmation() {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["dailyAffirmation"])
 
-        let affirmation = Self.nursingAffirmations.randomElement() ?? Self.nursingAffirmations[0]
+        let affirmation = Self.nursingAffirmations.randomElement() ?? "You've got this!"
 
         let content = UNMutableNotificationContent()
         content.title = "Daily Cozy Reminder"
@@ -8206,10 +8206,7 @@ class SubscriptionManager: ObservableObject {
     private var updateListenerTask: Task<Void, Error>?
     private var cancellables = Set<AnyCancellable>()
 
-    // MARK: - Debug Flag (set to true for testing premium features)
     #if DEBUG
-    private let forceDebugPremium = false  // Set to true to test premium features
-    #else
     private let forceDebugPremium = false
     #endif
 
@@ -8221,10 +8218,11 @@ class SubscriptionManager: ObservableObject {
         // Load cached subscription status
         isSubscribed = PersistenceManager.shared.loadSubscriptionStatus()
 
-        // Debug override for testing
+        #if DEBUG
         if forceDebugPremium {
             isSubscribed = true
         }
+        #endif
 
         // Update premium access based on initial values
         updatePremiumAccess()
