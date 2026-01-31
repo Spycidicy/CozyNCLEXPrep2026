@@ -55,7 +55,9 @@ class AuthManager: ObservableObject {
             for await (event, session) in client.auth.authStateChanges {
                 guard !Task.isCancelled else { break }
 
+                #if DEBUG
                 print("🔐 Auth event: \(event)")
+                #endif
 
                 switch event {
                 case .signedIn:
@@ -74,7 +76,9 @@ class AuthManager: ObservableObject {
                     currentUser = session?.user
                     isAuthenticated = true
                     showPasswordReset = true
+                    #if DEBUG
                     print("🔐 Password recovery detected - showing reset UI")
+                    #endif
                 default:
                     break
                 }
@@ -162,7 +166,9 @@ class AuthManager: ObservableObject {
     }
 
     func handlePasswordResetURL(_ url: URL) async {
+        #if DEBUG
         print("🔐 Handling auth URL: \(url)")
+        #endif
 
         // Check if this is a recovery/password reset URL
         let urlString = url.absoluteString
@@ -180,21 +186,29 @@ class AuthManager: ObservableObject {
 
             // Only show password reset AFTER session is successfully created
             if isRecovery {
+                #if DEBUG
                 print("🔐 Recovery URL with valid session, showing password reset")
+                #endif
                 showPasswordReset = true
             }
         } catch {
+            #if DEBUG
             print("🔐 Error handling auth URL: \(error)")
+            #endif
 
             // If session(from:) fails but we have a recovery URL, check for existing session
             if isRecovery {
                 if let existingSession = try? await client.auth.session {
+                    #if DEBUG
                     print("🔐 Existing session found with recovery URL, showing password reset")
+                    #endif
                     currentUser = existingSession.user
                     isAuthenticated = true
                     showPasswordReset = true
                 } else {
+                    #if DEBUG
                     print("🔐 No session available for password reset")
+                    #endif
                 }
             }
         }
@@ -309,9 +323,13 @@ class AuthManager: ObservableObject {
                 .value
 
             userProfile = profile
+            #if DEBUG
             print("🔐 Loaded profile: \(profile.displayName), isPremium: \(profile.isPremium)")
+            #endif
         } catch {
+            #if DEBUG
             print("🔐 Error loading profile: \(error)")
+            #endif
             // Profile doesn't exist, create one with email prefix as display name
             let email = currentUser?.email ?? "Student"
             let displayName = displayNameFromEmail(email)
@@ -345,7 +363,9 @@ class AuthManager: ObservableObject {
 
             userProfile = profile
         } catch {
+            #if DEBUG
             print("Failed to create profile: \(error)")
+            #endif
         }
     }
 
@@ -370,24 +390,77 @@ class AuthManager: ObservableObject {
         guard let userId = currentUser?.id else { return }
 
         isLoading = true
+        var deletionErrors: [Error] = []
+
+        // 1. Delete all user data from each table, collecting errors but continuing
+        let tablesToDelete: [(table: String, column: String)] = [
+            ("card_reports", "user_id"),
+            ("card_progress", "user_id"),
+            ("daily_activity", "user_id"),
+            ("user_stats", "user_id"),
+            ("daily_goals", "user_id"),
+            ("achievements", "user_id"),
+            ("user_profiles", "id"),
+        ]
+
+        for entry in tablesToDelete {
+            do {
+                try await client
+                    .from(entry.table)
+                    .delete()
+                    .eq(entry.column, value: userId.uuidString)
+                    .execute()
+                #if DEBUG
+                print("🗑️ Deleted user data from \(entry.table)")
+                #endif
+            } catch {
+                #if DEBUG
+                print("🗑️ Error deleting from \(entry.table): \(error)")
+                #endif
+                deletionErrors.append(error)
+            }
+        }
+
+        // 2. Delete auth user via Edge Function (requires admin privileges)
+        do {
+            try await client.functions.invoke("delete-user")
+            #if DEBUG
+            print("🗑️ Auth user deleted via Edge Function")
+            #endif
+        } catch {
+            #if DEBUG
+            print("🗑️ Error deleting auth user: \(error)")
+            #endif
+            deletionErrors.append(error)
+        }
+
+        // 3. Clear all local data and sign out regardless of server errors
+        await MainActor.run {
+            PersistenceManager.shared.clearAllUserData()
+            DailyGoalsManager.shared.resetForNewUser()
+            StatsManager.shared.resetForNewUser()
+            CardManager.shared.resetForNewUser()
+        }
 
         do {
-            // Delete user profile
-            try await client
-                .from("user_profiles")
-                .delete()
-                .eq("id", value: userId.uuidString)
-                .execute()
-
-            // Sign out (account deletion requires admin API)
-            await signOut()
+            try await client.auth.signOut()
         } catch {
-            let mapped = AuthError.from(error)
+            #if DEBUG
+            print("🗑️ Error signing out: \(error)")
+            #endif
+        }
+
+        currentUser = nil
+        userProfile = nil
+        isAuthenticated = false
+        isLoading = false
+
+        // If any server deletions failed, report the first error
+        if let firstError = deletionErrors.first {
+            let mapped = AuthError.from(firstError)
             authError = mapped
             throw mapped
         }
-
-        isLoading = false
     }
 }
 

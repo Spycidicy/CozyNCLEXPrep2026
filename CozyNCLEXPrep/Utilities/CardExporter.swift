@@ -99,9 +99,11 @@ struct CardExporter {
 
     /// Print export to console (call from debug)
     static func printSQLExport() {
+        #if DEBUG
         print("=== BEGIN SQL EXPORT ===")
         print(exportToSQL())
         print("=== END SQL EXPORT ===")
+        #endif
     }
 
     /// Save SQL to file in Documents directory
@@ -116,10 +118,14 @@ struct CardExporter {
 
         do {
             try sql.write(to: fileURL, atomically: true, encoding: .utf8)
+            #if DEBUG
             print("SQL exported to: \(fileURL.path)")
+            #endif
             return fileURL
         } catch {
+            #if DEBUG
             print("Failed to save SQL: \(error)")
+            #endif
             return nil
         }
     }
@@ -136,10 +142,14 @@ struct CardExporter {
 
         do {
             try json.write(to: fileURL, atomically: true, encoding: .utf8)
+            #if DEBUG
             print("JSON exported to: \(fileURL.path)")
+            #endif
             return fileURL
         } catch {
+            #if DEBUG
             print("Failed to save JSON: \(error)")
+            #endif
             return nil
         }
     }

@@ -55,6 +55,8 @@ struct CloudUserStats: Codable {
     var studySessionsCompleted: Int
     var testsCompleted: Int
     var perfectSessions: Int
+    var categoryAccuracy: [String: [String: Int]]?
+    var totalTimeSpentSeconds: Int
     let createdAt: Date?
     var updatedAt: Date?
 
@@ -72,6 +74,8 @@ struct CloudUserStats: Codable {
         case studySessionsCompleted = "study_sessions_completed"
         case testsCompleted = "tests_completed"
         case perfectSessions = "perfect_sessions"
+        case categoryAccuracy = "category_accuracy"
+        case totalTimeSpentSeconds = "total_time_spent_seconds"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -129,6 +133,20 @@ struct CloudStudySet: Codable, Identifiable {
     }
 }
 
+struct CloudGoalData: Codable {
+    let type: String
+    let target: Int
+    let progress: Int
+    let isCompleted: Bool
+    let xpReward: Int
+
+    enum CodingKeys: String, CodingKey {
+        case type, target, progress
+        case isCompleted = "is_completed"
+        case xpReward = "xp_reward"
+    }
+}
+
 struct CloudDailyActivity: Codable {
     let id: UUID?
     let userId: UUID
@@ -137,7 +155,7 @@ struct CloudDailyActivity: Codable {
     var correctAnswers: Int
     var xpEarned: Int
     var minutesStudied: Int
-    var goalsCompleted: [String]
+    var goalsCompleted: [CloudGoalData]
     let createdAt: Date?
     var updatedAt: Date?
 
@@ -181,7 +199,42 @@ struct CloudTestResult: Codable, Identifiable {
     }
 }
 
+struct CloudAchievement: Codable {
+    let id: UUID?
+    let userId: UUID
+    let achievementId: String
+    let unlockedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case userId = "user_id"
+        case achievementId = "achievement_id"
+        case unlockedAt = "unlocked_at"
+    }
+}
+
 // MARK: - Cloud Sync Manager
+
+@MainActor
+struct CloudCardReport: Codable {
+    let id: UUID?
+    let userId: UUID
+    let cardId: UUID
+    let reason: String
+    let description: String?
+    let cardQuestion: String?
+    let createdAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case userId = "user_id"
+        case cardId = "card_id"
+        case reason
+        case description
+        case cardQuestion = "card_question"
+        case createdAt = "created_at"
+    }
+}
 
 @MainActor
 class CloudSyncManager: ObservableObject {
@@ -193,31 +246,13 @@ class CloudSyncManager: ObservableObject {
     @Published var isSyncEnabled = true
 
     private let client = SupabaseConfig.client
-    private var cancellables = Set<AnyCancellable>()
-
     private let lastSyncKey = "lastCloudSyncDate"
 
     private init() {
         lastSyncDate = UserDefaults.standard.object(forKey: lastSyncKey) as? Date
 
-        // Listen for auth changes to trigger sync
-        AuthManager.shared.$isAuthenticated
-            .dropFirst()
-            .sink { [weak self] isAuthenticated in
-                if isAuthenticated {
-                    Task { await self?.syncAll() }
-                }
-            }
-            .store(in: &cancellables)
-
-        // Also sync on startup if already authenticated
-        Task {
-            // Wait a moment for auth to initialize
-            try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
-            if AuthManager.shared.isAuthenticated {
-                await syncAll()
-            }
-        }
+        // Sync is now triggered explicitly by AppManager.completeAuth() and completeSyncOnLaunch()
+        // to ensure the syncing screen is shown before the menu loads.
     }
 
     // MARK: - Main Sync Methods
@@ -234,7 +269,9 @@ class CloudSyncManager: ObservableObject {
             // IMPORTANT: Check if user changed BEFORE syncing to prevent data leakage
             let userChanged = PersistenceManager.shared.handleUserChange(newUserId: userId.uuidString)
             if userChanged {
+                #if DEBUG
                 print("☁️ User changed - clearing local data before sync")
+                #endif
                 await MainActor.run {
                     DailyGoalsManager.shared.resetForNewUser()
                     StatsManager.shared.resetForNewUser()
@@ -263,21 +300,29 @@ class CloudSyncManager: ObservableObject {
             try await syncUserStats(userId: userId)
             try await syncUserCards(userId: userId)
             try await syncStudySets(userId: userId)
+            try await syncAchievements(userId: userId)
+            try await syncDailyGoals(userId: userId)
 
             // Reload all managers with the synced data
             await MainActor.run {
                 CardManager.shared.loadData()
                 StatsManager.shared.loadData()
+                #if DEBUG
                 print("☁️ Reloaded CardManager and StatsManager with synced data")
                 print("☁️ Mastered cards count after sync: \(CardManager.shared.masteredCardIDs.count)")
+                #endif
             }
 
             lastSyncDate = Date()
             UserDefaults.standard.set(lastSyncDate, forKey: lastSyncKey)
+            #if DEBUG
             print("☁️ Cloud sync completed successfully")
+            #endif
         } catch {
             syncError = error.localizedDescription
+            #if DEBUG
             print("☁️ Cloud sync error: \(error)")
+            #endif
         }
 
         isSyncing = false
@@ -293,7 +338,9 @@ class CloudSyncManager: ObservableObject {
             .value
 
         if existing.isEmpty {
+            #if DEBUG
             print("☁️ Creating initial user_stats row for user: \(userId)")
+            #endif
 
             // Create initial stats row with explicit ID
             let initialStats = CloudUserStats(
@@ -310,6 +357,8 @@ class CloudSyncManager: ObservableObject {
                 studySessionsCompleted: 0,
                 testsCompleted: 0,
                 perfectSessions: 0,
+                categoryAccuracy: nil,
+                totalTimeSpentSeconds: 0,
                 createdAt: nil,
                 updatedAt: nil
             )
@@ -319,9 +368,13 @@ class CloudSyncManager: ObservableObject {
                 .insert(initialStats)
                 .execute()
 
+            #if DEBUG
             print("☁️ Created initial user_stats row")
+            #endif
         } else {
+            #if DEBUG
             print("☁️ user_stats row already exists")
+            #endif
         }
     }
 
@@ -336,7 +389,9 @@ class CloudSyncManager: ObservableObject {
             .execute()
             .value
 
+        #if DEBUG
         print("☁️ Found \(cloudProgress.count) card progress records in cloud")
+        #endif
 
         // Convert to dictionaries for easy lookup
         var cloudMastered = Set<UUID>()
@@ -358,7 +413,9 @@ class CloudSyncManager: ObservableObject {
         let localFlagged = persistence.loadFlaggedCards()
         let localConsecutive = persistence.loadConsecutiveCorrect()
 
+        #if DEBUG
         print("☁️ Local data - Mastered: \(localMastered.count), Saved: \(localSaved.count)")
+        #endif
 
         // Merge: Union for mastered/saved/flagged, max for consecutive correct
         let mergedMastered = localMastered.union(cloudMastered)
@@ -385,11 +442,15 @@ class CloudSyncManager: ObservableObject {
         let allCardIds = Array(mergedMastered.union(mergedSaved).union(mergedFlagged).union(Set(mergedConsecutive.keys)))
 
         if allCardIds.isEmpty {
+            #if DEBUG
             print("☁️ No card progress to sync")
+            #endif
             return
         }
 
+        #if DEBUG
         print("☁️ Syncing \(allCardIds.count) card progress records to cloud")
+        #endif
 
         // Build a map of existing card progress IDs from cloud
         var existingProgressIds: [UUID: UUID] = [:] // cardId -> progressId
@@ -431,9 +492,13 @@ class CloudSyncManager: ObservableObject {
                     .from("user_card_progress")
                     .upsert(batch, onConflict: "user_id,card_id")
                     .execute()
+                #if DEBUG
                 print("☁️ Uploaded batch \(i/batchSize + 1) of \((progressRecords.count + batchSize - 1)/batchSize)")
+                #endif
             } catch {
+                #if DEBUG
                 print("☁️ Error uploading batch: \(error)")
+                #endif
                 throw error
             }
         }
@@ -459,17 +524,39 @@ class CloudSyncManager: ObservableObject {
         let localStreak = DailyGoalsManager.shared.currentStreak
         let localLongestStreak = DailyGoalsManager.shared.longestStreak
 
-        // Merge: Take maximum values
+        // Merge: Take maximum values (never overwrite cloud with lower local values)
+        let cloudStreak = cloudStat?.currentStreak ?? 0
+        let cloudLongest = cloudStat?.longestStreak ?? 0
+        let cloudXP = cloudStat?.totalXp ?? 0
+
         var mergedStats = localStats
         mergedStats.totalCardsStudied = max(localStats.totalCardsStudied, cloudStat?.totalCardsStudied ?? 0)
         mergedStats.totalCorrectAnswers = max(localStats.totalCorrectAnswers, cloudStat?.totalCorrect ?? 0)
-        mergedStats.currentStreak = max(localStats.currentStreak, cloudStat?.currentStreak ?? 0)
-        mergedStats.longestStreak = max(localStats.longestStreak, cloudStat?.longestStreak ?? 0)
+        mergedStats.currentStreak = max(localStats.currentStreak, cloudStreak)
+        mergedStats.longestStreak = max(localStats.longestStreak, cloudLongest)
+        mergedStats.totalTimeSpentSeconds = max(localStats.totalTimeSpentSeconds, cloudStat?.totalTimeSpentSeconds ?? 0)
 
-        // Merge XP - take the maximum
-        let mergedXP = max(localXP, cloudStat?.totalXp ?? 0)
-        let mergedStreak = max(localStreak, cloudStat?.currentStreak ?? 0)
-        let mergedLongestStreak = max(localLongestStreak, cloudStat?.longestStreak ?? 0)
+        // Merge XP and streak - always take the maximum to prevent data loss on reinstall
+        let mergedXP = max(localXP, cloudXP)
+        let mergedStreak = max(localStreak, cloudStreak)
+        let mergedLongestStreak = max(mergedStreak, max(localLongestStreak, cloudLongest))
+
+        // Merge category accuracy
+        let localCategoryAccuracy = localStats.categoryAccuracy
+        let cloudCategoryAccuracy = cloudStat?.categoryAccuracy ?? [:]
+
+        // Build merged: for each category take max of correct and total
+        var mergedCategoryAccuracy: [String: CategoryStats] = localCategoryAccuracy
+        for (category, cloudValues) in cloudCategoryAccuracy {
+            let cloudCorrect = cloudValues["correct"] ?? 0
+            let cloudTotal = cloudValues["total"] ?? 0
+            let localCat = mergedCategoryAccuracy[category] ?? CategoryStats()
+            var merged = CategoryStats()
+            merged.correct = max(localCat.correct, cloudCorrect)
+            merged.total = max(localCat.total, cloudTotal)
+            mergedCategoryAccuracy[category] = merged
+        }
+        mergedStats.categoryAccuracy = mergedCategoryAccuracy
 
         // Save locally
         persistence.saveUserStats(mergedStats)
@@ -480,6 +567,12 @@ class CloudSyncManager: ObservableObject {
         }
         if mergedStreak > localStreak {
             DailyGoalsManager.shared.setStreakFromSync(current: mergedStreak, longest: mergedLongestStreak)
+        }
+
+        // Convert category accuracy to cloud format
+        var cloudCatAccUpload: [String: [String: Int]] = [:]
+        for (category, stats) in mergedCategoryAccuracy {
+            cloudCatAccUpload[category] = ["correct": stats.correct, "total": stats.total]
         }
 
         // Upload to cloud
@@ -498,6 +591,8 @@ class CloudSyncManager: ObservableObject {
             studySessionsCompleted: mergedStats.sessions.count,
             testsCompleted: 0,
             perfectSessions: 0,
+            categoryAccuracy: cloudCatAccUpload.isEmpty ? nil : cloudCatAccUpload,
+            totalTimeSpentSeconds: mergedStats.totalTimeSpentSeconds,
             createdAt: nil,
             updatedAt: nil
         )
@@ -507,7 +602,10 @@ class CloudSyncManager: ObservableObject {
             .upsert(uploadStats, onConflict: "user_id")
             .execute()
 
-        print("☁️ Synced XP: local=\(localXP), cloud=\(cloudStat?.totalXp ?? 0), merged=\(mergedXP)")
+        #if DEBUG
+        print("☁️ Synced XP: local=\(localXP), cloud=\(cloudXP), merged=\(mergedXP)")
+        print("☁️ Synced Streak: local=\(localStreak), cloud=\(cloudStreak), merged=\(mergedStreak)")
+        #endif
     }
 
     // MARK: - User Cards Sync
@@ -688,9 +786,13 @@ class CloudSyncManager: ObservableObject {
                 .upsert(progress, onConflict: "user_id,card_id")
                 .execute()
 
+            #if DEBUG
             print("☁️ Updated card progress for \(cardId)")
+            #endif
         } catch {
+            #if DEBUG
             print("☁️ Error updating card progress: \(error)")
+            #endif
         }
     }
 
@@ -719,9 +821,13 @@ class CloudSyncManager: ObservableObject {
                 .insert(result)
                 .execute()
 
+            #if DEBUG
             print("☁️ Saved test result")
+            #endif
         } catch {
+            #if DEBUG
             print("☁️ Error saving test result: \(error)")
+            #endif
         }
     }
 
@@ -739,13 +845,17 @@ class CloudSyncManager: ObservableObject {
                 .eq("user_id", value: userId.uuidString)
                 .execute()
 
+            #if DEBUG
             print("☁️ Synced XP to cloud: \(totalXP)")
+            #endif
         } catch {
+            #if DEBUG
             print("☁️ Error syncing XP: \(error)")
+            #endif
         }
     }
 
-    func updateDailyActivity(cardsStudied: Int, correctAnswers: Int, xpEarned: Int) async {
+    func updateDailyActivity(cardsStudied: Int, correctAnswers: Int, xpEarned: Int, minutesStudied: Int = 0) async {
         guard isSyncEnabled else { return }
 
         do {
@@ -780,15 +890,271 @@ class CloudSyncManager: ObservableObject {
             activity.cardsStudied += cardsStudied
             activity.correctAnswers += correctAnswers
             activity.xpEarned += xpEarned
+            activity.minutesStudied += minutesStudied
 
             try await client
                 .from("daily_activity")
                 .upsert(activity, onConflict: "user_id,activity_date")
                 .execute()
 
+            #if DEBUG
             print("☁️ Updated daily activity")
+            #endif
         } catch {
+            #if DEBUG
             print("☁️ Error updating daily activity: \(error)")
+            #endif
         }
+    }
+
+    // MARK: - Daily Goals Sync
+
+    /// Bidirectional sync of daily goal progress (full objects, not just names)
+    private func syncDailyGoals(userId: UUID) async throws {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        let todayString = dateFormatter.string(from: Date())
+
+        // Fetch today's cloud activity
+        let existing: [CloudDailyActivity] = try await client
+            .from("daily_activity")
+            .select()
+            .eq("user_id", value: userId.uuidString)
+            .eq("activity_date", value: todayString)
+            .execute()
+            .value
+
+        let localGoals = DailyGoalsManager.shared.dailyGoals
+        let cloudGoals = existing.first?.goalsCompleted ?? []
+
+        // Convert local goals to cloud format
+        let localCloudGoals = localGoals.map { goal in
+            CloudGoalData(
+                type: goal.type.rawValue,
+                target: goal.target,
+                progress: goal.progress,
+                isCompleted: goal.isCompleted,
+                xpReward: goal.xpReward
+            )
+        }
+
+        // Determine if local goals are fresh (no progress at all)
+        let localHasProgress = localGoals.contains { $0.progress > 0 }
+        let cloudHasProgress = cloudGoals.contains { $0.progress > 0 }
+
+        // Merge strategy: if local has no progress but cloud does, restore from cloud
+        let goalsToUpload: [CloudGoalData]
+        if !localHasProgress && cloudHasProgress {
+            // Restore cloud goals to local
+            await MainActor.run {
+                DailyGoalsManager.shared.setGoalsFromSync(cloudGoals)
+            }
+            goalsToUpload = cloudGoals
+            #if DEBUG
+            print("☁️ Restored daily goals from cloud")
+            #endif
+        } else {
+            // Local has progress (or both empty) — upload local
+            goalsToUpload = localCloudGoals
+        }
+
+        // Upsert to cloud
+        if var activity = existing.first {
+            activity.goalsCompleted = goalsToUpload
+            try await client
+                .from("daily_activity")
+                .upsert(activity, onConflict: "user_id,activity_date")
+                .execute()
+        } else {
+            let activity = CloudDailyActivity(
+                id: nil,
+                userId: userId,
+                activityDate: todayString,
+                cardsStudied: 0,
+                correctAnswers: 0,
+                xpEarned: 0,
+                minutesStudied: 0,
+                goalsCompleted: goalsToUpload,
+                createdAt: nil,
+                updatedAt: nil
+            )
+            try await client
+                .from("daily_activity")
+                .upsert(activity, onConflict: "user_id,activity_date")
+                .execute()
+        }
+
+        #if DEBUG
+        print("☁️ Synced daily goals: \(goalsToUpload.count) goals")
+        #endif
+    }
+
+    // MARK: - Achievement Sync
+
+    /// Bidirectional sync: merge local + cloud achievements
+    private func syncAchievements(userId: UUID) async throws {
+        let cloudAchievements: [CloudAchievement] = try await client
+            .from("user_achievements")
+            .select()
+            .eq("user_id", value: userId.uuidString)
+            .execute()
+            .value
+
+        let manager = AchievementManager.shared
+        let localAchievements = manager.unlockedAchievements
+
+        // Build sets for merge
+        let cloudIds = Set(cloudAchievements.map { $0.achievementId })
+        let localIds = Set(localAchievements.map { $0.type.rawValue })
+
+        // Cloud → Local: add any cloud achievements missing locally
+        for cloud in cloudAchievements {
+            if !localIds.contains(cloud.achievementId),
+               let type = AchievementType(rawValue: cloud.achievementId) {
+                let achievement = Achievement(type: type)
+                await MainActor.run {
+                    manager.unlockedAchievements.append(achievement)
+                }
+            }
+        }
+        await MainActor.run {
+            manager.saveAchievements()
+        }
+
+        // Local → Cloud: upsert any local achievements missing in cloud
+        for local in localAchievements where !cloudIds.contains(local.type.rawValue) {
+            let cloud = CloudAchievement(
+                id: nil,
+                userId: userId,
+                achievementId: local.type.rawValue,
+                unlockedAt: local.unlockedDate
+            )
+            try await client
+                .from("user_achievements")
+                .upsert(cloud, onConflict: "user_id,achievement_id")
+                .execute()
+        }
+
+        #if DEBUG
+        print("☁️ Synced achievements: \(manager.unlockedAchievements.count) total")
+        #endif
+    }
+
+    /// Real-time upsert when a single achievement is unlocked
+    func syncSingleAchievement(type: AchievementType) async {
+        do {
+            guard let session = try? await client.auth.session else { return }
+            let userId = session.user.id
+
+            let cloud = CloudAchievement(
+                id: nil,
+                userId: userId,
+                achievementId: type.rawValue,
+                unlockedAt: Date()
+            )
+
+            try await client
+                .from("user_achievements")
+                .upsert(cloud, onConflict: "user_id,achievement_id")
+                .execute()
+
+            #if DEBUG
+            print("☁️ Synced achievement: \(type.rawValue)")
+            #endif
+        } catch {
+            #if DEBUG
+            print("☁️ Error syncing achievement: \(error)")
+            #endif
+        }
+    }
+
+    /// Upsert current goal progress to daily_activity.goals_completed
+    func syncGoalsCompleted(_ goals: [DailyGoal]) async {
+        do {
+            guard let session = try? await client.auth.session else { return }
+            let userId = session.user.id
+
+            let today = Calendar.current.startOfDay(for: Date())
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateFormat = "yyyy-MM-dd"
+            let todayString = dateFormatter.string(from: today)
+
+            let goalData = goals.map { goal in
+                CloudGoalData(
+                    type: goal.type.rawValue,
+                    target: goal.target,
+                    progress: goal.progress,
+                    isCompleted: goal.isCompleted,
+                    xpReward: goal.xpReward
+                )
+            }
+
+            let existing: [CloudDailyActivity] = try await client
+                .from("daily_activity")
+                .select()
+                .eq("user_id", value: userId.uuidString)
+                .eq("activity_date", value: todayString)
+                .execute()
+                .value
+
+            if var activity = existing.first {
+                activity.goalsCompleted = goalData
+                try await client
+                    .from("daily_activity")
+                    .upsert(activity, onConflict: "user_id,activity_date")
+                    .execute()
+            } else {
+                let activity = CloudDailyActivity(
+                    id: nil,
+                    userId: userId,
+                    activityDate: todayString,
+                    cardsStudied: 0,
+                    correctAnswers: 0,
+                    xpEarned: 0,
+                    minutesStudied: 0,
+                    goalsCompleted: goalData,
+                    createdAt: nil,
+                    updatedAt: nil
+                )
+                try await client
+                    .from("daily_activity")
+                    .upsert(activity, onConflict: "user_id,activity_date")
+                    .execute()
+            }
+
+            #if DEBUG
+            print("☁️ Synced goals completed: \(goalData.count) goals")
+            #endif
+        } catch {
+            #if DEBUG
+            print("☁️ Error syncing goals completed: \(error)")
+            #endif
+        }
+    }
+
+    // MARK: - Card Reports
+
+    func reportCard(cardId: UUID, reason: String, description: String?, cardQuestion: String?) async throws {
+        let session = try await client.auth.session
+        let userId = session.user.id
+
+        let report = CloudCardReport(
+            id: nil,
+            userId: userId,
+            cardId: cardId,
+            reason: reason,
+            description: description,
+            cardQuestion: cardQuestion,
+            createdAt: nil
+        )
+
+        try await client
+            .from("card_reports")
+            .insert(report)
+            .execute()
+
+        #if DEBUG
+        print("☁️ Card report submitted: \(reason)")
+        #endif
     }
 }

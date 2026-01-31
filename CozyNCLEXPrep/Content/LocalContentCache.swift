@@ -61,7 +61,9 @@ class LocalContentCache {
             decoder.dateDecodingStrategy = .iso8601
             return try decoder.decode([RemoteFlashcard].self, from: data)
         } catch {
+            #if DEBUG
             print("Failed to load cached flashcards: \(error)")
+            #endif
             return nil
         }
     }

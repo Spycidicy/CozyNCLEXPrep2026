@@ -460,7 +460,9 @@ extension GameMode {
 
 #Preview {
     StudySessionSetupView(gameMode: .flashcards) { cards in
+        #if DEBUG
         print("Starting with \(cards.count) cards")
+        #endif
     }
     .environmentObject(CardManager.shared)
     .environmentObject(SubscriptionManager())

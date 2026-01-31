@@ -107,7 +107,9 @@ class MigrationManager {
             localStorage.recordModification(CloudKitConfig.RecordType.testResult, id: result.id.uuidString)
         }
 
+        #if DEBUG
         print("Migration v1 complete: Marked \(userCards.count) cards, \(studySets.count) sets, \(cardNotes.count) notes, \(testHistory.count) test results for sync")
+        #endif
     }
 
     // MARK: - Backup

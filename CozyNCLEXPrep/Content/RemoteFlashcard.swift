@@ -45,22 +45,30 @@ struct RemoteFlashcard: Codable, Identifiable {
     func toFlashcard() -> Flashcard? {
         // Try to convert each enum with flexible matching
         guard let contentCat = ContentCategory.fromDatabaseValue(contentCategory) else {
+            #if DEBUG
             print("❌ Failed to convert contentCategory: '\(contentCategory)'")
+            #endif
             return nil
         }
 
         guard let nclexCat = NCLEXCategory.fromDatabaseValue(nclexCategory) else {
+            #if DEBUG
             print("❌ Failed to convert nclexCategory: '\(nclexCategory)'")
+            #endif
             return nil
         }
 
         guard let diff = Difficulty.fromDatabaseValue(difficulty) else {
+            #if DEBUG
             print("❌ Failed to convert difficulty: '\(difficulty)'")
+            #endif
             return nil
         }
 
         guard let qType = QuestionType.fromDatabaseValue(questionType) else {
+            #if DEBUG
             print("❌ Failed to convert questionType: '\(questionType)'")
+            #endif
             return nil
         }
 

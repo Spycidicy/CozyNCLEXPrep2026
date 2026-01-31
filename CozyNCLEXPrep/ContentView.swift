@@ -220,7 +220,9 @@ class PersistenceManager {
         let lastUserId = defaults.string(forKey: lastUserIdKey)
 
         if lastUserId != newUserId {
+            #if DEBUG
             print("🔄 User changed from \(lastUserId ?? "none") to \(newUserId) - clearing local data")
+            #endif
             clearAllUserData()
             defaults.set(newUserId, forKey: lastUserIdKey)
             return true
@@ -277,7 +279,9 @@ class PersistenceManager {
 
         defaults.synchronize()
 
+        #if DEBUG
         print("🗑️ All user data cleared from local storage")
+        #endif
     }
 }
 
@@ -474,34 +478,79 @@ struct CardNote: Codable, Identifiable {
 // MARK: - Achievement System
 
 enum AchievementType: String, Codable, CaseIterable {
+    // Cards studied
     case firstCard = "First Steps"
     case tenCards = "Getting Started"
     case fiftyCards = "Dedicated Learner"
     case hundredCards = "Century Club"
     case fiveHundredCards = "Card Master"
+
+    // Mastery
     case firstMastered = "First Mastery"
     case tenMastered = "Growing Strong"
     case fiftyMastered = "Knowledge Builder"
     case hundredMastered = "Expert Level"
+
+    // Streaks
     case threeDayStreak = "On a Roll"
     case sevenDayStreak = "Week Warrior"
     case thirtyDayStreak = "Monthly Master"
+
+    // Tests
     case firstTest = "Test Taker"
     case perfectTest = "Perfect Score"
+
+    // Category
     case allCategories = "Well Rounded"
+
+    // Levels
+    case levelFive = "Level 5"
+    case levelTen = "Level 10"
+    case levelFifteen = "Level 15"
+    case levelTwenty = "Level 20"
+
+    // Time studied
+    case oneHourStudied = "Clock Puncher"
+    case fiveHoursStudied = "Deep Focus"
+    case tenHoursStudied = "Marathon Mind"
+    case twentyFiveHoursStudied = "Time Well Spent"
+    case fiftyHoursStudied = "Scholar's Journey"
+
+    // Daily goals completed
+    case fiveGoals = "Goal Getter"
+    case tenGoals = "Habit Forming"
+    case twentyFiveGoals = "Daily Grinder"
+    case fiftyGoals = "Unstoppable"
+    case hundredGoals = "Goal Legend"
+
+    // Bonus / misc
+    case thousandCards = "The Grind Never Stops"
+    case fiveTests = "Exam Prep Pro"
+    case tenTests = "Testing Machine"
+    case threePerfectTests = "Flawless Record"
+    case fourteenDayStreak = "Fortnight Focus"
+    case sixtyDayStreak = "Iron Will"
+    case twoHundredFiftyMastered = "Knowledge Vault"
+    case fiveHundredMastered = "Walking Encyclopedia"
 
     var icon: String {
         switch self {
-        case .firstCard, .tenCards, .fiftyCards, .hundredCards, .fiveHundredCards:
+        case .firstCard, .tenCards, .fiftyCards, .hundredCards, .fiveHundredCards, .thousandCards:
             return "square.stack.fill"
-        case .firstMastered, .tenMastered, .fiftyMastered, .hundredMastered:
+        case .firstMastered, .tenMastered, .fiftyMastered, .hundredMastered, .twoHundredFiftyMastered, .fiveHundredMastered:
             return "star.fill"
-        case .threeDayStreak, .sevenDayStreak, .thirtyDayStreak:
+        case .threeDayStreak, .sevenDayStreak, .fourteenDayStreak, .thirtyDayStreak, .sixtyDayStreak:
             return "flame.fill"
-        case .firstTest, .perfectTest:
+        case .firstTest, .perfectTest, .fiveTests, .tenTests, .threePerfectTests:
             return "doc.text.fill"
         case .allCategories:
             return "chart.pie.fill"
+        case .levelFive, .levelTen, .levelFifteen, .levelTwenty:
+            return "arrow.up.circle.fill"
+        case .oneHourStudied, .fiveHoursStudied, .tenHoursStudied, .twentyFiveHoursStudied, .fiftyHoursStudied:
+            return "clock.fill"
+        case .fiveGoals, .tenGoals, .twentyFiveGoals, .fiftyGoals, .hundredGoals:
+            return "target"
         }
     }
 
@@ -512,16 +561,38 @@ enum AchievementType: String, Codable, CaseIterable {
         case .fiftyCards: return "Study 50 cards"
         case .hundredCards: return "Study 100 cards"
         case .fiveHundredCards: return "Study 500 cards"
+        case .thousandCards: return "Study 1,000 cards"
         case .firstMastered: return "Master your first card"
         case .tenMastered: return "Master 10 cards"
         case .fiftyMastered: return "Master 50 cards"
         case .hundredMastered: return "Master 100 cards"
+        case .twoHundredFiftyMastered: return "Master 250 cards"
+        case .fiveHundredMastered: return "Master 500 cards"
         case .threeDayStreak: return "3 day study streak"
         case .sevenDayStreak: return "7 day study streak"
+        case .fourteenDayStreak: return "14 day study streak"
         case .thirtyDayStreak: return "30 day study streak"
+        case .sixtyDayStreak: return "60 day study streak"
         case .firstTest: return "Complete your first test"
         case .perfectTest: return "Get 100% on a test"
+        case .fiveTests: return "Complete 5 practice tests"
+        case .tenTests: return "Complete 10 practice tests"
+        case .threePerfectTests: return "Get 100% on 3 tests"
         case .allCategories: return "Study all categories"
+        case .levelFive: return "Reach Level 5"
+        case .levelTen: return "Reach Level 10"
+        case .levelFifteen: return "Reach Level 15"
+        case .levelTwenty: return "Reach Level 20"
+        case .oneHourStudied: return "Study for 1 hour total"
+        case .fiveHoursStudied: return "Study for 5 hours total"
+        case .tenHoursStudied: return "Study for 10 hours total"
+        case .twentyFiveHoursStudied: return "Study for 25 hours total"
+        case .fiftyHoursStudied: return "Study for 50 hours total"
+        case .fiveGoals: return "Complete 5 daily goals"
+        case .tenGoals: return "Complete 10 daily goals"
+        case .twentyFiveGoals: return "Complete 25 daily goals"
+        case .fiftyGoals: return "Complete 50 daily goals"
+        case .hundredGoals: return "Complete 100 daily goals"
         }
     }
 
@@ -529,12 +600,25 @@ enum AchievementType: String, Codable, CaseIterable {
         switch self {
         case .firstCard, .tenCards: return .mintGreen
         case .fiftyCards, .hundredCards, .fiveHundredCards: return .softLavender
+        case .thousandCards: return .purple
         case .firstMastered, .tenMastered: return .pastelPink
         case .fiftyMastered, .hundredMastered: return .coralPink
+        case .twoHundredFiftyMastered, .fiveHundredMastered: return .red
         case .threeDayStreak: return .peachOrange
-        case .sevenDayStreak, .thirtyDayStreak: return .orange
+        case .sevenDayStreak, .fourteenDayStreak: return .orange
+        case .thirtyDayStreak, .sixtyDayStreak: return .red
         case .firstTest, .perfectTest: return .skyBlue
+        case .fiveTests, .tenTests: return .blue
+        case .threePerfectTests: return .yellow
         case .allCategories: return .lavenderGreen
+        case .levelFive, .levelTen: return .skyBlue
+        case .levelFifteen, .levelTwenty: return .softLavender
+        case .oneHourStudied, .fiveHoursStudied: return .mintGreen
+        case .tenHoursStudied, .twentyFiveHoursStudied: return .teal
+        case .fiftyHoursStudied: return .indigo
+        case .fiveGoals, .tenGoals: return .peachOrange
+        case .twentyFiveGoals, .fiftyGoals: return .orange
+        case .hundredGoals: return .red
         }
     }
 }
@@ -561,6 +645,9 @@ class NotificationManager: ObservableObject {
     private let reminderTimeKey = "studyReminderTime"
     private let remindersEnabledKey = "studyRemindersEnabled"
 
+    /// Remote affirmations fetched from Supabase; empty until loaded.
+    static var remoteAffirmations: [String] = []
+
     static let nursingAffirmations: [String] = [
         "You know more than you think you do. Trust your gut.",
         "This exam tests your safety, not your worth. You are safe.",
@@ -570,6 +657,63 @@ class NotificationManager: ObservableObject {
         "Visualizing you with that 'RN' behind your name. It's coming.",
         "Progress over perfection. You are doing great."
     ]
+
+    private static let notificationNudges: [String] = [
+        "Psst... turn on notifications so Bear can cheer you on daily!",
+        "Bear wants to send you cozy reminders. Enable notifications in settings!",
+        "Let Bear nudge you to study! Turn on notifications for daily encouragement."
+    ]
+
+    private static let widgetNudges: [String] = [
+        "Add a CozyNCLEX widget to your home screen for daily affirmations!",
+        "Your home screen could use a cozy touch. Try adding our widget!",
+        "Keep Bear on your home screen! Add the CozyNCLEX widget for a daily boost."
+    ]
+
+    /// Returns a cozy nudge if applicable (~20% chance), otherwise a regular affirmation.
+    static func cozyMessage() -> String {
+        // 20% chance to show a nudge instead of a regular affirmation
+        let showNudge = Int.random(in: 1...5) == 1
+
+        if showNudge {
+            // Prefer notification nudge if not authorized, otherwise widget nudge
+            if !NotificationManager.shared.isAuthorized {
+                return notificationNudges.randomElement() ?? nursingAffirmations.randomElement()!
+            } else {
+                return widgetNudges.randomElement() ?? nursingAffirmations.randomElement()!
+            }
+        }
+
+        let pool = remoteAffirmations.isEmpty ? nursingAffirmations : remoteAffirmations
+        return pool.randomElement() ?? "You got this!"
+    }
+
+    /// Fetches active affirmations from Supabase and caches them in the shared app-group defaults.
+    static func fetchAffirmations() async {
+        do {
+            struct AffirmationRow: Decodable {
+                let text: String
+            }
+            let response: [AffirmationRow] = try await SupabaseConfig.client
+                .from("affirmations")
+                .select("text")
+                .eq("is_active", value: true)
+                .order("display_order")
+                .execute()
+                .value
+            let texts = response.map(\.text)
+            if !texts.isEmpty {
+                remoteAffirmations = texts
+                // Cache to shared app-group UserDefaults so the widget can read them
+                if let defaults = UserDefaults(suiteName: "group.EthanLong.CozyNCLEXPrep") {
+                    defaults.set(texts, forKey: "cachedAffirmations")
+                }
+            }
+        } catch {
+            print("[CozyNCLEX] Failed to fetch affirmations from Supabase: \(error)")
+            // Fall back: remoteAffirmations stays empty, hardcoded array is used.
+        }
+    }
 
     init() {
         loadSettings()
@@ -625,7 +769,8 @@ class NotificationManager: ObservableObject {
     func scheduleDailyAffirmation() {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["dailyAffirmation"])
 
-        let affirmation = Self.nursingAffirmations.randomElement() ?? "You've got this!"
+        let pool = Self.remoteAffirmations.isEmpty ? Self.nursingAffirmations : Self.remoteAffirmations
+        let affirmation = pool.randomElement() ?? "You've got this!"
 
         let content = UNMutableNotificationContent()
         content.title = "Daily Cozy Reminder"
@@ -701,7 +846,10 @@ class NotificationManager: ObservableObject {
 
 // MARK: - Achievement Manager
 
+@MainActor
 class AchievementManager: ObservableObject {
+    static let shared = AchievementManager()
+
     @Published var unlockedAchievements: [Achievement] = []
     @Published var newAchievement: Achievement?
 
@@ -735,36 +883,76 @@ class AchievementManager: ObservableObject {
         newAchievement = achievement
         saveAchievements()
 
+        // Sync to cloud
+        let achievementType = type
+        Task {
+            await CloudSyncManager.shared.syncSingleAchievement(type: achievementType)
+        }
+
         // Trigger app review prompt for achievements
         ReviewManager.shared.recordAchievementUnlocked()
     }
 
-    func checkAchievements(stats: UserStats, masteredCount: Int, categoriesStudied: Set<String>) {
+    func checkAchievements(stats: UserStats, masteredCount: Int, categoriesStudied: Set<String>, level: Int = 0) {
         // Cards studied achievements
         if stats.totalCardsStudied >= 1 { unlock(.firstCard) }
         if stats.totalCardsStudied >= 10 { unlock(.tenCards) }
         if stats.totalCardsStudied >= 50 { unlock(.fiftyCards) }
         if stats.totalCardsStudied >= 100 { unlock(.hundredCards) }
         if stats.totalCardsStudied >= 500 { unlock(.fiveHundredCards) }
+        if stats.totalCardsStudied >= 1000 { unlock(.thousandCards) }
 
         // Mastery achievements
         if masteredCount >= 1 { unlock(.firstMastered) }
         if masteredCount >= 10 { unlock(.tenMastered) }
         if masteredCount >= 50 { unlock(.fiftyMastered) }
         if masteredCount >= 100 { unlock(.hundredMastered) }
+        if masteredCount >= 250 { unlock(.twoHundredFiftyMastered) }
+        if masteredCount >= 500 { unlock(.fiveHundredMastered) }
 
         // Streak achievements
         if stats.currentStreak >= 3 { unlock(.threeDayStreak) }
         if stats.currentStreak >= 7 { unlock(.sevenDayStreak) }
+        if stats.currentStreak >= 14 { unlock(.fourteenDayStreak) }
         if stats.currentStreak >= 30 { unlock(.thirtyDayStreak) }
+        if stats.currentStreak >= 60 { unlock(.sixtyDayStreak) }
 
         // Category achievement
         if categoriesStudied.count >= ContentCategory.allCases.count {
             unlock(.allCategories)
         }
+
+        // Level achievements
+        if level >= 5 { unlock(.levelFive) }
+        if level >= 10 { unlock(.levelTen) }
+        if level >= 15 { unlock(.levelFifteen) }
+        if level >= 20 { unlock(.levelTwenty) }
+
+        // Time studied achievements (in seconds → hours)
+        let hoursStudied = stats.totalTimeSpentSeconds / 3600
+        if hoursStudied >= 1 { unlock(.oneHourStudied) }
+        if hoursStudied >= 5 { unlock(.fiveHoursStudied) }
+        if hoursStudied >= 10 { unlock(.tenHoursStudied) }
+        if hoursStudied >= 25 { unlock(.twentyFiveHoursStudied) }
+        if hoursStudied >= 50 { unlock(.fiftyHoursStudied) }
+
+        // Daily goals completed achievements
+        if stats.totalDailyGoalsCompleted >= 5 { unlock(.fiveGoals) }
+        if stats.totalDailyGoalsCompleted >= 10 { unlock(.tenGoals) }
+        if stats.totalDailyGoalsCompleted >= 25 { unlock(.twentyFiveGoals) }
+        if stats.totalDailyGoalsCompleted >= 50 { unlock(.fiftyGoals) }
+        if stats.totalDailyGoalsCompleted >= 100 { unlock(.hundredGoals) }
+
+        // Test achievements
+        if stats.testsCompleted >= 1 { unlock(.firstTest) }
+        if stats.testsCompleted >= 5 { unlock(.fiveTests) }
+        if stats.testsCompleted >= 10 { unlock(.tenTests) }
+        if stats.perfectTests >= 1 { unlock(.perfectTest) }
+        if stats.perfectTests >= 3 { unlock(.threePerfectTests) }
     }
 
     func checkTestAchievements(isFirstTest: Bool, isPerfect: Bool) {
+        // Legacy — now handled by checkAchievements via stats counters
         if isFirstTest { unlock(.firstTest) }
         if isPerfect { unlock(.perfectTest) }
     }
@@ -1128,6 +1316,7 @@ struct DailyGoalsSchedule: Codable {
     }
 }
 
+@MainActor
 class DailyGoalsManager: ObservableObject {
     static let shared = DailyGoalsManager()
 
@@ -1167,7 +1356,9 @@ class DailyGoalsManager: ObservableObject {
         loadData()
         checkAndResetDailyGoals()
         isInitializing = false
+        #if DEBUG
         print("🎯 DailyGoalsManager init: \(dailyGoals.count) goals loaded")
+        #endif
     }
 
     func loadData() {
@@ -1221,6 +1412,14 @@ class DailyGoalsManager: ObservableObject {
 
         // Mark XP data for sync
         syncManager.markChanged(CloudKitConfig.RecordType.userXP, id: "main")
+
+        // Push goal progress to Supabase
+        if !isInitializing {
+            let currentGoals = dailyGoals
+            Task {
+                await CloudSyncManager.shared.syncGoalsCompleted(currentGoals)
+            }
+        }
 
         // Skip widget update during init to avoid circular dependency with StatsManager
         guard !isInitializing else { return }
@@ -1368,27 +1567,37 @@ class DailyGoalsManager: ObservableObject {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
 
+        #if DEBUG
         print("🎯 checkAndResetDailyGoals: lastGoalDate = \(String(describing: lastGoalDate)), today = \(today)")
+        #endif
 
         if let lastDate = lastGoalDate {
             let lastDay = calendar.startOfDay(for: lastDate)
             if today > lastDay {
                 // New day - reset goals
+                #if DEBUG
                 print("🎯 New day detected, fetching/generating new goals")
+                #endif
                 fetchOrGenerateDailyGoals()
                 hasCompletedCardOfTheDay = false
             } else {
+                #if DEBUG
                 print("🎯 Same day, keeping existing \(dailyGoals.count) goals")
+                #endif
             }
         } else {
             // First time - generate goals
+            #if DEBUG
             print("🎯 First time, fetching/generating goals")
+            #endif
             fetchOrGenerateDailyGoals()
         }
 
         lastGoalDate = today
         saveData()
+        #if DEBUG
         print("🎯 After checkAndResetDailyGoals: \(dailyGoals.count) goals")
+        #endif
     }
 
     /// Fetch daily goals from Supabase, fall back to local generation
@@ -1406,7 +1615,9 @@ class DailyGoalsManager: ObservableObject {
     @MainActor
     func fetchDailyGoalsFromServer() async {
         guard SupabaseConfig.isConfigured else {
+            #if DEBUG
             print("🎯 Supabase not configured, using local goals")
+            #endif
             return
         }
 
@@ -1417,7 +1628,9 @@ class DailyGoalsManager: ObservableObject {
         dateFormatter.dateFormat = "yyyy-MM-dd"
         let todayString = dateFormatter.string(from: Date())
 
+        #if DEBUG
         print("🎯 Fetching daily goals for \(todayString) from Supabase...")
+        #endif
 
         do {
             let schedules: [DailyGoalsSchedule] = try await SupabaseConfig.client
@@ -1444,14 +1657,20 @@ class DailyGoalsManager: ObservableObject {
                     }
                     dailyGoals = updatedGoals
                     saveData()
+                    #if DEBUG
                     print("🎯 Loaded \(remoteGoals.count) goals from server: \(remoteGoals.map { $0.type.rawValue })")
+                    #endif
                     return
                 }
             }
 
+            #if DEBUG
             print("🎯 No goals found for today in database, using local goals")
+            #endif
         } catch {
+            #if DEBUG
             print("🎯 Error fetching daily goals: \(error.localizedDescription)")
+            #endif
         }
     }
 
@@ -1515,7 +1734,9 @@ class DailyGoalsManager: ObservableObject {
         }
 
         dailyGoals = selectedGoals
+        #if DEBUG
         print("🎯 generateLocalDailyGoals: Generated \(selectedGoals.count) goals: \(selectedGoals.map { $0.type.rawValue })")
+        #endif
         saveData()
     }
 
@@ -1533,6 +1754,16 @@ class DailyGoalsManager: ObservableObject {
                 addXP(dailyGoals[index].xpReward)
                 HapticManager.shared.achievement()
                 SoundManager.shared.achievement()
+
+                // Track lifetime daily goals completed
+                StatsManager.shared.stats.totalDailyGoalsCompleted += 1
+                StatsManager.shared.save()
+
+                // Sync goal progress to cloud
+                let currentGoals = dailyGoals
+                Task {
+                    await CloudSyncManager.shared.syncGoalsCompleted(currentGoals)
+                }
             }
             saveData()
         }
@@ -1573,6 +1804,10 @@ class DailyGoalsManager: ObservableObject {
                     dailyGoals[index].isCompleted = true
                     addXP(dailyGoals[index].xpReward)
                     HapticManager.shared.achievement()
+
+                    // Track lifetime daily goals completed
+                    StatsManager.shared.stats.totalDailyGoalsCompleted += 1
+                    StatsManager.shared.save()
                 }
                 saveData()
             }
@@ -1632,7 +1867,9 @@ class DailyGoalsManager: ObservableObject {
         totalXP = xp
         calculateLevel()
         UserDefaults.standard.set(totalXP, forKey: totalXPKey)
+        #if DEBUG
         print("☁️ Updated local XP from cloud: \(xp)")
+        #endif
     }
 
     /// Set streak from cloud sync
@@ -1645,6 +1882,29 @@ class DailyGoalsManager: ObservableObject {
             longestStreak = longest
             UserDefaults.standard.set(longestStreak, forKey: longestStreakKey)
         }
+    }
+
+    /// Restore daily goal progress from cloud sync data.
+    /// Only applies if local goals have no progress (fresh install).
+    func setGoalsFromSync(_ cloudGoals: [CloudGoalData]) {
+        let localHasProgress = dailyGoals.contains { $0.progress > 0 }
+        guard !localHasProgress else { return }
+
+        var restoredGoals: [DailyGoal] = []
+        for cloudGoal in cloudGoals {
+            guard let goalType = DailyGoalType(rawValue: cloudGoal.type) else { continue }
+            var goal = DailyGoal(type: goalType, target: cloudGoal.target, xpReward: cloudGoal.xpReward)
+            goal.progress = cloudGoal.progress
+            goal.isCompleted = cloudGoal.isCompleted
+            restoredGoals.append(goal)
+        }
+
+        guard !restoredGoals.isEmpty else { return }
+        dailyGoals = restoredGoals
+        saveData()
+        #if DEBUG
+        print("☁️ Restored \(restoredGoals.count) daily goals from cloud")
+        #endif
     }
 
     func selectCardOfTheDay(from cards: [Flashcard]) {
@@ -1888,6 +2148,7 @@ extension Color {
 enum Screen {
     case onboarding
     case auth
+    case syncing
     case menu
     case flashcardsGame
     case learnGame
@@ -1900,6 +2161,47 @@ enum Screen {
     case stats
     case search
     case blocksGame
+}
+
+struct SyncingView: View {
+    let onSkip: () -> Void
+    @State private var showSkip = false
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Spacer()
+
+            ProgressView()
+                .scaleEffect(1.5)
+
+            Text("Syncing your data...")
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .foregroundColor(.secondary)
+
+            if showSkip {
+                Button {
+                    onSkip()
+                } label: {
+                    Text("Taking a while? Tap to Skip.")
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundColor(.secondary.opacity(0.8))
+                }
+                .transition(.opacity)
+            }
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.creamyBackground)
+        .task {
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            if !Task.isCancelled {
+                withAnimation(.easeIn(duration: 0.5)) {
+                    showSkip = true
+                }
+            }
+        }
+    }
 }
 
 enum GameMode: String, CaseIterable, Identifiable {
@@ -2271,6 +2573,9 @@ struct UserStats: Codable {
     var lastStudyDate: Date?
     var sessions: [StudySession] = []
     var categoryAccuracy: [String: CategoryStats] = [:]
+    var totalDailyGoalsCompleted: Int = 0
+    var testsCompleted: Int = 0
+    var perfectTests: Int = 0
 
     var overallAccuracy: Double {
         guard totalCardsStudied > 0 else { return 0 }
@@ -8147,8 +8452,13 @@ extension Flashcard {
 
 // MARK: - Managers
 
+@MainActor
 class AppManager: ObservableObject {
     @Published var currentScreen: Screen
+    @Published var pendingSetupMode: GameMode?
+
+    /// Tracks the active sync task so it can be cancelled on skip
+    private var syncTask: Task<Void, Never>?
 
     init() {
         // Check if user has seen onboarding
@@ -8158,6 +8468,49 @@ class AppManager: ObservableObject {
             // Onboarding done but not authenticated
             currentScreen = .auth
         } else {
+            // Show syncing screen while cloud data loads
+            currentScreen = .syncing
+        }
+    }
+
+    func completeSyncOnLaunch() {
+        guard currentScreen == .syncing else { return }
+        syncTask = Task {
+            #if DEBUG
+            print("🔄 Syncing on launch...")
+            #endif
+            // Race: sync vs 10-second timeout — whichever finishes first wins
+            await withTaskGroup(of: Bool.self) { group in
+                group.addTask {
+                    await CloudSyncManager.shared.syncAll()
+                    return true
+                }
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: 10_000_000_000)
+                    return false
+                }
+                if let _ = await group.next() {
+                    group.cancelAll()
+                }
+            }
+            if !Task.isCancelled {
+                #if DEBUG
+                print("🔄 Launch sync complete, showing menu")
+                #endif
+                withAnimation(.easeInOut(duration: 0.5)) {
+                    currentScreen = .menu
+                }
+            }
+        }
+    }
+
+    func skipSync() {
+        syncTask?.cancel()
+        syncTask = nil
+        #if DEBUG
+        print("⏭️ User skipped sync")
+        #endif
+        withAnimation(.easeInOut(duration: 0.5)) {
             currentScreen = .menu
         }
     }
@@ -8171,23 +8524,93 @@ class AppManager: ObservableObject {
 
     func completeAuth() {
         withAnimation(.easeInOut(duration: 0.5)) {
-            currentScreen = .menu
+            currentScreen = .syncing
         }
-        // Auto-sync data after login
-        Task {
-            print("🔄 Auto-syncing after login...")
-            await CloudSyncManager.shared.syncAll()
-            print("🔄 Auto-sync complete")
+        syncTask = Task {
+            #if DEBUG
+            print("🔄 Syncing before showing menu...")
+            #endif
+            await withTaskGroup(of: Bool.self) { group in
+                group.addTask {
+                    await CloudSyncManager.shared.syncAll()
+                    return true
+                }
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: 10_000_000_000)
+                    return false
+                }
+                if let _ = await group.next() {
+                    group.cancelAll()
+                }
+            }
+            if !Task.isCancelled {
+                #if DEBUG
+                print("🔄 Sync complete, showing menu")
+                #endif
+                withAnimation(.easeInOut(duration: 0.5)) {
+                    currentScreen = .menu
+                }
+            }
         }
     }
 
     func signOut() {
+        syncTask?.cancel()
+        syncTask = nil
         withAnimation(.easeInOut(duration: 0.5)) {
             currentScreen = .auth
         }
     }
+
+    // MARK: - Scene Phase Persistence
+
+    private static let screenKey = "savedCurrentScreen"
+
+    private static let screenMap: [String: Screen] = [
+        "menu": .menu, "flashcardsGame": .flashcardsGame, "learnGame": .learnGame,
+        "matchGame": .matchGame, "cardBrowser": .cardBrowser, "createCard": .createCard,
+        "studySets": .studySets, "testMode": .testMode, "writeMode": .writeMode,
+        "stats": .stats, "search": .search, "blocksGame": .blocksGame
+    ]
+
+    private static func screenToString(_ screen: Screen) -> String? {
+        switch screen {
+        case .menu: return "menu"
+        case .flashcardsGame: return "flashcardsGame"
+        case .learnGame: return "learnGame"
+        case .matchGame: return "matchGame"
+        case .cardBrowser: return "cardBrowser"
+        case .createCard: return "createCard"
+        case .studySets: return "studySets"
+        case .testMode: return "testMode"
+        case .writeMode: return "writeMode"
+        case .stats: return "stats"
+        case .search: return "search"
+        case .blocksGame: return "blocksGame"
+        default: return nil
+        }
+    }
+
+    func saveCurrentScreen() {
+        if let key = Self.screenToString(currentScreen) {
+            UserDefaults.standard.set(key, forKey: Self.screenKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.screenKey)
+        }
+    }
+
+    func restoreCurrentScreen() {
+        guard let saved = UserDefaults.standard.string(forKey: Self.screenKey),
+              let screen = Self.screenMap[saved] else { return }
+        // Only restore if we're currently on the menu (post-auth/sync)
+        if currentScreen == .menu {
+            currentScreen = screen
+        }
+        UserDefaults.standard.removeObject(forKey: Self.screenKey)
+    }
 }
 
+@MainActor
 class SubscriptionManager: ObservableObject {
     @Published var isSubscribed: Bool = false {
         didSet { updatePremiumAccess() }
@@ -8200,6 +8623,7 @@ class SubscriptionManager: ObservableObject {
     @Published var lifetimeProduct: Product?
     @Published var purchaseError: String?
     @Published var isLoading: Bool = false
+    @Published var loadFailed: Bool = false
 
     private let subscriptionIDs = ["com.cozynclex.premium.weekly", "com.cozynclex.premium.monthly", "com.cozynclex.premium.yearly"]
     private let lifetimeProductID = "com.cozynclex.lifetime"
@@ -8235,7 +8659,9 @@ class SubscriptionManager: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] profile in
                 let isPremium = profile?.isPremium ?? false
+                #if DEBUG
                 print("💎 SubscriptionManager: profile changed, isPremium = \(isPremium)")
+                #endif
                 self?.hasSupabasePremium = isPremium
             }
             .store(in: &cancellables)
@@ -8275,6 +8701,7 @@ class SubscriptionManager: ObservableObject {
 
     @MainActor
     func loadProducts() async {
+        loadFailed = false
         do {
             // Load subscription products
             products = try await Product.products(for: subscriptionIDs)
@@ -8283,8 +8710,16 @@ class SubscriptionManager: ObservableObject {
             // Load lifetime product separately
             let lifetimeProducts = try await Product.products(for: [lifetimeProductID])
             lifetimeProduct = lifetimeProducts.first
+
+            // If nothing came back, treat as failure so the user can retry
+            if products.isEmpty && lifetimeProduct == nil {
+                loadFailed = true
+            }
         } catch {
+            loadFailed = true
+            #if DEBUG
             print("Failed to load products: \(error)")
+            #endif
         }
     }
 
@@ -8296,13 +8731,15 @@ class SubscriptionManager: ObservableObject {
                     await self.updateSubscriptionStatus()
                     await transaction.finish()
                 } catch {
+                    #if DEBUG
                     print("Transaction failed verification")
+                    #endif
                 }
             }
         }
     }
 
-    func checkVerified<T>(_ result: VerificationResult<T>) throws -> T {
+    nonisolated func checkVerified<T>(_ result: VerificationResult<T>) throws -> T {
         switch result {
         case .unverified:
             throw StoreError.failedVerification
@@ -8343,14 +8780,18 @@ class SubscriptionManager: ObservableObject {
     @MainActor
     func checkSubscriptionStatus() async {
         // Debug override - skip StoreKit check
+        #if DEBUG
         if forceDebugPremium {
             isSubscribed = true
             return
         }
+        #endif
 
         var hasStoreKitAccess = false
+        var didCheckEntitlements = false
 
         for await result in Transaction.currentEntitlements {
+            didCheckEntitlements = true
             do {
                 let transaction = try checkVerified(result)
                 // Check for active subscription OR lifetime purchase
@@ -8363,8 +8804,27 @@ class SubscriptionManager: ObservableObject {
             }
         }
 
-        isSubscribed = hasStoreKitAccess
-        PersistenceManager.shared.saveSubscriptionStatus(hasStoreKitAccess)
+        if hasStoreKitAccess {
+            // User has an active entitlement — grant access and cache it
+            isSubscribed = true
+            PersistenceManager.shared.saveSubscriptionStatus(true)
+        } else if didCheckEntitlements {
+            // StoreKit returned entitlements but none were valid — revoke
+            isSubscribed = false
+            PersistenceManager.shared.saveSubscriptionStatus(false)
+        } else {
+            // StoreKit returned nothing (likely offline / no entitlements exist).
+            // Preserve the cached status so premium users are not locked out offline.
+            let cached = PersistenceManager.shared.loadSubscriptionStatus()
+            if cached {
+                #if DEBUG
+                print("💎 StoreKit returned no entitlements — preserving cached premium status (offline?)")
+                #endif
+                isSubscribed = true
+            } else {
+                isSubscribed = false
+            }
+        }
     }
 
     @MainActor
@@ -8394,12 +8854,16 @@ class SubscriptionManager: ObservableObject {
                 .update(update)
                 .eq("id", value: profile.id.uuidString)
                 .execute()
+            #if DEBUG
             print("💎 Synced premium status to Supabase")
+            #endif
 
             // Reload profile to get updated premium status
             await AuthManager.shared.checkSession()
         } catch {
+            #if DEBUG
             print("💎 Failed to sync premium to Supabase: \(error)")
+            #endif
         }
     }
 
@@ -8443,6 +8907,7 @@ enum StoreError: Error {
     case failedVerification
 }
 
+@MainActor
 class CardManager: ObservableObject {
     static let shared = CardManager()
 
@@ -8594,6 +9059,13 @@ class CardManager: ObservableObject {
         }
         persistence.saveTestHistory(testHistory)
         syncManager.markChanged(CloudKitConfig.RecordType.testResult, id: result.id.uuidString)
+
+        // Track lifetime test stats for achievements
+        StatsManager.shared.stats.testsCompleted += 1
+        if result.questionCount > 0 && result.correctCount == result.questionCount {
+            StatsManager.shared.stats.perfectTests += 1
+        }
+        StatsManager.shared.save()
     }
 
     var allCards: [Flashcard] {
@@ -8837,9 +9309,10 @@ class CardManager: ObservableObject {
             persistence.saveMasteredCards(masteredCardIDs)
             wasMastered = true
 
-            // Trigger review prompt at mastery milestones
+            // Trigger review prompt and daily goal at mastery milestones
             if wasNewlyMastered {
                 ReviewManager.shared.recordMasteryMilestone(totalMastered: masteredCardIDs.count)
+                DailyGoalsManager.shared.recordMastery()
             }
         }
         persistence.saveConsecutiveCorrect(consecutiveCorrect)
@@ -8885,6 +9358,7 @@ class CardManager: ObservableObject {
         } else {
             masteredCardIDs.insert(card.id)
             isMastered = true
+            DailyGoalsManager.shared.recordMastery()
         }
         persistence.saveMasteredCards(masteredCardIDs)
         persistence.saveConsecutiveCorrect(consecutiveCorrect)
@@ -8971,6 +9445,7 @@ class CardManager: ObservableObject {
     }
 }
 
+@MainActor
 class StatsManager: ObservableObject {
     static let shared = StatsManager()
 
@@ -9007,6 +9482,19 @@ class StatsManager: ObservableObject {
 
         updateStreak()
         save()
+
+        // Push session data to Supabase daily activity
+        let sessionCards = cardsStudied
+        let sessionCorrect = correct
+        let sessionMinutes = timeSeconds / 60
+        Task {
+            await CloudSyncManager.shared.updateDailyActivity(
+                cardsStudied: sessionCards,
+                correctAnswers: sessionCorrect,
+                xpEarned: 0,
+                minutesStudied: sessionMinutes
+            )
+        }
     }
 
     func updateStreak() {
@@ -9246,6 +9734,7 @@ struct ContentView: View {
     @StateObject private var statsManager = StatsManager.shared
     @StateObject private var speechManager = SpeechManager()
     @StateObject private var appearanceManager = AppearanceManager.shared
+    @Environment(\.scenePhase) var scenePhase
 
     var body: some View {
         ZStack {
@@ -9254,6 +9743,7 @@ struct ContentView: View {
             switch appManager.currentScreen {
             case .onboarding: OnboardingView()
             case .auth: AuthView(onAuthenticated: { appManager.completeAuth() })
+            case .syncing: SyncingView(onSkip: { appManager.skipSync() })
             case .menu: MainMenuView()
             case .flashcardsGame: StudyFlashcardsView()
             case .learnGame: BearLearnView()
@@ -9277,6 +9767,19 @@ struct ContentView: View {
         .task {
             // Load content from Supabase on app startup
             await SupabaseContentProvider.shared.loadContent()
+        }
+        .onAppear {
+            appManager.completeSyncOnLaunch()
+        }
+        .onChange(of: scenePhase) { newPhase in
+            switch newPhase {
+            case .background:
+                appManager.saveCurrentScreen()
+            case .active:
+                appManager.restoreCurrentScreen()
+            default:
+                break
+            }
         }
     }
 }
@@ -10195,6 +10698,12 @@ struct MainMenuView: View {
                 startGameMode(mode, with: selectedCards)
             }
         }
+        .onAppear {
+            if let mode = appManager.pendingSetupMode {
+                appManager.pendingSetupMode = nil
+                selectedGameMode = mode
+            }
+        }
         .alert("Continue Session?", isPresented: $showResumePrompt) {
             Button("Resume", role: nil) {
                 if let mode = pendingGameMode {
@@ -10602,6 +11111,7 @@ struct CompactHeaderView: View {
     @StateObject private var authManager = AuthManager.shared
     @Binding var showCategoryFilter: Bool
     @State private var showProfile = false
+    @State private var showSettings = false
     @State private var currentAffirmation: String = ""
     @State private var showBubble = true
     @State private var bubbleId = UUID()
@@ -10624,7 +11134,7 @@ struct CompactHeaderView: View {
                             showBubble = false
                         }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                            currentAffirmation = NotificationManager.nursingAffirmations.randomElement() ?? ""
+                            currentAffirmation = NotificationManager.cozyMessage()
                             bubbleId = UUID()
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                                 showBubble = true
@@ -10635,40 +11145,38 @@ struct CompactHeaderView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("CozyNCLEX")
                         .font(.system(size: 20, weight: .bold, design: .rounded))
-                    HStack(spacing: 3) {
-                        Image(systemName: "flame.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.orange)
-                        Text("\(statsManager.stats.currentStreak)")
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
-                            .foregroundColor(.orange)
+                    HStack(spacing: 6) {
+                        // Streak pill
+                        HStack(spacing: 3) {
+                            Image(systemName: "flame.fill")
+                                .font(.system(size: 10))
+                                .foregroundColor(.orange)
+                            Text("\(dailyGoalsManager.currentStreak)")
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                .foregroundColor(.orange)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.12))
+                        .cornerRadius(8)
+
+                        // Level pill
+                        HStack(spacing: 3) {
+                            Image(systemName: "star.fill")
+                                .font(.system(size: 9))
+                                .foregroundColor(.purple)
+                            Text("Lv. \(dailyGoalsManager.currentLevel)")
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                .foregroundColor(.purple)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.softLavender.opacity(0.15))
+                        .cornerRadius(8)
                     }
                 }
 
                 Spacer()
-
-            // Filter button
-            Button(action: {
-                HapticManager.shared.buttonTap()
-                showCategoryFilter = true
-            }) {
-                ZStack(alignment: .topTrailing) {
-                    Image(systemName: "line.3.horizontal.decrease.circle")
-                        .font(.system(size: 20))
-                        .foregroundColor(.primary)
-                        .padding(8)
-                        .background(Color.cardBackground)
-                        .clipShape(Circle())
-                        .shadow(color: .black.opacity(0.08), radius: 3)
-
-                    if isFiltered {
-                        Circle()
-                            .fill(Color.pastelPink)
-                            .frame(width: 10, height: 10)
-                            .offset(x: 2, y: -2)
-                    }
-                }
-            }
 
             // Stats button
             Button(action: {
@@ -10676,6 +11184,20 @@ struct CompactHeaderView: View {
                 appManager.currentScreen = .stats
             }) {
                 Image(systemName: "chart.bar.fill")
+                    .font(.system(size: 18))
+                    .foregroundColor(.primary)
+                    .padding(10)
+                    .background(Color.cardBackground)
+                    .clipShape(Circle())
+                    .shadow(color: .black.opacity(0.08), radius: 3)
+            }
+
+            // Settings button
+            Button(action: {
+                HapticManager.shared.buttonTap()
+                showSettings = true
+            }) {
+                Image(systemName: "gearshape.fill")
                     .font(.system(size: 18))
                     .foregroundColor(.primary)
                     .padding(10)
@@ -10706,6 +11228,7 @@ struct CompactHeaderView: View {
                         .foregroundColor(.white)
                 }
             }
+
             } // HStack
 
             // Speech bubble
@@ -10716,12 +11239,18 @@ struct CompactHeaderView: View {
             }
         } // VStack
         .onAppear {
-            currentAffirmation = NotificationManager.nursingAffirmations.randomElement() ?? ""
+            currentAffirmation = NotificationManager.cozyMessage()
+        }
+        .task {
+            await NotificationManager.fetchAffirmations()
         }
         .sheet(isPresented: $showProfile) {
             ProfileView(onSignOut: {
                 appManager.signOut()
             })
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
         }
     }
 
@@ -10890,6 +11419,18 @@ struct GameModeGridCard: View {
                             .font(.system(size: 18))
                             .foregroundColor(.white)
                     }
+
+                    if hasSavedProgress && !isLocked {
+                        Circle()
+                            .fill(Color.orange)
+                            .frame(width: 14, height: 14)
+                            .overlay(
+                                Image(systemName: "play.fill")
+                                    .font(.system(size: 6, weight: .bold))
+                                    .foregroundColor(.white)
+                            )
+                            .offset(x: 20, y: -20)
+                    }
                 }
 
                 VStack(spacing: 2) {
@@ -10909,14 +11450,6 @@ struct GameModeGridCard: View {
                         .padding(.vertical, 2)
                         .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
                         .cornerRadius(6)
-                } else if hasSavedProgress {
-                    Text("CONTINUE")
-                        .font(.system(size: 9, weight: .bold, design: .rounded))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background(Color.orange)
-                        .cornerRadius(6)
                 } else if isSpotlit {
                     Text("START HERE")
                         .font(.system(size: 9, weight: .bold, design: .rounded))
@@ -10924,14 +11457,6 @@ struct GameModeGridCard: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 2)
                         .background(Color.green)
-                        .cornerRadius(6)
-                } else if !mode.isPaid && !subscriptionManager.hasPremiumAccess {
-                    Text("FREE")
-                        .font(.system(size: 9, weight: .bold, design: .rounded))
-                        .foregroundColor(.mintGreen)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background(Color.mintGreen.opacity(0.15))
                         .cornerRadius(6)
                 }
             }
@@ -11483,13 +12008,14 @@ struct HeaderSection: View {
 
 struct StreakBanner: View {
     @EnvironmentObject var statsManager: StatsManager
+    @ObservedObject private var dailyGoalsManager = DailyGoalsManager.shared
 
     var body: some View {
-        if statsManager.stats.currentStreak > 0 {
+        if dailyGoalsManager.currentStreak > 0 {
             HStack {
                 Text("🔥").font(.title)
                 VStack(alignment: .leading) {
-                    Text("\(statsManager.stats.currentStreak) Day Streak!")
+                    Text("\(dailyGoalsManager.currentStreak) Day Streak!")
                         .font(.system(size: 16, weight: .bold, design: .rounded))
                     Text("Keep it up!")
                         .font(.system(size: 12, design: .rounded))
@@ -12107,14 +12633,6 @@ struct QuickActionsSection: View {
                     appManager.currentScreen = .createCard
                 }
             }
-            HStack(spacing: 12) {
-                QuickActionButton(icon: "folder.fill", label: "Study Sets", color: .peachOrange) {
-                    appManager.currentScreen = .studySets
-                }
-                QuickActionButton(icon: "chart.bar.fill", label: "Stats", color: .softLavender) {
-                    appManager.currentScreen = .stats
-                }
-            }
         }
     }
 }
@@ -12131,7 +12649,7 @@ struct QuickActionButton: View {
                 Image(systemName: icon).font(.system(size: 24)).foregroundColor(color)
                 Text(label).font(.system(size: 11, weight: .medium, design: .rounded)).foregroundColor(.primary)
             }
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 60)
             .padding(.vertical, 12)
             .background(Color.adaptiveWhite)
             .cornerRadius(12)
@@ -12488,10 +13006,30 @@ struct SubscriptionSheet: View {
                 // Product options
                 if subscriptionManager.products.isEmpty && subscriptionManager.lifetimeProduct == nil {
                     VStack(spacing: 12) {
-                        ProgressView().scaleEffect(1.2)
-                        Text("Loading subscription options...")
-                            .font(.system(size: 14, design: .rounded))
-                            .foregroundColor(.secondary)
+                        if subscriptionManager.loadFailed {
+                            Image(systemName: "wifi.exclamationmark")
+                                .font(.system(size: 28))
+                                .foregroundColor(.secondary)
+                            Text("Couldn't load subscription options.")
+                                .font(.system(size: 14, design: .rounded))
+                                .foregroundColor(.secondary)
+                            Button {
+                                Task { await subscriptionManager.loadProducts() }
+                            } label: {
+                                Label("Retry", systemImage: "arrow.clockwise")
+                                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                    .padding(.horizontal, 24)
+                                    .padding(.vertical, 10)
+                                    .background(Color.pastelPink)
+                                    .foregroundColor(.white)
+                                    .cornerRadius(12)
+                            }
+                        } else {
+                            ProgressView().scaleEffect(1.2)
+                            Text("Loading subscription options...")
+                                .font(.system(size: 14, design: .rounded))
+                                .foregroundColor(.secondary)
+                        }
                     }
                     .padding()
                 } else {
@@ -12624,15 +13162,25 @@ struct SubscriptionSheet: View {
     }
 
     private func checkTrialEligibility() {
-        guard let yearly = subscriptionManager.products.first(where: { isYearly($0) }),
-              yearly.subscription?.introductoryOffer != nil else {
+        guard let yearly = subscriptionManager.products.first(where: { isYearly($0) }) else {
             yearlyIsEligibleForTrial = false
             return
         }
         Task {
-            let eligible = await yearly.subscription?.isEligibleForIntroOffer ?? false
-            await MainActor.run {
-                yearlyIsEligibleForTrial = eligible
+            // Check if intro offer exists on the product
+            if yearly.subscription?.introductoryOffer != nil {
+                let eligible = await yearly.subscription?.isEligibleForIntroOffer ?? false
+                await MainActor.run {
+                    yearlyIsEligibleForTrial = eligible
+                }
+            } else {
+                // Sandbox/TestFlight may not expose introductoryOffer property
+                // but the offer is configured in App Store Connect — show trial
+                // for users who haven't subscribed before
+                let eligible = await yearly.subscription?.isEligibleForIntroOffer ?? false
+                await MainActor.run {
+                    yearlyIsEligibleForTrial = eligible || !subscriptionManager.hasPremiumAccess
+                }
             }
         }
     }
@@ -13315,7 +13863,7 @@ struct StatsView: View {
     @EnvironmentObject var appManager: AppManager
     @EnvironmentObject var statsManager: StatsManager
     @EnvironmentObject var cardManager: CardManager
-    @StateObject private var achievementManager = AchievementManager()
+    @ObservedObject private var achievementManager = AchievementManager.shared
     @State private var showAchievements = false
     @State private var showSettings = false
 
@@ -13508,7 +14056,8 @@ struct StatsView: View {
             achievementManager.checkAchievements(
                 stats: statsManager.stats,
                 masteredCount: cardManager.validMasteredCount,
-                categoriesStudied: Set(statsManager.stats.categoryAccuracy.keys)
+                categoriesStudied: Set(statsManager.stats.categoryAccuracy.keys),
+                level: DailyGoalsManager.shared.currentLevel
             )
         }
     }
@@ -13907,7 +14456,9 @@ struct SettingsView: View {
             do {
                 try await authManager.deleteAccount()
             } catch {
+                #if DEBUG
                 print("Error deleting account: \(error)")
+                #endif
             }
 
             isDeletingAccount = false
@@ -14704,11 +15255,14 @@ struct StudyFlashcardsView: View {
             performancePercent: sessionAccuracy,
             stats: [
                 SessionCompleteStat(value: "\(sessionAccuracy)%", label: "Accuracy", color: .mintGreen),
-                SessionCompleteStat(value: "\(statsManager.stats.currentStreak) Day\(statsManager.stats.currentStreak == 1 ? "" : "s")", label: "Streak", color: .orange),
+                SessionCompleteStat(value: "\(dailyGoalsManager.currentStreak) Day\(dailyGoalsManager.currentStreak == 1 ? "" : "s")", label: "Streak", color: .orange),
                 SessionCompleteStat(value: "+\(knowCards.count * 10) XP", label: "XP Earned", color: .softLavender)
             ],
             summaryText: "You studied \(allCards.count) cards — \(knowCards.count) known, \(stillLearningCards.count) still learning",
-            onPlayAgain: { setupSession() },
+            onPlayAgain: {
+                appManager.pendingSetupMode = .flashcards
+                finishSession()
+            },
             onHome: { finishSession() }
         )
     }
@@ -14855,6 +15409,7 @@ struct FlashcardView: View {
     let isSaved: Bool
     let onSaveTap: () -> Void
     @StateObject private var speechManager = SpeechManager()
+    @State private var showReportSheet = false
 
     private var spokenText: String {
         isFlipped ? card.answer : card.question
@@ -14888,7 +15443,119 @@ struct FlashcardView: View {
                         .padding(14)
                 }
             }
+            .overlay(alignment: .bottomTrailing) {
+                Button {
+                    showReportSheet = true
+                } label: {
+                    Image(systemName: "flag")
+                        .font(.system(size: 14))
+                        .foregroundColor(.secondary)
+                        .padding(14)
+                }
+            }
+            .sheet(isPresented: $showReportSheet) {
+                ReportCardSheet(cardId: card.id, cardQuestion: card.question)
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+// MARK: - Report Card Sheet
+
+struct ReportCardSheet: View {
+    let cardId: UUID
+    let cardQuestion: String
+    @EnvironmentObject var cloudSyncManager: CloudSyncManager
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedReason: String?
+    @State private var otherDescription = ""
+    @State private var isSubmitting = false
+    @State private var showThanks = false
+
+    private let reasons = ["Wrong Answer", "Wrong Rationale", "Confusing Question", "Typo / Grammar", "Outdated Info", "Other"]
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 20) {
+                Text("What's wrong with this card?")
+                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    .padding(.top, 8)
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                    ForEach(reasons, id: \.self) { reason in
+                        Button {
+                            selectedReason = reason
+                        } label: {
+                            Text(reason)
+                                .font(.system(size: 14, weight: .medium, design: .rounded))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(selectedReason == reason ? Color.accentColor.opacity(0.2) : Color(.systemGray6))
+                                .foregroundColor(selectedReason == reason ? .accentColor : .primary)
+                                .cornerRadius(12)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(selectedReason == reason ? Color.accentColor : Color.clear, lineWidth: 1.5)
+                                )
+                        }
+                    }
+                }
+
+                if selectedReason == "Other" {
+                    TextField("Describe the issue...", text: $otherDescription, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(3...5)
+                }
+
+                if showThanks {
+                    Text("Thanks for reporting!")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundColor(.green)
+                }
+
+                Spacer()
+
+                Button {
+                    submitReport()
+                } label: {
+                    Text("Submit")
+                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(selectedReason != nil ? Color.accentColor : Color.gray.opacity(0.3))
+                        .foregroundColor(.white)
+                        .cornerRadius(14)
+                }
+                .disabled(selectedReason == nil || isSubmitting)
+            }
+            .padding(20)
+            .navigationTitle("Report Card")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func submitReport() {
+        guard let reason = selectedReason else { return }
+        isSubmitting = true
+        Task {
+            try? await cloudSyncManager.reportCard(
+                cardId: cardId,
+                reason: reason,
+                description: reason == "Other" ? otherDescription : nil,
+                cardQuestion: cardQuestion
+            )
+            await MainActor.run {
+                showThanks = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    dismiss()
+                }
+            }
         }
     }
 }
@@ -14900,7 +15567,13 @@ struct CardFace: View {
     let isQuestion: Bool
     let rationale: String
 
-    private let cardCream = Color(red: 1.0, green: 0.996, blue: 0.973) // #FFFEF8
+    private var cardCream: Color {
+        Color(UIColor { traitCollection in
+            traitCollection.userInterfaceStyle == .dark
+                ? UIColor(red: 44/255, green: 44/255, blue: 46/255, alpha: 1)
+                : UIColor(red: 1.0, green: 0.996, blue: 0.973, alpha: 1)
+        })
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -14984,7 +15657,7 @@ struct CardFace: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 22)
-                .stroke(Color.black.opacity(0.05), lineWidth: 1)
+                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 22)
@@ -15176,12 +15849,14 @@ struct BearLearnView: View {
                         stats: [
                             SessionCompleteStat(value: "\(totalCards)", label: "Terms Learned", color: .mintGreen),
                             SessionCompleteStat(value: "\(totalAttempts > 0 ? Int(Double(totalCards) / Double(totalAttempts) * 100) : 0)%", label: "Efficiency", color: .softLavender),
-                            SessionCompleteStat(value: "\(StatsManager.shared.stats.currentStreak) Day\(StatsManager.shared.stats.currentStreak == 1 ? "" : "s")", label: "Streak", color: .orange)
+                            SessionCompleteStat(value: "\(DailyGoalsManager.shared.currentStreak) Day\(DailyGoalsManager.shared.currentStreak == 1 ? "" : "s")", label: "Streak", color: .orange)
                         ],
                         summaryText: "Mastered \(totalCards) terms in \(totalAttempts) attempts",
                         onPlayAgain: {
                             HapticManager.shared.buttonTap()
-                            resetLearn()
+                            saveSession()
+                            appManager.pendingSetupMode = .learn
+                            appManager.currentScreen = .menu
                         },
                         onHome: {
                             HapticManager.shared.buttonTap()
@@ -15655,6 +16330,7 @@ struct LearnModalCard: View {
     let aboutToLearn: Bool
     let onSelectAnswer: (String) -> Void
     let onNext: () -> Void
+    @State private var showReportSheet = false
 
     // Filter answers when showing result: only show selected + correct answer
     var visibleAnswers: [(index: Int, answer: String)] {
@@ -15688,6 +16364,15 @@ struct LearnModalCard: View {
 
                     Spacer()
 
+                    Button { showReportSheet = true } label: {
+                        Image(systemName: "flag")
+                            .font(.system(size: 14))
+                            .foregroundColor(.secondary)
+                    }
+                    .sheet(isPresented: $showReportSheet) {
+                        ReportCardSheet(cardId: card.id, cardQuestion: card.question)
+                    }
+
                     Text(card.difficulty.rawValue)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(.white)
@@ -15700,7 +16385,8 @@ struct LearnModalCard: View {
                 // Question text
                 Text(card.question)
                     .font(.system(size: 17, weight: .semibold, design: .rounded))
-                    .multilineTextAlignment(.center)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .lineSpacing(4)
                     .padding(.vertical, 8)
             }
@@ -15972,7 +16658,8 @@ struct QuizModalCard: View {
                 // Question text
                 Text(card.question)
                     .font(.system(size: 17, weight: .semibold, design: .rounded))
-                    .multilineTextAlignment(.center)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .lineSpacing(4)
                     .padding(.vertical, 8)
             }
@@ -16559,6 +17246,7 @@ struct QuizCelebrationView: View {
 
 struct QuestionCard: View {
     let card: Flashcard
+    @State private var showReportSheet = false
 
     var body: some View {
         VStack(spacing: 12) {
@@ -16568,11 +17256,19 @@ struct QuestionCard: View {
                     Text(card.contentCategory.rawValue).font(.system(size: 12, weight: .semibold, design: .rounded)).foregroundColor(.secondary)
                 }
                 Spacer()
+                Button { showReportSheet = true } label: {
+                    Image(systemName: "flag")
+                        .font(.system(size: 14))
+                        .foregroundColor(.secondary)
+                }
+                .sheet(isPresented: $showReportSheet) {
+                    ReportCardSheet(cardId: card.id, cardQuestion: card.question)
+                }
                 Text(card.difficulty.rawValue).font(.system(size: 11, weight: .semibold))
                     .foregroundColor(.white).padding(.horizontal, 8).padding(.vertical, 4)
                     .background(card.difficulty.color).cornerRadius(8)
             }
-            Text(card.question).font(.system(size: 18, weight: .semibold, design: .rounded)).multilineTextAlignment(.center)
+            Text(card.question).font(.system(size: 18, weight: .semibold, design: .rounded)).multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(20)
         .background(Color.cardBackground)
@@ -16645,11 +17341,11 @@ struct WriteModeView: View {
                         performancePercent: writeCards.count > 0 ? Int(Double(score) / Double(writeCards.count) * 100) : 0,
                         stats: [
                             SessionCompleteStat(value: "\(score)/\(writeCards.count)", label: "Score", color: .mintGreen),
-                            SessionCompleteStat(value: "\(StatsManager.shared.stats.currentStreak) Day\(StatsManager.shared.stats.currentStreak == 1 ? "" : "s")", label: "Streak", color: .orange),
+                            SessionCompleteStat(value: "\(DailyGoalsManager.shared.currentStreak) Day\(DailyGoalsManager.shared.currentStreak == 1 ? "" : "s")", label: "Streak", color: .orange),
                             SessionCompleteStat(value: "+\(score * 10) XP", label: "XP Earned", color: .softLavender)
                         ],
                         summaryText: "You typed \(score) of \(writeCards.count) answers correctly",
-                        onPlayAgain: { resetMode() },
+                        onPlayAgain: { saveSession(); appManager.pendingSetupMode = .write; appManager.currentScreen = .menu },
                         onHome: { saveSession(); appManager.currentScreen = .menu },
                         playAgainLabel: "Study Again"
                     )
@@ -17032,7 +17728,7 @@ struct TestModeView: View {
                         stats: [
                             SessionCompleteStat(value: "\(correctCount)/\(testCards.count)", label: "Score", color: .mintGreen),
                             SessionCompleteStat(value: "\(testCards.count > 0 ? Int(Double(correctCount) / Double(testCards.count) * 100) : 0)%", label: "Accuracy", color: (testCards.count > 0 && Double(correctCount) / Double(testCards.count) >= 0.7) ? .mintGreen : .peachOrange),
-                            SessionCompleteStat(value: "\(StatsManager.shared.stats.currentStreak) Day\(StatsManager.shared.stats.currentStreak == 1 ? "" : "s")", label: "Streak", color: .orange)
+                            SessionCompleteStat(value: "\(DailyGoalsManager.shared.currentStreak) Day\(DailyGoalsManager.shared.currentStreak == 1 ? "" : "s")", label: "Streak", color: .orange)
                         ],
                         summaryText: (testCards.count > 0 && Double(correctCount) / Double(testCards.count) >= 0.7) ? "You passed! Great job — you're on track." : "You need 70% to pass. Review and try again!",
                         onPlayAgain: {
@@ -17582,11 +18278,11 @@ struct CozyMatchView: View {
                         performancePercent: matchedPairs > 0 ? 100 : 0,
                         stats: [
                             SessionCompleteStat(value: "\(totalMoves)", label: "Moves", color: .mintGreen),
-                            SessionCompleteStat(value: "\(StatsManager.shared.stats.currentStreak) Day\(StatsManager.shared.stats.currentStreak == 1 ? "" : "s")", label: "Streak", color: .orange),
+                            SessionCompleteStat(value: "\(DailyGoalsManager.shared.currentStreak) Day\(DailyGoalsManager.shared.currentStreak == 1 ? "" : "s")", label: "Streak", color: .orange),
                             SessionCompleteStat(value: "+\(matchedPairs * 10) XP", label: "XP Earned", color: .softLavender)
                         ],
                         summaryText: "Matched all pairs in \(totalMoves) moves across \(totalRounds) rounds",
-                        onPlayAgain: { resetGame() },
+                        onPlayAgain: { saveSession(); appManager.pendingSetupMode = .match; appManager.currentScreen = .menu },
                         onHome: { saveSession(); appManager.currentScreen = .menu },
                         playAgainLabel: "Play Again"
                     )

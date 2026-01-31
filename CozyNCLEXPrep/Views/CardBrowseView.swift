@@ -137,18 +137,6 @@ struct BrowseCardsHomeView: View {
                             .font(.system(size: 18, weight: .bold, design: .rounded))
                             .padding(.horizontal, 4)
 
-                        // NCLEX Essentials (always available)
-                        BrowseSectionCard(
-                            icon: "book.fill",
-                            iconColor: .mintGreen,
-                            title: "NCLEX Essentials",
-                            subtitle: isPremium ? "Core study cards" : "Free Sample • 50 Cards",
-                            count: isPremium ? allCards.count : 50,
-                            accentColor: .mintGreen
-                        ) {
-                            selectedFilter = .all
-                        }
-
                         // Individual categories
                         ForEach(ContentCategory.allCases, id: \.self) { category in
                             if isPremium {
@@ -221,6 +209,22 @@ struct BrowseSectionCard: View {
     let accentColor: Color
     let action: () -> Void
 
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// Adjusted accent color for readable badge text in both light and dark mode
+    private var badgeTextColor: Color {
+        let uiColor = UIColor(accentColor)
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        uiColor.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        if colorScheme == .dark {
+            // Lighten and desaturate slightly for readability on dark backgrounds
+            return Color(hue: Double(h), saturation: Double(s) * 0.85, brightness: min(Double(b) * 1.5, 1.0))
+        } else {
+            // Darken and boost saturation for light backgrounds
+            return Color(hue: Double(h), saturation: min(Double(s) * 1.4, 1.0), brightness: Double(b) * 0.55)
+        }
+    }
+
     var body: some View {
         Button(action: {
             HapticManager.shared.light()
@@ -254,7 +258,7 @@ struct BrowseSectionCard: View {
                 // Count Badge
                 Text("\(count)")
                     .font(.system(size: 15, weight: .bold, design: .rounded))
-                    .foregroundColor(accentColor)
+                    .foregroundColor(badgeTextColor)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .background(accentColor.opacity(0.15))

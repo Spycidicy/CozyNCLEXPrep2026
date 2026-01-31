@@ -479,6 +479,26 @@ struct CozyBlocksView: View {
                 .onTapGesture {}
 
             VStack(spacing: 20) {
+                HStack {
+                    Button {
+                        HapticManager.shared.buttonTap()
+                        SoundManager.shared.buttonTap()
+                        showQuiz = false
+                        saveStats()
+                        saveBlocksProgress()
+                        appManager.currentScreen = .menu
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 14, weight: .semibold))
+                            Text("Home")
+                                .font(.system(size: 14, weight: .medium, design: .rounded))
+                        }
+                        .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+
                 Text("Study Break")
                     .font(.title3.weight(.bold))
                     .foregroundColor(.primaryText)
@@ -614,7 +634,8 @@ struct CozyBlocksView: View {
                 onPlayAgain: {
                     HapticManager.shared.buttonTap()
                     SoundManager.shared.buttonTap()
-                    restartGame()
+                    appManager.pendingSetupMode = .blocks
+                    appManager.currentScreen = .menu
                 },
                 onHome: {
                     HapticManager.shared.buttonTap()

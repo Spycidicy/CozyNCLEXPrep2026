@@ -40,26 +40,37 @@ class SupabaseContentProvider: ObservableObject {
     func loadContent() async {
         guard SupabaseConfig.isConfigured else {
             // Supabase not configured, use bundled cards only
+            #if DEBUG
             print("⚠️ Supabase not configured, using bundled cards only")
+            #endif
             return
         }
 
+        #if DEBUG
         print("📡 Loading content from Supabase...")
+        #endif
         isLoading = true
         error = nil
 
         do {
             // Check for updates
             let latestVersion = try await fetchCurrentVersion()
+            #if DEBUG
             print("✅ Current version: \(latestVersion)")
+            #endif
 
             if cache.needsUpdate(currentVersion: latestVersion) || remoteCards.isEmpty {
                 // Fetch new content
+                #if DEBUG
                 print("📥 Fetching remote cards...")
+                #endif
                 let cards = try await fetchRemoteCards()
+                #if DEBUG
                 print("📥 Fetched \(cards.count) cards from Supabase")
+                #endif
 
                 let converted = cards.compactMap { $0.toFlashcard() }
+                #if DEBUG
                 print("✅ Converted \(converted.count) cards successfully")
 
                 if converted.count < cards.count {
@@ -82,6 +93,7 @@ class SupabaseContentProvider: ObservableObject {
                     categoryCount[card.contentCategory.rawValue, default: 0] += 1
                 }
                 print("📊 Cards by category: \(categoryCount.sorted(by: { $0.key < $1.key }).map { "\($0.key): \($0.value)" }.joined(separator: ", "))")
+                #endif
 
                 remoteCards = converted
 
@@ -91,15 +103,21 @@ class SupabaseContentProvider: ObservableObject {
 
                 currentVersion = latestVersion
             } else {
+                #if DEBUG
                 print("📦 Using cached content, version: \(currentVersion ?? "unknown")")
+                #endif
             }
 
             lastSyncDate = Date()
             saveLastSyncDate()
+            #if DEBUG
             print("✅ Content load complete. Total remote cards: \(remoteCards.count)")
+            #endif
 
         } catch {
+            #if DEBUG
             print("❌ Error loading content: \(error)")
+            #endif
             self.error = ContentProviderError.from(error)
             // Content still available from cache if previously loaded
         }
@@ -158,12 +176,15 @@ class SupabaseContentProvider: ObservableObject {
                 .from(SupabaseConfig.Tables.nclexQuestions)
                 .select()
                 .eq("is_active", value: true)
+                .order("created_at", ascending: true)
+                .limit(1000)
                 .execute()
                 .value
 
             return response
         } catch let error as DecodingError {
             // Log specific decoding error details
+            #if DEBUG
             switch error {
             case .typeMismatch(let type, let context):
                 print("❌ Decoding typeMismatch: \(type), path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
@@ -176,6 +197,7 @@ class SupabaseContentProvider: ObservableObject {
             @unknown default:
                 print("❌ Decoding unknown error: \(error)")
             }
+            #endif
             throw error
         }
     }

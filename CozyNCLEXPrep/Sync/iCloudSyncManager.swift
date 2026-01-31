@@ -59,7 +59,9 @@ class iCloudSyncManager: ObservableObject {
             let errorString = error.localizedDescription.lowercased()
             if errorString.contains("entitlement") || errorString.contains("icloud-services") {
                 entitlementsConfigured = false
+                #if DEBUG
                 print("⚠️ CloudKit entitlements not configured. iCloud sync disabled.")
+                #endif
             }
         }
     }
@@ -113,7 +115,9 @@ class iCloudSyncManager: ObservableObject {
                 _ = try await database.modifySubscriptions(saving: [subscription], deleting: [])
             } catch {
                 // Subscription might already exist, that's okay
+                #if DEBUG
                 print("Subscription setup error for \(recordType): \(error)")
+                #endif
             }
         }
 
