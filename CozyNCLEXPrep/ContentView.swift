@@ -1334,6 +1334,8 @@ class DailyGoalsManager: ObservableObject {
     @Published var dailyCommitment: DailyCommitment?
     @Published var showMilestoneCelebration = false
     @Published var milestoneCelebrationValue: Int = 0
+    @Published var showStreakCelebration = false
+    @Published var celebratedStreakValue: Int = 0
     @Published var isLoadingGoals = false
 
     private let dailyGoalsKey = "dailyGoals"
@@ -1455,6 +1457,16 @@ class DailyGoalsManager: ObservableObject {
         dailyCommitment = nil
         showMilestoneCelebration = false
         milestoneCelebrationValue = 0
+        showStreakCelebration = false
+        celebratedStreakValue = 0
+    }
+
+    /// Debug: Trigger streak celebration manually
+    func debugTriggerStreakCelebration() {
+        celebratedStreakValue = currentStreak > 0 ? currentStreak : 7
+        showStreakCelebration = true
+        HapticManager.shared.streak()
+        SoundManager.shared.achievement()
     }
 
     func signDailyContract(_ commitment: DailyCommitment) {
@@ -1481,6 +1493,11 @@ class DailyGoalsManager: ObservableObject {
                 if currentStreak > longestStreak {
                     longestStreak = currentStreak
                 }
+                // Trigger streak celebration
+                celebratedStreakValue = currentStreak
+                showStreakCelebration = true
+                HapticManager.shared.streak()
+                SoundManager.shared.achievement()
                 // Trigger review prompt for streak milestones
                 ReviewManager.shared.recordStreakMilestone()
             } else if daysDiff > 1 {
@@ -1776,6 +1793,9 @@ class DailyGoalsManager: ObservableObject {
 
         // Bonus XP for studying
         addXP(cardsStudied * 2 + correct * 3)
+
+        // Update streak
+        recordStudyActivity()
     }
 
     func recordMastery() {
@@ -10690,6 +10710,11 @@ struct MainMenuView: View {
                 dailyGoalsManager.showMilestoneCelebration = false
             }
         }
+        .sheet(isPresented: $dailyGoalsManager.showStreakCelebration) {
+            StreakCelebrationView(streakCount: dailyGoalsManager.celebratedStreakValue) {
+                dailyGoalsManager.showStreakCelebration = false
+            }
+        }
         .sheet(isPresented: $showCardBrowse) {
             BrowseCardsHomeView()
         }
@@ -11915,6 +11940,598 @@ struct LevelUpConfettiPieceAnimatedView: View {
     }
 }
 
+// MARK: - Streak Celebration View (Cozy Pastel Design)
+
+struct StreakCelebrationView: View {
+    let streakCount: Int
+    let onDismiss: () -> Void
+
+    // Animation states
+    @State private var showBackground = false
+    @State private var showSparkles = false
+    @State private var showBadge = false
+    @State private var badgeScale: CGFloat = 0.3
+    @State private var showNumber = false
+    @State private var showStars = false
+    @State private var showText = false
+    @State private var showHearts = false
+    @State private var showConfetti = false
+    @State private var showButton = false
+    @State private var glowPulse = false
+    @State private var gradientRotation: Double = 0
+
+    // Pastel colors
+    private let pastelPink = Color(red: 255/255, green: 183/255, blue: 178/255)
+    private let pastelLavender = Color(red: 200/255, green: 180/255, blue: 220/255)
+    private let pastelMint = Color(red: 181/255, green: 234/255, blue: 215/255)
+    private let pastelPeach = Color(red: 255/255, green: 218/255, blue: 185/255)
+    private let pastelBlue = Color(red: 173/255, green: 216/255, blue: 230/255)
+    private let pastelYellow = Color(red: 255/255, green: 245/255, blue: 200/255)
+
+    private var streakMessage: String {
+        switch streakCount {
+        case 1: return "Every expert was once a beginner.\nYou've taken the first step!"
+        case 2: return "Two days in a row!\nYou're building something beautiful."
+        case 3: return "Three days strong!\nYour dedication is inspiring."
+        case 4...6: return "You're creating a habit that\nwill change your life."
+        case 7: return "One whole week!\nYou should be so proud of yourself."
+        case 8...13: return "You're proving that you have\nwhat it takes to succeed."
+        case 14: return "Two weeks of dedication!\nYou're absolutely amazing."
+        case 15...20: return "Your consistency is remarkable.\nKeep believing in yourself!"
+        case 21...29: return "Almost a month!\nYou're stronger than you know."
+        case 30: return "30 days! You're not just studying,\nyou're becoming a nurse."
+        case 31...59: return "Your future patients are lucky\nto have someone so dedicated."
+        case 60...89: return "Two months of excellence!\nYou're truly extraordinary."
+        case 90...179: return "Your commitment inspires everyone\naround you. Keep shining!"
+        default: return "You are absolutely incredible.\nThe NCLEX doesn't stand a chance!"
+        }
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                // Soft gradient background
+                LinearGradient(
+                    colors: [
+                        pastelPink.opacity(0.4),
+                        pastelLavender.opacity(0.3),
+                        pastelMint.opacity(0.3),
+                        pastelBlue.opacity(0.2)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .ignoresSafeArea()
+                .opacity(showBackground ? 1 : 0)
+
+                // Floating sparkles in background
+                if showSparkles {
+                    FloatingSparklesView(colors: [pastelPink, pastelLavender, pastelMint, pastelPeach, pastelBlue], size: geo.size)
+                }
+
+                // Floating hearts
+                if showHearts {
+                    FloatingHeartsView(colors: [pastelPink, pastelLavender, pastelPeach], size: geo.size)
+                }
+
+                // Confetti
+                if showConfetti {
+                    PastelConfettiView(colors: [pastelPink, pastelLavender, pastelMint, pastelPeach, pastelBlue, pastelYellow], size: geo.size)
+                }
+
+                // Main content
+                VStack(spacing: 0) {
+                    Spacer()
+
+                    // Decorative stars around badge
+                    ZStack {
+                        if showStars {
+                            ForEach(0..<6, id: \.self) { i in
+                                StarShape()
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [pastelYellow, pastelPeach],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                                    .frame(width: 24, height: 24)
+                                    .offset(
+                                        x: cos(Double(i) * .pi / 3 + gradientRotation * 0.01) * 100,
+                                        y: sin(Double(i) * .pi / 3 + gradientRotation * 0.01) * 100
+                                    )
+                                    .opacity(0.8)
+                                    .scaleEffect(glowPulse ? 1.1 : 0.9)
+                            }
+                        }
+
+                        // Main badge
+                        ZStack {
+                            // Soft outer glow
+                            Circle()
+                                .fill(
+                                    RadialGradient(
+                                        colors: [pastelPink.opacity(0.6), pastelLavender.opacity(0.3), .clear],
+                                        center: .center,
+                                        startRadius: 60,
+                                        endRadius: 120
+                                    )
+                                )
+                                .frame(width: 240, height: 240)
+                                .scaleEffect(glowPulse ? 1.1 : 1.0)
+
+                            // Badge circle with animated gradient
+                            Circle()
+                                .fill(
+                                    AngularGradient(
+                                        colors: [pastelPink, pastelLavender, pastelMint, pastelPeach, pastelPink],
+                                        center: .center,
+                                        startAngle: .degrees(gradientRotation),
+                                        endAngle: .degrees(gradientRotation + 360)
+                                    )
+                                )
+                                .frame(width: 150, height: 150)
+                                .overlay(
+                                    Circle()
+                                        .stroke(
+                                            LinearGradient(
+                                                colors: [.white.opacity(0.8), .white.opacity(0.2)],
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            ),
+                                            lineWidth: 4
+                                        )
+                                )
+                                .shadow(color: pastelPink.opacity(0.5), radius: 20)
+                                .shadow(color: pastelLavender.opacity(0.3), radius: 30)
+
+                            // Inner white circle
+                            Circle()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [.white, Color(white: 0.98)],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                                .frame(width: 120, height: 120)
+                                .shadow(color: .black.opacity(0.05), radius: 10, y: 5)
+
+                            // Shine highlight
+                            Ellipse()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [.white.opacity(0.8), .white.opacity(0)],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                                .frame(width: 80, height: 30)
+                                .offset(y: -35)
+
+                            // Number and text
+                            VStack(spacing: 2) {
+                                Text("\(streakCount)")
+                                    .font(.system(size: 52, weight: .bold, design: .rounded))
+                                    .foregroundStyle(
+                                        LinearGradient(
+                                            colors: [pastelPink, pastelLavender],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+
+                                Text(streakCount == 1 ? "day" : "days")
+                                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                                    .foregroundColor(pastelLavender)
+                                    .textCase(.lowercase)
+                            }
+                            .opacity(showNumber ? 1 : 0)
+                            .scaleEffect(showNumber ? 1 : 0.5)
+                        }
+                        .scaleEffect(badgeScale)
+                        .opacity(showBadge ? 1 : 0)
+                    }
+
+                    Spacer().frame(height: 30)
+
+                    // Title
+                    VStack(spacing: 8) {
+                        Text("You're on a roll!")
+                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .foregroundStyle(
+                                LinearGradient(
+                                    colors: [pastelPink, pastelLavender],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+
+                        // Message
+                        Text(streakMessage)
+                            .font(.system(size: 16, weight: .medium, design: .rounded))
+                            .foregroundColor(.gray)
+                            .multilineTextAlignment(.center)
+                            .lineSpacing(4)
+                            .padding(.horizontal, 40)
+                    }
+                    .opacity(showText ? 1 : 0)
+                    .offset(y: showText ? 0 : 20)
+
+                    Spacer()
+
+                    // Continue button
+                    Button(action: {
+                        HapticManager.shared.buttonTap()
+                        onDismiss()
+                    }) {
+                        HStack(spacing: 10) {
+                            Text("Keep Going!")
+                                .font(.system(size: 18, weight: .bold, design: .rounded))
+
+                            Image(systemName: "heart.fill")
+                                .font(.system(size: 14))
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 18)
+                        .background(
+                            LinearGradient(
+                                colors: [pastelPink, pastelLavender],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .cornerRadius(20)
+                        .shadow(color: pastelPink.opacity(0.4), radius: 15, y: 8)
+                    }
+                    .buttonStyle(StreakButtonStyle())
+                    .padding(.horizontal, 40)
+                    .padding(.bottom, 50)
+                    .opacity(showButton ? 1 : 0)
+                    .offset(y: showButton ? 0 : 30)
+                }
+            }
+        }
+        .onAppear {
+            startAnimationSequence()
+        }
+    }
+
+    private func startAnimationSequence() {
+        // Background fades in
+        withAnimation(.easeOut(duration: 0.4)) {
+            showBackground = true
+        }
+
+        // Sparkles start
+        withAnimation(.easeOut(duration: 0.3).delay(0.2)) {
+            showSparkles = true
+        }
+
+        // Badge scales in with bounce
+        withAnimation(.spring(response: 0.7, dampingFraction: 0.6).delay(0.3)) {
+            showBadge = true
+            badgeScale = 1.0
+        }
+
+        // Number appears
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.7).delay(0.5)) {
+            showNumber = true
+        }
+
+        // Stars appear around badge
+        withAnimation(.easeOut(duration: 0.4).delay(0.6)) {
+            showStars = true
+        }
+
+        // Hearts start floating
+        withAnimation(.easeOut(duration: 0.3).delay(0.7)) {
+            showHearts = true
+        }
+
+        // Confetti bursts
+        withAnimation(.easeOut(duration: 0.3).delay(0.5)) {
+            showConfetti = true
+        }
+
+        // Text fades in
+        withAnimation(.easeOut(duration: 0.5).delay(0.8)) {
+            showText = true
+        }
+
+        // Button slides up
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.8).delay(1.0)) {
+            showButton = true
+        }
+
+        // Continuous animations
+        withAnimation(.easeInOut(duration: 2).repeatForever(autoreverses: true)) {
+            glowPulse = true
+        }
+
+        withAnimation(.linear(duration: 20).repeatForever(autoreverses: false)) {
+            gradientRotation = 360
+        }
+    }
+}
+
+// MARK: - Streak Button Style
+
+struct StreakButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: configuration.isPressed)
+    }
+}
+
+// MARK: - Star Shape
+
+struct StarShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let outerRadius = min(rect.width, rect.height) / 2
+        let innerRadius = outerRadius * 0.4
+        let points = 5
+
+        var path = Path()
+
+        for i in 0..<points * 2 {
+            let radius = i.isMultiple(of: 2) ? outerRadius : innerRadius
+            let angle = Double(i) * .pi / Double(points) - .pi / 2
+
+            let point = CGPoint(
+                x: center.x + CGFloat(cos(angle)) * radius,
+                y: center.y + CGFloat(sin(angle)) * radius
+            )
+
+            if i == 0 {
+                path.move(to: point)
+            } else {
+                path.addLine(to: point)
+            }
+        }
+        path.closeSubpath()
+        return path
+    }
+}
+
+// MARK: - Floating Sparkles
+
+struct FloatingSparklesView: View {
+    let colors: [Color]
+    let size: CGSize
+    @State private var sparkles: [Sparkle] = []
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1/30)) { timeline in
+            Canvas { context, canvasSize in
+                let time = timeline.date.timeIntervalSinceReferenceDate
+
+                for sparkle in sparkles {
+                    let phase = (time * sparkle.speed + sparkle.offset).truncatingRemainder(dividingBy: 2 * .pi)
+                    let twinkle = (sin(phase) + 1) / 2
+                    let currentSize = sparkle.size * (0.5 + twinkle * 0.5)
+                    let opacity = 0.3 + twinkle * 0.5
+
+                    // Draw 4-point star sparkle
+                    let center = CGPoint(x: sparkle.x, y: sparkle.y)
+                    var path = Path()
+
+                    for i in 0..<4 {
+                        let angle = Double(i) * .pi / 2 + time * sparkle.rotationSpeed
+                        let outerPoint = CGPoint(
+                            x: center.x + cos(angle) * currentSize,
+                            y: center.y + sin(angle) * currentSize
+                        )
+                        let innerAngle = angle + .pi / 4
+                        let innerPoint = CGPoint(
+                            x: center.x + cos(innerAngle) * currentSize * 0.3,
+                            y: center.y + sin(innerAngle) * currentSize * 0.3
+                        )
+
+                        if i == 0 {
+                            path.move(to: outerPoint)
+                        } else {
+                            path.addLine(to: outerPoint)
+                        }
+                        path.addLine(to: innerPoint)
+                    }
+                    path.closeSubpath()
+
+                    context.opacity = opacity
+                    context.fill(path, with: .color(sparkle.color))
+                }
+            }
+        }
+        .onAppear {
+            generateSparkles()
+        }
+    }
+
+    private func generateSparkles() {
+        sparkles = (0..<30).map { _ in
+            Sparkle(
+                x: CGFloat.random(in: 0...size.width),
+                y: CGFloat.random(in: 0...size.height),
+                size: CGFloat.random(in: 6...14),
+                color: colors.randomElement()!,
+                speed: Double.random(in: 1...3),
+                offset: Double.random(in: 0...2 * .pi),
+                rotationSpeed: Double.random(in: 0.2...0.5)
+            )
+        }
+    }
+}
+
+struct Sparkle: Identifiable {
+    let id = UUID()
+    let x: CGFloat
+    let y: CGFloat
+    let size: CGFloat
+    let color: Color
+    let speed: Double
+    let offset: Double
+    let rotationSpeed: Double
+}
+
+// MARK: - Floating Hearts
+
+struct FloatingHeartsView: View {
+    let colors: [Color]
+    let size: CGSize
+    @State private var hearts: [FloatingHeart] = []
+
+    var body: some View {
+        ZStack {
+            ForEach(hearts) { heart in
+                Image(systemName: "heart.fill")
+                    .font(.system(size: heart.size))
+                    .foregroundColor(heart.color)
+                    .position(x: heart.x, y: heart.y)
+                    .opacity(heart.opacity)
+                    .rotationEffect(.degrees(heart.rotation))
+            }
+        }
+        .onAppear {
+            generateHearts()
+            animateHearts()
+        }
+    }
+
+    private func generateHearts() {
+        hearts = (0..<12).map { _ in
+            FloatingHeart(
+                x: CGFloat.random(in: 40...(size.width - 40)),
+                y: size.height + 50,
+                size: CGFloat.random(in: 16...28),
+                color: colors.randomElement()!.opacity(0.6),
+                opacity: 0,
+                rotation: Double.random(in: -20...20),
+                speed: Double.random(in: 4...8)
+            )
+        }
+    }
+
+    private func animateHearts() {
+        for i in hearts.indices {
+            let delay = Double(i) * 0.3
+
+            // Fade in
+            withAnimation(.easeOut(duration: 0.5).delay(delay)) {
+                hearts[i].opacity = Double.random(in: 0.4...0.7)
+            }
+
+            // Float up
+            withAnimation(.easeInOut(duration: hearts[i].speed).delay(delay)) {
+                hearts[i].y = -50
+                hearts[i].x += CGFloat.random(in: -30...30)
+                hearts[i].rotation += Double.random(in: -30...30)
+            }
+
+            // Fade out
+            withAnimation(.easeIn(duration: 1).delay(delay + hearts[i].speed - 1)) {
+                hearts[i].opacity = 0
+            }
+        }
+    }
+}
+
+struct FloatingHeart: Identifiable {
+    let id = UUID()
+    var x: CGFloat
+    var y: CGFloat
+    let size: CGFloat
+    let color: Color
+    var opacity: Double
+    var rotation: Double
+    let speed: Double
+}
+
+// MARK: - Pastel Confetti
+
+struct PastelConfettiView: View {
+    let colors: [Color]
+    let size: CGSize
+    @State private var confetti: [StreakConfettiPiece] = []
+
+    var body: some View {
+        ZStack {
+            ForEach(confetti) { piece in
+                RoundedRectangle(cornerRadius: piece.isCircle ? piece.width / 2 : 2)
+                    .fill(piece.color)
+                    .frame(width: piece.width, height: piece.height)
+                    .rotationEffect(.degrees(piece.rotation))
+                    .position(x: piece.x, y: piece.y)
+                    .opacity(piece.opacity)
+            }
+        }
+        .onAppear {
+            generateConfetti()
+            animateConfetti()
+        }
+    }
+
+    private func generateConfetti() {
+        confetti = (0..<50).map { _ in
+            let isCircle = Bool.random()
+            let confettiSize = CGFloat.random(in: 6...12)
+            return StreakConfettiPiece(
+                x: size.width / 2 + CGFloat.random(in: -50...50),
+                y: size.height / 2,
+                width: isCircle ? confettiSize : CGFloat.random(in: 4...8),
+                height: isCircle ? confettiSize : CGFloat.random(in: 10...18),
+                color: colors.randomElement()!,
+                rotation: Double.random(in: 0...360),
+                opacity: 0,
+                isCircle: isCircle,
+                velocityX: CGFloat.random(in: -150...150),
+                velocityY: CGFloat.random(in: (-300)...(-100)),
+                rotationSpeed: Double.random(in: 180...540)
+            )
+        }
+    }
+
+    private func animateConfetti() {
+        for i in confetti.indices {
+            let piece = confetti[i]
+
+            // Pop out
+            withAnimation(.easeOut(duration: 0.1)) {
+                confetti[i].opacity = 1
+            }
+
+            // Burst outward and fall
+            withAnimation(.easeOut(duration: 2)) {
+                confetti[i].x += piece.velocityX
+                confetti[i].y += piece.velocityY + 400 // gravity pulls down
+                confetti[i].rotation += piece.rotationSpeed
+            }
+
+            // Fade out
+            withAnimation(.easeIn(duration: 0.5).delay(1.5)) {
+                confetti[i].opacity = 0
+            }
+        }
+    }
+}
+
+struct StreakConfettiPiece: Identifiable {
+    let id = UUID()
+    var x: CGFloat
+    var y: CGFloat
+    let width: CGFloat
+    let height: CGFloat
+    let color: Color
+    var rotation: Double
+    var opacity: Double
+    let isCircle: Bool
+    let velocityX: CGFloat
+    let velocityY: CGFloat
+    let rotationSpeed: Double
+}
+
 struct CategoryFilterBadge: View {
     @EnvironmentObject var cardManager: CardManager
     @EnvironmentObject var subscriptionManager: SubscriptionManager
@@ -12030,6 +12647,32 @@ struct StreakBanner: View {
             .background(LinearGradient(colors: [.orange.opacity(0.2), .yellow.opacity(0.2)], startPoint: .leading, endPoint: .trailing))
             .cornerRadius(16)
             .highlightable(for: .streaks)
+            #if DEBUG
+            .onTapGesture(count: 3) {
+                dailyGoalsManager.debugTriggerStreakCelebration()
+            }
+            #endif
+        } else {
+            #if DEBUG
+            // Debug: Show banner even with 0 streak to test animation
+            HStack {
+                Text("🔥").font(.title)
+                VStack(alignment: .leading) {
+                    Text("Tap 3x to test streak animation")
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                    Text("DEBUG MODE")
+                        .font(.system(size: 10, design: .rounded))
+                        .foregroundColor(.red)
+                }
+                Spacer()
+            }
+            .padding()
+            .background(Color.gray.opacity(0.2))
+            .cornerRadius(16)
+            .onTapGesture(count: 3) {
+                dailyGoalsManager.debugTriggerStreakCelebration()
+            }
+            #endif
         }
     }
 }
