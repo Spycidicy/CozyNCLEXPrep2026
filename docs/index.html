@@ -12,6 +12,14 @@
     <meta property="og:url" content="https://www.cozynclex.com">
     <meta property="og:type" content="website">
     <link rel="icon" type="image/png" href="icon.png">
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-F86NTKTBPY"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-F86NTKTBPY');
+    </script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -81,7 +89,7 @@
 
         <div style="margin-bottom: 35px;">
             <p style="font-size: 1.4em; font-weight: 700; color: #333; margin-bottom: 15px;">Get CozyNCLEX Now!</p>
-            <a href="https://apps.apple.com/us/app/cozynclex-prep-2026/id6758175269" style="display: inline-block; padding: 0; background: none; box-shadow: none; border-left: none;">
+            <a href="https://apps.apple.com/us/app/cozynclex-prep-2026/id6758175269" onclick="gtag('event', 'app_store_click', {event_category: 'download', event_label: 'App Store Button'});" style="display: inline-block; padding: 0; background: none; box-shadow: none; border-left: none;">
                 <img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us?size=250x83&releaseDate=1706140800" alt="Download on the App Store" style="height: 55px; border-radius: 0;">
             </a>
         </div>
