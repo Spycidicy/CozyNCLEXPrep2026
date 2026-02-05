@@ -16,8 +16,14 @@ struct ProfileView: View {
     @State private var showDeleteAccountAlert = false
     @State private var isEditingName = false
     @State private var newDisplayName = ""
+    @State private var showCreateAccount = false
 
     var onSignOut: (() -> Void)?
+    var onCreateAccount: (() -> Void)?
+
+    private var isGuest: Bool {
+        !authManager.isAuthenticated
+    }
 
     var body: some View {
         NavigationView {
@@ -30,25 +36,37 @@ struct ProfileView: View {
                             Circle()
                                 .fill(
                                     LinearGradient(
-                                        colors: [.mintGreen, .green.opacity(0.7)],
+                                        colors: isGuest ? [.gray, .gray.opacity(0.7)] : [.mintGreen, .green.opacity(0.7)],
                                         startPoint: .topLeading,
                                         endPoint: .bottomTrailing
                                     )
                                 )
                                 .frame(width: 70, height: 70)
 
-                            Text(initials)
-                                .font(.system(size: 26, weight: .bold, design: .rounded))
-                                .foregroundColor(.white)
+                            if isGuest {
+                                Image(systemName: "person.fill.questionmark")
+                                    .font(.system(size: 26, weight: .bold))
+                                    .foregroundColor(.white)
+                            } else {
+                                Text(initials)
+                                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                                    .foregroundColor(.white)
+                            }
                         }
 
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(authManager.userProfile?.displayName ?? "Student")
+                            Text(isGuest ? "Guest User" : (authManager.userProfile?.displayName ?? "Student"))
                                 .font(.system(size: 20, weight: .bold, design: .rounded))
 
-                            Text(authManager.currentUser?.email ?? "")
-                                .font(.system(size: 14, design: .rounded))
-                                .foregroundColor(.secondary)
+                            if isGuest {
+                                Text("Progress saved locally")
+                                    .font(.system(size: 14, design: .rounded))
+                                    .foregroundColor(.secondary)
+                            } else {
+                                Text(authManager.currentUser?.email ?? "")
+                                    .font(.system(size: 14, design: .rounded))
+                                    .foregroundColor(.secondary)
+                            }
                         }
 
                         Spacer()
@@ -56,71 +74,111 @@ struct ProfileView: View {
                     .padding(.vertical, 8)
                 }
 
-                // Account Settings
-                Section("Account") {
-                    Button(action: { isEditingName = true }) {
-                        HStack {
-                            Image(systemName: "pencil")
-                                .foregroundColor(.blue)
-                            Text("Edit Display Name")
-                                .foregroundColor(.primary)
-                            Spacer()
-                            Text(authManager.userProfile?.displayName ?? "")
-                                .foregroundColor(.secondary)
-                        }
-                    }
+                // Guest: Create Account CTA
+                if isGuest {
+                    Section {
+                        Button(action: { showCreateAccount = true }) {
+                            HStack(spacing: 12) {
+                                Image(systemName: "person.badge.plus")
+                                    .font(.system(size: 20))
+                                    .foregroundColor(.white)
+                                    .frame(width: 36, height: 36)
+                                    .background(
+                                        LinearGradient(colors: [.mintGreen, .green], startPoint: .topLeading, endPoint: .bottomTrailing)
+                                    )
+                                    .cornerRadius(8)
 
-                    if authManager.userProfile?.isPremium == true {
-                        HStack {
-                            Image(systemName: "crown.fill")
-                                .foregroundColor(.yellow)
-                            Text("Premium Member")
-                            Spacer()
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Create Free Account")
+                                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                                        .foregroundColor(.primary)
+                                    Text("Sync & keep your progress forever")
+                                        .font(.system(size: 13, design: .rounded))
+                                        .foregroundColor(.secondary)
+                                }
+
+                                Spacer()
+
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.vertical, 4)
                         }
+                    } header: {
+                        Text("Unlock Full Features")
+                    } footer: {
+                        Text("Your current progress will be saved to your new account.")
                     }
                 }
 
-                // Sync Section
-                Section("Data & Sync") {
-                    NavigationLink {
-                        SyncSettingsView()
-                    } label: {
-                        HStack {
-                            Image(systemName: "icloud")
-                                .foregroundColor(.blue)
-                            Text("iCloud Sync")
-                            Spacer()
-                            SyncStatusBadge()
+                // Account Settings (only for signed-in users)
+                if !isGuest {
+                    Section("Account") {
+                        Button(action: { isEditingName = true }) {
+                            HStack {
+                                Image(systemName: "pencil")
+                                    .foregroundColor(.blue)
+                                Text("Edit Display Name")
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                Text(authManager.userProfile?.displayName ?? "")
+                                    .foregroundColor(.secondary)
+                            }
                         }
-                    }
-                }
 
-                // Sign Out
-                Section {
-                    Button(action: { showSignOutAlert = true }) {
-                        HStack {
-                            Image(systemName: "rectangle.portrait.and.arrow.right")
-                                .foregroundColor(.orange)
-                            Text("Sign Out")
-                                .foregroundColor(.primary)
+                        if authManager.userProfile?.isPremium == true {
+                            HStack {
+                                Image(systemName: "crown.fill")
+                                    .foregroundColor(.yellow)
+                                Text("Premium Member")
+                                Spacer()
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                            }
                         }
                     }
-                }
 
-                // Danger Zone
-                Section {
-                    Button(action: { showDeleteAccountAlert = true }) {
-                        HStack {
-                            Image(systemName: "trash.fill")
-                                .foregroundColor(.red)
-                            Text("Delete Account")
-                                .foregroundColor(.red)
+                    // Sync Section
+                    Section("Data & Sync") {
+                        NavigationLink {
+                            SyncSettingsView()
+                        } label: {
+                            HStack {
+                                Image(systemName: "icloud")
+                                    .foregroundColor(.blue)
+                                Text("iCloud Sync")
+                                Spacer()
+                                SyncStatusBadge()
+                            }
                         }
                     }
-                } footer: {
-                    Text("Deleting your account will permanently remove all your data. This action cannot be undone.")
+
+                    // Sign Out
+                    Section {
+                        Button(action: { showSignOutAlert = true }) {
+                            HStack {
+                                Image(systemName: "rectangle.portrait.and.arrow.right")
+                                    .foregroundColor(.orange)
+                                Text("Sign Out")
+                                    .foregroundColor(.primary)
+                            }
+                        }
+                    }
+
+                    // Danger Zone
+                    Section {
+                        Button(action: { showDeleteAccountAlert = true }) {
+                            HStack {
+                                Image(systemName: "trash.fill")
+                                    .foregroundColor(.red)
+                                Text("Delete Account")
+                                    .foregroundColor(.red)
+                            }
+                        }
+                    } footer: {
+                        Text("Deleting your account will permanently remove all your data. This action cannot be undone.")
+                    }
                 }
             }
             .navigationTitle("Profile")
@@ -157,6 +215,15 @@ struct ProfileView: View {
             }
             .sheet(isPresented: $isEditingName) {
                 EditNameView(displayName: $newDisplayName)
+            }
+            .sheet(isPresented: $showCreateAccount) {
+                AuthView(startInSignUpMode: true, onAuthenticated: {
+                    showCreateAccount = false
+                    // Progress is preserved - local data syncs to Supabase on sign in
+                    Task {
+                        await CloudSyncManager.shared.syncAll()
+                    }
+                })
             }
             .onAppear {
                 newDisplayName = authManager.userProfile?.displayName ?? ""

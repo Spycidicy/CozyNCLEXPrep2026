@@ -336,8 +336,9 @@ struct StudySessionSetupView: View {
 
         // Toll booth: if free user has seen all 50 cards, show soft paywall
         if !isPremium {
-            let viewedCount = cardManager.masteredCardIDs.count + (cardManager.consecutiveCorrect.filter { $0.value > 0 }.count)
-            if viewedCount >= 50 {
+            // Count unique card IDs that have been studied (avoid double-counting mastered cards)
+            let studiedCardIDs = Set(cardManager.consecutiveCorrect.filter { $0.value > 0 }.keys).union(cardManager.masteredCardIDs)
+            if studiedCardIDs.count >= 50 {
                 showTollBoothPaywall = true
                 return
             }
@@ -476,28 +477,30 @@ struct TollBoothPaywallSheet: View {
 
     var body: some View {
         NavigationView {
-            VStack(spacing: 20) {
-                Spacer()
+            VStack(spacing: 0) {
+                // Milestone banner at top
+                HStack(spacing: 10) {
+                    Image(systemName: "star.circle.fill")
+                        .font(.system(size: 28))
+                        .foregroundColor(.yellow)
 
-                Image(systemName: "star.circle.fill")
-                    .font(.system(size: 60))
-                    .foregroundColor(.yellow)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("You've explored the Starter Deck!")
+                            .font(.system(size: 16, weight: .bold, design: .rounded))
+                        Text("Unlock 1000+ cards to continue")
+                            .font(.system(size: 13, design: .rounded))
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(Color.yellow.opacity(0.15))
 
-                Text("You've explored the Starter Deck!")
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
-                    .multilineTextAlignment(.center)
-
-                Text("Unlock 1000+ cards across 20+ categories to continue your NCLEX prep journey.")
-                    .font(.system(size: 15, design: .rounded))
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-
+                // Subscription content
                 SubscriptionSheet()
-                    .frame(maxHeight: 300)
 
-                Spacer()
-
+                // Continue free button
                 Button(action: {
                     dismiss()
                     onContinue()
@@ -507,9 +510,8 @@ struct TollBoothPaywallSheet: View {
                         .foregroundColor(.secondary)
                         .underline()
                 }
-                .padding(.bottom, 20)
+                .padding(.vertical, 16)
             }
-            .padding()
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: { dismiss() }) {

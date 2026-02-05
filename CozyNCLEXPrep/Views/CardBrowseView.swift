@@ -52,7 +52,8 @@ struct BrowseCardsHomeView: View {
     var weakCards: [Flashcard] {
         allCards.filter { card in
             !cardManager.masteredCardIDs.contains(card.id) &&
-            (cardManager.consecutiveCorrect[card.id] ?? 0) == 0
+            (cardManager.consecutiveCorrect[card.id] ?? 0) == 0 &&
+            cardManager.consecutiveCorrect.keys.contains(card.id) // Only cards the user has actually attempted
         }
     }
 

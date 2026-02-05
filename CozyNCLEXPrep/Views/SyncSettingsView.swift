@@ -34,7 +34,7 @@ struct SyncSettingsView: View {
                                 .font(.caption)
                                 .foregroundColor(.blue)
                         } else if let lastSync = cloudSyncManager.lastSyncDate {
-                            Text("Last synced: \(lastSync, formatter: relativeDateFormatter)")
+                            Text("Last synced: \(lastSync, formatter: Self.relativeDateFormatter)")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         } else {
@@ -156,7 +156,7 @@ struct SyncSettingsView: View {
                                 .font(.subheadline)
 
                             if let lastSync = syncManager.lastSyncDate {
-                                Text("Last synced: \(lastSync, formatter: relativeDateFormatter)")
+                                Text("Last synced: \(lastSync, formatter: Self.relativeDateFormatter)")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
@@ -237,7 +237,7 @@ struct SyncSettingsView: View {
                         Text("Last updated")
                             .foregroundColor(.secondary)
                         Spacer()
-                        Text(lastSync, formatter: relativeDateFormatter)
+                        Text(lastSync, formatter: Self.relativeDateFormatter)
                             .foregroundColor(.secondary)
                     }
                     .font(.caption)
@@ -360,13 +360,13 @@ struct SyncSettingsView: View {
         }
     }
 
-    private var relativeDateFormatter: DateFormatter {
+    private static let relativeDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.doesRelativeDateFormatting = true
         formatter.dateStyle = .short
         formatter.timeStyle = .short
         return formatter
-    }
+    }()
 }
 
 // MARK: - Sync Status Badge View

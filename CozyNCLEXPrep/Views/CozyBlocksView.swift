@@ -300,7 +300,7 @@ struct CozyBlocksView: View {
                             gridOrigin = CGPoint(x: frame.minX + 4, y: frame.minY + 4)
                             gridCellSize = cellSize
                         }
-                        .onChange(of: geo.size) { _ in
+                        .onChange(of: geo.size) { _, _ in
                             let frame = inner.frame(in: .global)
                             gridOrigin = CGPoint(x: frame.minX + 4, y: frame.minY + 4)
                             gridCellSize = cellSize
@@ -398,7 +398,7 @@ struct CozyBlocksView: View {
                                     let frame = geo.frame(in: .global)
                                     traySlotCenters[index] = CGPoint(x: frame.midX, y: frame.midY)
                                 }
-                                .onChange(of: geo.size) { _ in
+                                .onChange(of: geo.size) { _, _ in
                                     let frame = geo.frame(in: .global)
                                     traySlotCenters[index] = CGPoint(x: frame.midX, y: frame.midY)
                                 }
@@ -537,8 +537,8 @@ struct CozyBlocksView: View {
                             if wasCorrect {
                                 generatePieces()
                             } else {
-                                // Wrong answer: skip pieces, show next question
-                                showNextQuestion()
+                                // Wrong answer: return to game board instead of showing another question
+                                showQuiz = false
                             }
                         } label: {
                             Text("Continue")
@@ -875,7 +875,7 @@ struct CozyBlocksView: View {
             BlocksSessionProgress.clear()
             SessionProgressManager.shared.clearProgress(for: .blocks)
             HapticManager.shared.error()
-            SoundManager.shared.celebration()
+            SoundManager.shared.wrongAnswer()
         }
     }
 

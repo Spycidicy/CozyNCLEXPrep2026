@@ -277,8 +277,6 @@ class PersistenceManager {
         // Clear last user ID so next sign-in starts fresh
         defaults.removeObject(forKey: lastUserIdKey)
 
-        defaults.synchronize()
-
         #if DEBUG
         print("🗑️ All user data cleared from local storage")
         #endif
@@ -1480,37 +1478,21 @@ class DailyGoalsManager: ObservableObject {
     }
 
     func recordStudyActivity() {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
+        // Read streak from StatsManager (single source of truth)
+        let stats = StatsManager.shared.stats
+        let previousStreak = currentStreak
+        currentStreak = stats.currentStreak
+        longestStreak = stats.longestStreak
 
-        if let lastStudy = UserDefaults.standard.object(forKey: lastStudyDateKey) as? Date {
-            let lastStudyDay = calendar.startOfDay(for: lastStudy)
-            let daysDiff = calendar.dateComponents([.day], from: lastStudyDay, to: today).day ?? 0
-
-            if daysDiff == 1 {
-                // Consecutive day - increase streak
-                currentStreak += 1
-                if currentStreak > longestStreak {
-                    longestStreak = currentStreak
-                }
-                // Trigger streak celebration
-                celebratedStreakValue = currentStreak
-                showStreakCelebration = true
-                HapticManager.shared.streak()
-                SoundManager.shared.achievement()
-                // Trigger review prompt for streak milestones
-                ReviewManager.shared.recordStreakMilestone()
-            } else if daysDiff > 1 {
-                // Missed days - reset streak
-                currentStreak = 1
-            }
-            // daysDiff == 0 means same day, don't change streak
-        } else {
-            // First study ever
-            currentStreak = 1
+        // Trigger streak celebration if streak increased
+        if currentStreak > previousStreak && currentStreak > 1 {
+            celebratedStreakValue = currentStreak
+            showStreakCelebration = true
+            HapticManager.shared.streak()
+            SoundManager.shared.achievement()
+            ReviewManager.shared.recordStreakMilestone()
         }
 
-        UserDefaults.standard.set(today, forKey: lastStudyDateKey)
         saveData()
     }
 
@@ -2682,10 +2664,10 @@ extension Flashcard {
             isPremium: false
         ),
         Flashcard(
-            question: "A patient is diagnosed with exocrine pancreatic insufficiency (EPI). Which of the following dietary modifications is MOST important for the nurse to teach the patient?",
-            answer: "Consume a low-fat diet with pancreatic enzyme replacement therapy.",
-            wrongAnswers: ["Prepare the patient for the prescribed diagnostic imaging procedure", "Initiate intravenous fluid therapy as ordered by the healthcare provider", "Apply a cold compress to the area for twenty minutes at a time"],
-            rationale: "Patients with EPI have difficulty digesting fats due to a lack of pancreatic enzymes. A low-fat diet helps reduce symptoms such as steatorrhea (fatty stools), and pancreatic enzyme replacement therapy helps improve digestion and absorption of nutrients. The other options may be helpful in some situations, but the low-fat diet and enzyme replacement are the most crucial components of dietary management for EPI.",
+            question: "A patient is diagnosed with exocrine pancreatic insufficiency (EPI). Which dietary intervention is MOST important for the nurse to teach?",
+            answer: "Take pancreatic enzyme replacement therapy (PERT) with every meal and snack containing fat",
+            wrongAnswers: ["Eliminate all dietary fat permanently", "Take enzymes only once daily in the morning", "Follow a clear liquid diet indefinitely"],
+            rationale: "CORRECT: PERT is the cornerstone of EPI management. Enzymes must be taken WITH meals and snacks that contain fat, protein, or starch - not on an empty stomach.\n\nWHY OTHER ANSWERS ARE WRONG:\n• Eliminate all fat = Current guidelines recommend a NORMAL, well-balanced diet with adequate fat and PERT, not severe fat restriction (which can worsen malnutrition)\n• Enzymes once daily = Enzymes must be taken with EVERY meal and snack; they work on the food being consumed at that time\n• Clear liquid diet indefinitely = Only appropriate in acute pancreatitis; EPI patients need adequate nutrition\n\nKEY TEACHING POINTS:\n• Take enzymes at the START of a meal (or split dose: half at start, half during)\n• Do not crush or chew enteric-coated capsules\n• Monitor for steatorrhea (fatty, foul-smelling stools) indicating inadequate enzyme dosing\n• Supplement fat-soluble vitamins (A, D, E, K) as these are often malabsorbed\n• Avoid alcohol (worsens pancreatic damage)",
             contentCategory: .fundamentals,
             nclexCategory: .healthPromotion,
             difficulty: .easy,
@@ -2693,10 +2675,10 @@ extension Flashcard {
             isPremium: false
         ),
         Flashcard(
-            question: "The nurse is reviewing risk factors for coronary heart disease with a group of patients. Which of the following risk factors is NOT explicitly mentioned in the provided text?",
-            answer: "Hyperlipidemia",
-            wrongAnswers: ["Serum sodium level", "Arterial blood gas", "Troponin level"],
-            rationale: "While the text discusses plaque buildup and narrowing of the arteries, it doesn't explicitly mention hyperlipidemia (high cholesterol) as a risk factor. The text refers to risk factors in general but does not provide a list. Therefore, hyperlipidemia is the answer as it is a risk factor for CHD but is not detailed in the provided content. The other options can be related to symptoms presented in the content (chest pain, shortness of breath, neck pain).",
+            question: "A nurse is teaching a group of patients about modifiable risk factors for coronary heart disease (CHD). Which risk factor can the patient CHANGE to reduce their risk?",
+            answer: "Hyperlipidemia (high cholesterol)",
+            wrongAnswers: ["Age over 45 years", "Family history of heart disease", "Male gender"],
+            rationale: "CORRECT: Hyperlipidemia is a MODIFIABLE risk factor - it can be changed through diet, exercise, and medication (statins). Lowering LDL cholesterol significantly reduces CHD risk.\n\nWHY OTHER ANSWERS ARE WRONG:\n• Age over 45 = NON-modifiable risk factor (cannot change age)\n• Family history = NON-modifiable risk factor (cannot change genetics)\n• Male gender = NON-modifiable risk factor (cannot change biological sex)\n\nMODIFIABLE RISK FACTORS (can change):\n• Hyperlipidemia (high LDL, low HDL)\n• Hypertension\n• Smoking\n• Diabetes (management)\n• Obesity\n• Sedentary lifestyle\n• Stress\n• Diet high in saturated fat\n\nNON-MODIFIABLE RISK FACTORS (cannot change):\n• Age (men >45, women >55)\n• Gender (men at higher risk)\n• Family history / genetics\n• Race/ethnicity\n\nNCLEX TIP: Questions about risk factor modification focus on what patients CAN control. Always distinguish modifiable from non-modifiable.",
             contentCategory: .fundamentals,
             nclexCategory: .healthPromotion,
             difficulty: .easy,
@@ -3177,10 +3159,10 @@ extension Flashcard {
             isPremium: false
         ),
         Flashcard(
-            question: "A patient is scheduled for a lumbar MRI to investigate suspected Tarlov cysts. What is the priority nursing intervention following the procedure?",
-            answer: "Monitor the puncture site for bleeding or CSF leakage.",
-            wrongAnswers: ["Educate the patient on the proper use of the nurse call system", "Implement contact isolation precautions for the patient immediately", "Place the patient on continuous fall precaution monitoring"],
-            rationale: "Following a lumbar puncture, whether for MRI contrast injection or diagnostic sampling, the priority is to monitor for complications such as bleeding, CSF leakage, or infection at the puncture site. This ensures early detection and management of potential adverse events. While assessing pain, encouraging fluids, and reviewing the MRI results are important, they are secondary to ensuring immediate post-procedure safety.",
+            question: "A patient has undergone a lumbar puncture (spinal tap) for diagnostic testing. What is the priority nursing intervention following the procedure?",
+            answer: "Keep the patient flat in bed and monitor the puncture site for leakage or bleeding",
+            wrongAnswers: ["Elevate the head of bed to 90 degrees immediately", "Encourage the patient to ambulate right away", "Restrict all oral fluid intake for 24 hours"],
+            rationale: "CORRECT: After a lumbar puncture, the patient should lie flat (or as ordered) to reduce the risk of spinal headache caused by CSF leakage. Monitor the puncture site for CSF leakage, bleeding, or signs of infection.\n\nWHY OTHER ANSWERS ARE WRONG:\n• Elevate HOB to 90° = Opposite of correct; upright position worsens post-LP headache\n• Encourage immediate ambulation = Increases risk of spinal headache; bed rest recommended\n• Restrict oral fluids = Fluids should be ENCOURAGED to help replace CSF and prevent headache\n\nPOST-LP CARE:\n• Bed rest (flat) for 1-4 hours per provider order\n• Encourage oral fluids (helps replace CSF)\n• Monitor for headache (worse when upright)\n• Assess puncture site for drainage or hematoma\n• Monitor neurological status (sensation, movement in lower extremities)\n• Administer analgesics as ordered for headache\n\nCOMPLICATIONS:\n• Post-dural puncture headache (most common)\n• Infection\n• Bleeding/hematoma\n• Nerve damage (rare)",
             contentCategory: .safety,
             nclexCategory: .safeEffectiveCare,
             difficulty: .medium,
@@ -3418,10 +3400,10 @@ extension Flashcard {
             isPremium: true
         ),
         Flashcard(
-            question: "Which immunization is contraindicated for a child with severe egg allergy?",
-            answer: "Influenza vaccine (injection form)",
-            wrongAnswers: ["MMR vaccine", "Hepatitis B vaccine", "DTaP vaccine"],
-            rationale: "Influenza vaccine is grown in eggs and may contain egg protein. Severe egg allergy requires observation after vaccination or use of egg-free alternatives. MMR is grown in chick embryo fibroblasts (not egg) and is safe for egg-allergic children.",
+            question: "A parent reports their child has a severe egg allergy. The nurse is preparing to administer the annual influenza vaccine. What is the appropriate action?",
+            answer: "Administer the age-appropriate influenza vaccine - egg allergy is no longer a contraindication",
+            wrongAnswers: ["Withhold all influenza vaccines permanently", "Require a negative egg allergy test before vaccinating", "Administer the vaccine only in an ICU setting"],
+            rationale: "CORRECT: Per current CDC/ACIP guidelines, people with egg allergy of ANY severity can receive any age-appropriate influenza vaccine. Egg allergy alone is NO longer a contraindication or reason for additional precautions beyond standard post-vaccination observation.\n\nWHY OTHER ANSWERS ARE WRONG:\n• Withhold permanently = Outdated practice; all influenza vaccines are now recommended regardless of egg allergy\n• Require egg allergy test = Not needed; egg allergy status does not change vaccine eligibility\n• Only in ICU = Excessive; standard vaccination setting with routine 15-minute observation is sufficient\n\nIMPORTANT UPDATES:\n• Previous guidelines requiring special precautions for egg-allergic patients have been REMOVED\n• Both egg-based and cell-culture-based vaccines are acceptable\n• Standard 15-minute observation period applies to ALL vaccine recipients\n• Severe allergic reaction to a PREVIOUS DOSE of influenza vaccine IS a contraindication (different from egg allergy)\n\nMMR VACCINE NOTE:\n• MMR is grown in chick embryo fibroblasts (not egg protein)\n• MMR has always been safe for egg-allergic children",
             contentCategory: .pediatrics,
             nclexCategory: .healthPromotion,
             difficulty: .medium,
@@ -3452,28 +3434,6 @@ extension Flashcard {
         ),
 
         // Additional Maternity (45 cards)
-        Flashcard(
-            question: "A pregnant patient at 28 weeks has Rh-negative blood. When should RhoGAM be administered?",
-            answer: "At 28 weeks gestation and within 72 hours after delivery if baby is Rh-positive",
-            wrongAnswers: ["Only after delivery", "Only if antibodies are present", "At every prenatal visit"],
-            rationale: "RhoGAM prevents Rh sensitization. Given at 28 weeks (when fetal cells may enter maternal circulation) and within 72 hours postpartum if baby is Rh-positive. Also given after any bleeding, amniocentesis, or trauma during pregnancy.",
-            contentCategory: .maternity,
-            nclexCategory: .healthPromotion,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: true
-        ),
-        Flashcard(
-            question: "What is the expected fundal height at 20 weeks gestation?",
-            answer: "At the level of the umbilicus",
-            wrongAnswers: ["Just above the symphysis pubis", "Halfway between umbilicus and xiphoid", "At the xiphoid process"],
-            rationale: "Fundal height in cm approximately equals gestational age in weeks (McDonald's rule). At 20 weeks, fundus is at umbilicus. At 36 weeks, at xiphoid. After 36 weeks, may drop as baby engages. Discrepancy may indicate multiple gestation, IUGR, or wrong dates.",
-            contentCategory: .maternity,
-            nclexCategory: .healthPromotion,
-            difficulty: .easy,
-            questionType: .standard,
-            isPremium: true
-        ),
         Flashcard(
             question: "A patient in labor has an umbilical cord prolapse. What is the PRIORITY nursing action?",
             answer: "Elevate the presenting part off the cord and call for emergency cesarean",
@@ -3517,17 +3477,6 @@ extension Flashcard {
             contentCategory: .mentalHealth,
             nclexCategory: .psychosocial,
             difficulty: .medium,
-            questionType: .standard,
-            isPremium: true
-        ),
-        Flashcard(
-            question: "Which defense mechanism is demonstrated when a patient diagnosed with cancer says 'The lab must have made a mistake'?",
-            answer: "Denial",
-            wrongAnswers: ["Projection", "Rationalization", "Displacement"],
-            rationale: "Denial is refusing to accept reality as a way to cope with overwhelming information. It's often a first response to bad news and can be protective initially. Denial becomes problematic when it prevents necessary treatment or coping.",
-            contentCategory: .mentalHealth,
-            nclexCategory: .psychosocial,
-            difficulty: .easy,
             questionType: .standard,
             isPremium: true
         ),
@@ -3599,52 +3548,8 @@ extension Flashcard {
             questionType: .standard,
             isPremium: true
         ),
-        Flashcard(
-            question: "What is the nurse's responsibility when receiving an unclear or potentially harmful order?",
-            answer: "Clarify the order with the prescriber before acting",
-            wrongAnswers: ["Carry out the order as written", "Ignore the order", "Have another nurse carry out the order"],
-            rationale: "Nurses are legally and ethically obligated to question orders that are unclear, incomplete, or potentially harmful. Clarify directly with prescriber. If still concerned, escalate through chain of command. Document communication.",
-            contentCategory: .leadership,
-            nclexCategory: .safeEffectiveCare,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: true
-        ),
 
         // Infection Control (40 cards)
-        Flashcard(
-            question: "Which isolation precaution is required for a patient with tuberculosis?",
-            answer: "Airborne precautions with N95 respirator",
-            wrongAnswers: ["Contact precautions only", "Droplet precautions with surgical mask", "Standard precautions only"],
-            rationale: "TB spreads via airborne droplet nuclei (<5 microns) that remain suspended in air. Requires: private negative-pressure room, N95 respirator (fit-tested), patient wears surgical mask during transport. Healthcare workers need annual TB testing.",
-            contentCategory: .infectionControl,
-            nclexCategory: .safeEffectiveCare,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: true
-        ),
-        Flashcard(
-            question: "What is the CORRECT order for donning PPE?",
-            answer: "Gown, mask/respirator, goggles/face shield, gloves",
-            wrongAnswers: ["Gloves, gown, mask, goggles", "Mask, gloves, gown, goggles", "Goggles, gloves, mask, gown"],
-            rationale: "Donning sequence protects from contamination: Gown first (ties in back), then mask/respirator (requires both hands), eye protection, gloves last (cover gown cuffs). Removal is reverse, with gloves first (most contaminated).",
-            contentCategory: .infectionControl,
-            nclexCategory: .safeEffectiveCare,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: true
-        ),
-        Flashcard(
-            question: "A patient has C. difficile infection. Which precautions are required?",
-            answer: "Contact precautions with hand washing (not alcohol-based sanitizer)",
-            wrongAnswers: ["Droplet precautions only", "Airborne precautions", "Standard precautions only"],
-            rationale: "C. diff spores are NOT killed by alcohol-based sanitizers - must wash hands with soap and water. Contact precautions: gown and gloves, dedicated equipment. C. diff is spread by fecal-oral route. Strict environmental cleaning with sporicidal agents.",
-            contentCategory: .infectionControl,
-            nclexCategory: .safeEffectiveCare,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: true
-        ),
         Flashcard(
             question: "Select ALL conditions requiring droplet precautions:",
             answer: "Influenza, Pertussis, Meningococcal meningitis, Mumps",
@@ -4094,17 +3999,6 @@ extension Flashcard {
             isPremium: true
         ),
         Flashcard(
-            question: "Which medication requires the patient to avoid tyramine-rich foods?",
-            answer: "MAO inhibitors (phenelzine, tranylcypromine)",
-            wrongAnswers: ["SSRIs", "Benzodiazepines", "Tricyclic antidepressants"],
-            rationale: "MAOIs prevent tyramine breakdown. Tyramine causes norepinephrine release, leading to hypertensive crisis. Avoid: aged cheese, cured meats, red wine, soy sauce, sauerkraut. Crisis signs: severe headache, hypertension, stiff neck.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: true
-        ),
-        Flashcard(
             question: "What is the antidote for benzodiazepine overdose?",
             answer: "Flumazenil (Romazicon)",
             wrongAnswers: ["Naloxone", "Acetylcysteine", "Protamine sulfate"],
@@ -4182,17 +4076,6 @@ extension Flashcard {
             isPremium: true
         ),
         Flashcard(
-            question: "What is the mechanism of action of beta-blockers?",
-            answer: "Block beta-adrenergic receptors, decreasing heart rate and blood pressure",
-            wrongAnswers: ["Increase calcium influx into heart cells", "Stimulate alpha receptors", "Directly dilate blood vessels"],
-            rationale: "Beta-blockers (-olol ending) block sympathetic stimulation. Effects: decreased HR, BP, contractility, oxygen demand. Used for HTN, angina, MI, heart failure, arrhythmias. Contraindicated in asthma, severe bradycardia.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: true
-        ),
-        Flashcard(
             question: "A patient on phenytoin has gingival hyperplasia. What teaching is appropriate?",
             answer: "Maintain meticulous oral hygiene and regular dental visits",
             wrongAnswers: ["Stop taking the medication immediately", "This will resolve without intervention", "Increase the medication dose"],
@@ -4227,9 +4110,9 @@ extension Flashcard {
         ),
         Flashcard(
             question: "What teaching should be provided about nitroglycerin sublingual tablets?",
-            answer: "Store in dark glass container, replace every 6 months, should cause slight burning under tongue",
+            answer: "Store in the original dark glass container, replace every 6 months, and take up to 3 tablets at 5-minute intervals",
             wrongAnswers: ["Chew the tablet thoroughly", "Take with a full glass of water", "Store in plastic container"],
-            rationale: "Nitroglycerin is light-sensitive and volatile. Dark container, away from heat/moisture. Slight burning/tingling indicates potency. If no relief after 3 tablets (5 min apart), call 911. Sit or lie down - causes hypotension.",
+            rationale: "CORRECT: Nitroglycerin is light-sensitive and volatile. Store in original dark glass container, away from heat and moisture. Replace every 6 months (loses potency). If no relief after 3 tablets (one every 5 minutes), call 911.\n\nWHY OTHER ANSWERS ARE WRONG:\n• Chew thoroughly = Sublingual tablets dissolve UNDER the tongue; do not chew or swallow\n• Take with water = Place under tongue and let dissolve; water is not needed and may wash away the tablet\n• Store in plastic = Plastic absorbs nitroglycerin, reducing potency; must use GLASS container\n\nKEY TEACHING POINTS:\n• Sit or lie down before taking (causes hypotension/dizziness)\n• Place under tongue and let dissolve completely\n• Do NOT rely on burning/tingling sensation as an indicator of potency - modern formulations may not cause this sensation\n• If first tablet does not relieve chest pain in 5 minutes, take second tablet\n• Maximum 3 tablets total; call 911 if pain persists\n• Common side effects: headache, flushing, dizziness\n• Avoid alcohol and phosphodiesterase inhibitors (e.g., sildenafil)\n• Keep medication accessible at all times\n• Note expiration date and replace regularly",
             contentCategory: .pharmacology,
             nclexCategory: .healthPromotion,
             difficulty: .medium,
@@ -4513,17 +4396,6 @@ extension Flashcard {
             questionType: .standard,
             isPremium: true
         ),
-        Flashcard(
-            question: "A child with suspected intussusception will have which classic stool finding?",
-            answer: "Currant jelly stools (blood and mucus)",
-            wrongAnswers: ["Clay-colored stools", "Black tarry stools", "Green watery stools"],
-            rationale: "Intussusception: bowel telescopes into itself, causing obstruction and ischemia. Classic triad: colicky abdominal pain, vomiting, currant jelly stools. Sausage-shaped mass palpable. Treatment: air/barium enema reduction or surgery.",
-            contentCategory: .pediatrics,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: true
-        ),
 
         // BATCH 5: Additional Maternity/OB (50 cards)
         Flashcard(
@@ -4648,17 +4520,6 @@ extension Flashcard {
             isPremium: true
         ),
         Flashcard(
-            question: "What is the antidote for magnesium sulfate toxicity?",
-            answer: "Calcium gluconate",
-            wrongAnswers: ["Protamine sulfate", "Vitamin K", "Naloxone"],
-            rationale: "Magnesium toxicity signs (in order): loss of DTRs, respiratory depression, cardiac arrest. Monitor: DTRs (should be present), respirations (>12/min), urine output (>30 mL/hr). Therapeutic level: 4-7 mEq/L. Keep calcium gluconate at bedside.",
-            contentCategory: .maternity,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: true
-        ),
-        Flashcard(
             question: "What is the purpose of giving Rh immune globulin (RhoGAM)?",
             answer: "To prevent Rh sensitization in Rh-negative mothers exposed to Rh-positive blood",
             wrongAnswers: ["To treat Rh disease in the newborn", "To prevent GBS infection", "To stimulate fetal lung maturity"],
@@ -4677,17 +4538,6 @@ extension Flashcard {
             contentCategory: .maternity,
             nclexCategory: .physiological,
             difficulty: .easy,
-            questionType: .standard,
-            isPremium: true
-        ),
-        Flashcard(
-            question: "What assessment finding indicates placental abruption?",
-            answer: "Painful, rigid abdomen with dark red vaginal bleeding",
-            wrongAnswers: ["Painless bright red bleeding", "Soft, nontender abdomen", "Gradual onset of mild cramping"],
-            rationale: "Abruption: premature separation of placenta. Classic: painful contractions, rigid board-like abdomen, dark blood (may be concealed). Vs placenta previa: painless bright red bleeding. Both emergencies - continuous monitoring, prepare for delivery.",
-            contentCategory: .maternity,
-            nclexCategory: .physiological,
-            difficulty: .hard,
             questionType: .standard,
             isPremium: true
         ),
@@ -4812,17 +4662,6 @@ extension Flashcard {
             nclexCategory: .psychosocial,
             difficulty: .medium,
             questionType: .standard,
-            isPremium: true
-        ),
-        Flashcard(
-            question: "A patient with anorexia nervosa refuses to eat. What is the PRIORITY concern?",
-            answer: "Electrolyte imbalances and cardiac arrhythmias",
-            wrongAnswers: ["Body image disturbance", "Family dynamics", "Self-esteem issues"],
-            rationale: "Anorexia has highest mortality of psychiatric disorders. Life-threatening: hypokalemia causes arrhythmias, hypoglycemia, dehydration, organ failure. Medical stabilization first, then address psychological issues. Monitor refeeding syndrome.",
-            contentCategory: .mentalHealth,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .priority,
             isPremium: true
         ),
         Flashcard(
@@ -6954,17 +6793,6 @@ extension Flashcard {
             isPremium: true
         ),
         Flashcard(
-            question: "A patient with seizures is prescribed phenytoin. What is the therapeutic serum level?",
-            answer: "10-20 mcg/mL",
-            wrongAnswers: ["0.5-2.0 ng/mL", "1-2.5 mEq/L", "50-100 mcg/mL"],
-            rationale: "Phenytoin therapeutic: 10-20 mcg/mL. Signs of toxicity: nystagmus (first sign at 20+), ataxia (30+), confusion, lethargy. Has zero-order kinetics - small dose changes cause large level changes. Monitor levels regularly.",
-            contentCategory: .pharmacology,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .standard,
-            isPremium: true
-        ),
-        Flashcard(
             question: "A patient is being treated for hypothyroidism. What symptoms indicate the dose needs adjustment?",
             answer: "Persistent fatigue, weight gain, cold intolerance suggest underdosing; palpitations, weight loss, tremors suggest overdosing",
             wrongAnswers: ["No symptoms relate to dosing", "All symptoms mean stop medication", "Only lab values matter"],
@@ -7737,17 +7565,6 @@ extension Flashcard {
             isPremium: true
         ),
         Flashcard(
-            question: "What is the priority nursing intervention for a patient receiving a blood transfusion who develops fever and chills?",
-            answer: "Stop the transfusion immediately and maintain IV access with normal saline",
-            wrongAnswers: ["Slow the transfusion rate", "Administer antipyretic and continue", "Complete the transfusion quickly"],
-            rationale: "Transfusion reaction signs: stop transfusion, keep IV open with NS (new tubing), notify blood bank and provider, monitor vitals frequently, return blood bag and tubing to blood bank. Never restart a questioned transfusion.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .priority,
-            isPremium: true
-        ),
-        Flashcard(
             question: "A nurse is teaching a patient about self-administration of insulin. What technique should be emphasized?",
             answer: "Rotate injection sites within the same body region, avoid using the same spot",
             wrongAnswers: ["Use the exact same spot every time", "Rotate between all body regions daily", "Inject through clothing to save time"],
@@ -7964,17 +7781,6 @@ extension Flashcard {
             contentCategory: .medSurg,
             nclexCategory: .healthPromotion,
             difficulty: .easy,
-            questionType: .standard,
-            isPremium: true
-        ),
-        Flashcard(
-            question: "A nurse discovers that a coworker has been diverting controlled substances. What is the appropriate action?",
-            answer: "Report to the nurse manager or appropriate supervisor per facility policy",
-            wrongAnswers: ["Confront the coworker privately", "Ignore it to avoid conflict", "Tell other coworkers about it"],
-            rationale: "Drug diversion is serious - affects patient safety and is illegal. Report to supervisor/manager per policy. Don't confront directly or gossip. Document observations objectively. Many states have confidential peer assistance programs.",
-            contentCategory: .leadership,
-            nclexCategory: .safeEffectiveCare,
-            difficulty: .medium,
             questionType: .standard,
             isPremium: true
         ),
@@ -8255,17 +8061,6 @@ extension Flashcard {
             isPremium: true
         ),
         Flashcard(
-            question: "A patient is receiving a blood transfusion and develops fever, chills, and back pain. What should the nurse do first?",
-            answer: "Stop the transfusion immediately",
-            wrongAnswers: ["Slow the transfusion rate", "Give acetaminophen and continue", "Increase IV fluids"],
-            rationale: "These symptoms suggest transfusion reaction. STOP transfusion immediately, keep IV open with normal saline, notify provider and blood bank, monitor vitals, save blood bag and tubing for analysis. Reactions can be fatal if transfusion continues.",
-            contentCategory: .medSurg,
-            nclexCategory: .physiological,
-            difficulty: .hard,
-            questionType: .priority,
-            isPremium: true
-        ),
-        Flashcard(
             question: "A nurse is caring for a patient in restraints. How often should circulation and skin integrity be assessed?",
             answer: "Every 15-30 minutes",
             wrongAnswers: ["Every 4 hours", "Once per shift", "Only when removing restraints"],
@@ -8337,17 +8132,6 @@ extension Flashcard {
             wrongAnswers: ["Administering IV push medications", "Performing initial patient assessment", "Teaching a newly diagnosed diabetic about insulin"],
             rationale: "UAP can perform routine tasks on stable patients: vital signs, hygiene, feeding, ambulation, I&O. RNs cannot delegate assessment, teaching, IV medications, or unstable patient care. Remember the 5 Rights of Delegation.",
             contentCategory: .leadership,
-            nclexCategory: .safeEffectiveCare,
-            difficulty: .medium,
-            questionType: .standard,
-            isPremium: true
-        ),
-        Flashcard(
-            question: "A patient is admitted with suspected meningitis. Which isolation precaution should be implemented?",
-            answer: "Droplet precautions",
-            wrongAnswers: ["Contact precautions only", "Airborne precautions", "Standard precautions only"],
-            rationale: "Bacterial meningitis requires droplet precautions: private room, mask within 3 feet of patient. N. meningitidis spreads via respiratory droplets. Healthcare workers in close contact need prophylactic antibiotics. Different from TB which requires airborne precautions.",
-            contentCategory: .safety,
             nclexCategory: .safeEffectiveCare,
             difficulty: .medium,
             questionType: .standard,
@@ -8431,17 +8215,6 @@ extension Flashcard {
             isPremium: true
         ),
         Flashcard(
-            question: "During a fire emergency, what does the 'A' in RACE stand for?",
-            answer: "Alarm - activate the fire alarm",
-            wrongAnswers: ["Assess - check patient conditions", "Assist - help firefighters", "Avoid - stay away from flames"],
-            rationale: "RACE: R-Rescue patients in immediate danger, A-Alarm (pull fire alarm, call 911), C-Confine/Contain (close doors), E-Extinguish/Evacuate. Know fire extinguisher use: PASS (Pull, Aim, Squeeze, Sweep).",
-            contentCategory: .safety,
-            nclexCategory: .safeEffectiveCare,
-            difficulty: .easy,
-            questionType: .standard,
-            isPremium: true
-        ),
-        Flashcard(
             question: "A nurse is triaging patients in the emergency department. Which patient should be seen first?",
             answer: "Patient with chest pain radiating to the left arm",
             wrongAnswers: ["Patient with sprained ankle", "Patient with sore throat for 3 days", "Patient requesting prescription refill"],
@@ -8465,12 +8238,74 @@ extension Flashcard {
         )
     ]
 
+    private static var _allCardsCache: [Flashcard]?
     static var allCards: [Flashcard] {
-        freeCards + premiumCards
+        if let cached = _allCardsCache { return cached }
+        let result = freeCards + premiumCards
+        _allCardsCache = result
+        return result
     }
 }
 
 // MARK: - Managers
+
+// MARK: - Guest Prompt Manager
+
+@MainActor
+class GuestPromptManager: ObservableObject {
+    static let shared = GuestPromptManager()
+
+    @Published var shouldShowPrompt = false
+    @Published var currentMilestone: Int = 0
+
+    private let dismissedMilestonesKey = "guestPromptDismissedMilestones"
+
+    // Milestones where we prompt guest users to create an account
+    private let milestones = [10, 25]
+
+    private var dismissedMilestones: Set<Int> {
+        get {
+            let array = UserDefaults.standard.array(forKey: dismissedMilestonesKey) as? [Int] ?? []
+            return Set(array)
+        }
+        set {
+            UserDefaults.standard.set(Array(newValue), forKey: dismissedMilestonesKey)
+        }
+    }
+
+    private init() {}
+
+    /// Check if we should show a prompt after studying. Call this after recording a session.
+    func checkMilestone(totalCardsStudied: Int) {
+        // Only prompt if user is not authenticated (guest mode)
+        guard !AuthManager.shared.isAuthenticated else { return }
+
+        // Find the highest milestone we've passed that hasn't been dismissed
+        for milestone in milestones.reversed() {
+            if totalCardsStudied >= milestone && !dismissedMilestones.contains(milestone) {
+                currentMilestone = milestone
+                shouldShowPrompt = true
+                return
+            }
+        }
+    }
+
+    /// Call when user dismisses the prompt
+    func dismissPrompt() {
+        if currentMilestone > 0 {
+            var dismissed = dismissedMilestones
+            dismissed.insert(currentMilestone)
+            dismissedMilestones = dismissed
+        }
+        shouldShowPrompt = false
+        currentMilestone = 0
+    }
+
+    /// Reset dismissed milestones (e.g., when user signs out)
+    func resetDismissedMilestones() {
+        UserDefaults.standard.removeObject(forKey: dismissedMilestonesKey)
+    }
+}
 
 @MainActor
 class AppManager: ObservableObject {
@@ -8579,6 +8414,13 @@ class AppManager: ObservableObject {
         syncTask = nil
         withAnimation(.easeInOut(duration: 0.5)) {
             currentScreen = .auth
+        }
+    }
+
+    func continueAsGuest() {
+        // Skip auth and go directly to menu - progress saves locally
+        withAnimation(.easeInOut(duration: 0.5)) {
+            currentScreen = .menu
         }
     }
 
@@ -9086,6 +8928,26 @@ class CardManager: ObservableObject {
             StatsManager.shared.stats.perfectTests += 1
         }
         StatsManager.shared.save()
+
+        // Push test result to Supabase test_results table
+        let qCount = result.questionCount
+        let cCount = result.correctCount
+        let time = result.timeSpentSeconds
+        // Flatten CategoryTestResult to [String: Int] (correct count per category)
+        var breakdown: [String: Int] = [:]
+        for (cat, catResult) in result.categoryBreakdown {
+            breakdown[cat] = catResult.correct
+        }
+        Task {
+            await CloudSyncManager.shared.saveTestResult(
+                questionCount: qCount,
+                correctCount: cCount,
+                timeTaken: time,
+                categoryBreakdown: breakdown
+            )
+            // Also push updated test count to user_stats
+            CloudSyncManager.shared.syncUserStatsToCloud()
+        }
     }
 
     var allCards: [Flashcard] {
@@ -9093,7 +8955,7 @@ class CardManager: ObservableObject {
         if !remoteCards.isEmpty {
             return remoteCards + userCreatedCards
         }
-        return Flashcard.freeCards + (SubscriptionManager().isSubscribed ? Flashcard.premiumCards : []) + userCreatedCards
+        return Flashcard.freeCards + (PersistenceManager.shared.loadSubscriptionStatus() ? Flashcard.premiumCards : []) + userCreatedCards
     }
 
     /// Maximum free cards for non-subscribers
@@ -9515,6 +9377,12 @@ class StatsManager: ObservableObject {
                 minutesStudied: sessionMinutes
             )
         }
+
+        // Push aggregate stats to user_stats (debounced)
+        CloudSyncManager.shared.syncUserStatsToCloud()
+
+        // Check if guest user hit a milestone for account prompt
+        GuestPromptManager.shared.checkMilestone(totalCardsStudied: stats.totalCardsStudied)
     }
 
     func updateStreak() {
@@ -9562,6 +9430,9 @@ class StatsManager: ObservableObject {
         if correct { current.correct += 1 }
         stats.categoryAccuracy[category] = current
         save()
+
+        // Push category accuracy to user_stats (debounced — per-card calls are batched)
+        CloudSyncManager.shared.syncUserStatsToCloud()
     }
 
     func getWeakCategories() -> [String] {
@@ -9754,6 +9625,7 @@ struct ContentView: View {
     @StateObject private var statsManager = StatsManager.shared
     @StateObject private var speechManager = SpeechManager()
     @StateObject private var appearanceManager = AppearanceManager.shared
+    @StateObject private var guestPromptManager = GuestPromptManager.shared
     @Environment(\.scenePhase) var scenePhase
 
     var body: some View {
@@ -9762,7 +9634,7 @@ struct ContentView: View {
 
             switch appManager.currentScreen {
             case .onboarding: OnboardingView()
-            case .auth: AuthView(onAuthenticated: { appManager.completeAuth() })
+            case .auth: AuthView(onAuthenticated: { appManager.completeAuth() }, onContinueAsGuest: { appManager.continueAsGuest() })
             case .syncing: SyncingView(onSkip: { appManager.skipSync() })
             case .menu: MainMenuView()
             case .flashcardsGame: StudyFlashcardsView()
@@ -9791,19 +9663,133 @@ struct ContentView: View {
         .onAppear {
             appManager.completeSyncOnLaunch()
         }
-        .onChange(of: scenePhase) { newPhase in
+        .onChange(of: scenePhase) { _, newPhase in
             switch newPhase {
             case .background:
                 appManager.saveCurrentScreen()
+                // Flush any debounced stat writes before backgrounding
+                Task {
+                    await CloudSyncManager.shared.syncUserStatsToCloudNow()
+                }
             case .active:
                 appManager.restoreCurrentScreen()
+                // Retry any failed sync operations from previous sessions
+                PendingSyncManager.shared.flushPendingSync()
             default:
                 break
             }
         }
+        .sheet(isPresented: $guestPromptManager.shouldShowPrompt) {
+            GuestPromptSheet(
+                cardsStudied: guestPromptManager.currentMilestone,
+                onCreateAccount: {
+                    guestPromptManager.dismissPrompt()
+                    appManager.currentScreen = .auth
+                },
+                onContinue: {
+                    guestPromptManager.dismissPrompt()
+                }
+            )
+            .interactiveDismissDisabled()
+        }
     }
 }
 
+
+// MARK: - Guest Prompt Sheet
+
+struct GuestPromptSheet: View {
+    let cardsStudied: Int
+    let onCreateAccount: () -> Void
+    let onContinue: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            // Drag indicator area
+            Capsule()
+                .fill(Color.secondary.opacity(0.3))
+                .frame(width: 36, height: 5)
+                .padding(.top, 8)
+
+            // Bear mascot - compact
+            Image("NurseBear")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 70, height: 70)
+
+            // Milestone celebration
+            VStack(spacing: 4) {
+                Text("🎉 Amazing Progress!")
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundColor(.primary)
+
+                Text("You've studied \(cardsStudied) cards!")
+                    .font(.system(size: 15, design: .rounded))
+                    .foregroundColor(.secondary)
+            }
+
+            // Benefits of creating account - compact grid
+            VStack(alignment: .leading, spacing: 8) {
+                benefitRow(icon: "icloud.fill", text: "Sync across devices")
+                benefitRow(icon: "chart.line.uptrend.xyaxis", text: "Track statistics")
+                benefitRow(icon: "arrow.clockwise", text: "Never lose progress")
+                benefitRow(icon: "bell.badge.fill", text: "Study reminders")
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 12)
+
+            // Buttons
+            VStack(spacing: 8) {
+                Button(action: onCreateAccount) {
+                    HStack {
+                        Image(systemName: "person.badge.plus")
+                        Text("Create Free Account")
+                            .font(.system(size: 17, weight: .bold, design: .rounded))
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(
+                        LinearGradient(
+                            colors: [.mintGreen, .green.opacity(0.8)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .cornerRadius(12)
+                }
+
+                Button(action: onContinue) {
+                    Text("Continue as Guest")
+                        .font(.system(size: 15, weight: .medium, design: .rounded))
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 16)
+        }
+        .background(Color.creamyBackground)
+        .presentationDetents([.height(380)])
+        .presentationDragIndicator(.hidden)
+    }
+
+    private func benefitRow(icon: String, text: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 16))
+                .foregroundColor(.mintGreen)
+                .frame(width: 20)
+
+            Text(text)
+                .font(.system(size: 14, design: .rounded))
+                .foregroundColor(.primary)
+
+            Spacer()
+        }
+    }
+}
 
 // MARK: - Onboarding View
 
@@ -10970,9 +10956,9 @@ struct MainMenuView: View {
                 // STUDY TAB
                 ScrollView {
                     VStack(spacing: 16) {
-                        // Premium Upsell (immediately visible for free users)
-                        if !subscriptionManager.hasPremiumAccess && !(authManager.userProfile?.isPremium ?? false) {
-                            LibraryAccessCard(showSubscriptionSheet: $showSubscriptionSheet, totalPremiumCardCount: cardManager.getAvailableCards(isSubscribed: true).count)
+                        // Special Offer Banner for free users
+                        if !subscriptionManager.hasPremiumAccess && !(authManager.userProfile?.isPremium ?? false) && !hasSeenSpecialOffer() {
+                            SpecialOfferBanner(showSubscriptionSheet: $showSubscriptionSheet, onDismiss: markSpecialOfferSeen)
                         }
 
                         // Study Modes Grid
@@ -11073,6 +11059,14 @@ struct MainMenuView: View {
 
     private func markMotivationSeen() {
         UserDefaults.standard.set(Date(), forKey: "lastMotivationDate")
+    }
+
+    private func hasSeenSpecialOffer() -> Bool {
+        UserDefaults.standard.bool(forKey: "hasSeenSpecialOfferBanner")
+    }
+
+    private func markSpecialOfferSeen() {
+        UserDefaults.standard.set(true, forKey: "hasSeenSpecialOfferBanner")
     }
 
     private func startGameMode(_ mode: GameMode, with cards: [Flashcard]) {
@@ -13437,6 +13431,75 @@ struct GameModeCard: View {
     }
 }
 
+struct SpecialOfferBanner: View {
+    @Binding var showSubscriptionSheet: Bool
+    var onDismiss: () -> Void
+    @State private var isVisible = true
+
+    var body: some View {
+        if isVisible {
+            Button(action: { showSubscriptionSheet = true }) {
+                HStack(spacing: 12) {
+                    // Animated star icon
+                    Text("🎁")
+                        .font(.system(size: 28))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text("LIMITED TIME OFFER")
+                                .font(.system(size: 10, weight: .black, design: .rounded))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.red)
+                                .cornerRadius(4)
+                        }
+
+                        Text("Try Premium Free for 3 Days")
+                            .font(.system(size: 16, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
+
+                        Text("Cancel anytime • No commitment")
+                            .font(.system(size: 12, design: .rounded))
+                            .foregroundColor(.white.opacity(0.85))
+                    }
+
+                    Spacer()
+
+                    Image(systemName: "chevron.right.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundColor(.white.opacity(0.9))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .background(
+                    LinearGradient(
+                        colors: [Color.purple, Color.pink, Color.orange],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .cornerRadius(16)
+                .shadow(color: .purple.opacity(0.3), radius: 8, y: 4)
+            }
+            .buttonStyle(PlainButtonStyle())
+            .overlay(alignment: .topTrailing) {
+                Button(action: {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        isVisible = false
+                    }
+                    onDismiss()
+                }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundColor(.white.opacity(0.7))
+                }
+                .offset(x: 8, y: -8)
+            }
+        }
+    }
+}
+
 struct LibraryAccessCard: View {
     @EnvironmentObject var cardManager: CardManager
     @Binding var showSubscriptionSheet: Bool
@@ -13508,20 +13571,44 @@ struct LibraryAccessCard: View {
             }
             .frame(height: 8)
 
-            // Unlock button
+            // Unlock button with trial badge
             Button(action: { showSubscriptionSheet = true }) {
-                HStack(spacing: 6) {
-                    Text("Unlock Full Library")
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
+                VStack(spacing: 6) {
+                    // Trial badge
+                    Text("✨ 3-DAY FREE TRIAL")
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule()
+                                .fill(LinearGradient(colors: [.orange, .pink], startPoint: .leading, endPoint: .trailing))
+                        )
+
+                    HStack(spacing: 6) {
+                        Text("Unlock Full Library")
+                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
+                    .cornerRadius(12)
                 }
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-                .background(LinearGradient(colors: [.pastelPink, .softLavender], startPoint: .leading, endPoint: .trailing))
-                .cornerRadius(12)
             }
+
+            // Social proof
+            HStack(spacing: 4) {
+                Image(systemName: "person.2.fill")
+                    .font(.system(size: 11))
+                    .foregroundColor(.mintGreen)
+                Text("Join 10,000+ nursing students")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.top, 4)
         }
         .padding()
         .background(Color.adaptiveWhite)
@@ -13682,8 +13769,8 @@ struct SubscriptionSheet: View {
                                 product: product,
                                 isSelected: resolvedProduct?.id == product.id,
                                 isLifetime: false,
-                                badge: isYearly(product) && yearlyIsEligibleForTrial ? "3-DAY FREE TRIAL" : (isMonthly(product) ? "MOST POPULAR" : nil),
-                                badgeColors: isYearly(product) && yearlyIsEligibleForTrial ? [.pastelPink, .softLavender] : [.mintGreen, .blue],
+                                badge: isYearly(product) && yearlyIsEligibleForTrial ? "3-DAY FREE TRIAL" : (isYearly(product) ? "MOST POPULAR" : nil),
+                                badgeColors: isYearly(product) ? [.pastelPink, .softLavender] : [.mintGreen, .blue],
                                 savingsText: isYearly(product) ? "Save 58%" : nil,
                                 trialText: isYearly(product) && yearlyIsEligibleForTrial ? "3 days free, then \(product.displayPrice)/year" : nil,
                                 action: { selectedProduct = product }
@@ -13818,11 +13905,10 @@ struct SubscriptionSheet: View {
                 }
             } else {
                 // Sandbox/TestFlight may not expose introductoryOffer property
-                // but the offer is configured in App Store Connect — show trial
-                // for users who haven't subscribed before
+                // Only show trial badge when eligibility is definitively confirmed
                 let eligible = await yearly.subscription?.isEligibleForIntroOffer ?? false
                 await MainActor.run {
-                    yearlyIsEligibleForTrial = eligible || !subscriptionManager.hasPremiumAccess
+                    yearlyIsEligibleForTrial = eligible
                 }
             }
         }

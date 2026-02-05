@@ -91,6 +91,7 @@ struct CloudUserCard: Codable, Identifiable {
     var contentCategory: String
     var nclexCategory: String
     var difficulty: String
+    var questionType: String
     var isDeleted: Bool
     let createdAt: Date?
     var updatedAt: Date?
@@ -105,6 +106,7 @@ struct CloudUserCard: Codable, Identifiable {
         case contentCategory = "content_category"
         case nclexCategory = "nclex_category"
         case difficulty
+        case questionType = "question_type"
         case isDeleted = "is_deleted"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
@@ -247,6 +249,12 @@ class CloudSyncManager: ObservableObject {
 
     private let client = SupabaseConfig.client
     private let lastSyncKey = "lastCloudSyncDate"
+    /// Tracks the last daily activity update timestamp to prevent duplicate increments on retries
+    private var lastDailyActivityUpdate: Date?
+
+    /// Debounce task for batching rapid stat pushes (e.g. per-card recordCategoryResult)
+    private var statsSyncTask: Task<Void, Never>?
+    private let statsSyncDebounceSeconds: UInt64 = 3
 
     private init() {
         lastSyncDate = UserDefaults.standard.object(forKey: lastSyncKey) as? Date
@@ -452,12 +460,14 @@ class CloudSyncManager: ObservableObject {
         print("☁️ Syncing \(allCardIds.count) card progress records to cloud")
         #endif
 
-        // Build a map of existing card progress IDs from cloud
+        // Build maps of existing cloud data for preserving values
         var existingProgressIds: [UUID: UUID] = [:] // cardId -> progressId
+        var existingProgress: [UUID: CloudCardProgress] = [:] // cardId -> full record
         for progress in cloudProgress {
             if let progressId = progress.id {
                 existingProgressIds[progress.cardId] = progressId
             }
+            existingProgress[progress.cardId] = progress
         }
 
         // Build all progress records
@@ -474,9 +484,9 @@ class CloudSyncManager: ObservableObject {
                 isMastered: mergedMastered.contains(cardId),
                 isSaved: mergedSaved.contains(cardId),
                 isFlagged: mergedFlagged.contains(cardId),
-                timesStudied: 0,
-                timesCorrect: 0,
-                lastStudiedAt: Date(),
+                timesStudied: existingProgress[cardId]?.timesStudied ?? 0,
+                timesCorrect: existingProgress[cardId]?.timesCorrect ?? 0,
+                lastStudiedAt: existingProgress[cardId]?.lastStudiedAt,
                 createdAt: nil,
                 updatedAt: nil
             )
@@ -645,7 +655,7 @@ class CloudSyncManager: ObservableObject {
                     contentCategory: ContentCategory(rawValue: cloudCard.contentCategory) ?? .fundamentals,
                     nclexCategory: NCLEXCategory(rawValue: cloudCard.nclexCategory) ?? .physiological,
                     difficulty: Difficulty(rawValue: cloudCard.difficulty) ?? .medium,
-                    questionType: .standard,
+                    questionType: QuestionType(rawValue: cloudCard.questionType) ?? .standard,
                     isPremium: false,
                     isUserCreated: true
                 )
@@ -656,9 +666,9 @@ class CloudSyncManager: ObservableObject {
         // Save merged cards locally
         persistence.saveUserCards(Array(mergedCards.values))
 
-        // Upload local cards to cloud
-        for card in localCards {
-            let cloudCard = CloudUserCard(
+        // Upload local cards to cloud (batched)
+        let cloudCards2 = localCards.map { card in
+            CloudUserCard(
                 id: card.id,
                 userId: userId,
                 question: card.question,
@@ -668,14 +678,19 @@ class CloudSyncManager: ObservableObject {
                 contentCategory: card.contentCategory.rawValue,
                 nclexCategory: card.nclexCategory.rawValue,
                 difficulty: card.difficulty.rawValue,
+                questionType: card.questionType.rawValue,
                 isDeleted: false,
                 createdAt: nil,
                 updatedAt: nil
             )
+        }
 
+        let cardBatchSize = 100
+        for i in stride(from: 0, to: cloudCards2.count, by: cardBatchSize) {
+            let batch = Array(cloudCards2[i..<min(i + cardBatchSize, cloudCards2.count)])
             try await client
                 .from("user_cards")
-                .upsert(cloudCard, onConflict: "id")
+                .upsert(batch, onConflict: "id")
                 .execute()
         }
     }
@@ -721,9 +736,9 @@ class CloudSyncManager: ObservableObject {
         // Save merged sets locally
         persistence.saveStudySets(Array(mergedSets.values))
 
-        // Upload local sets to cloud
-        for set in localSets {
-            let cloudSet = CloudStudySet(
+        // Upload local sets to cloud (batched)
+        let cloudSets2 = localSets.map { set in
+            CloudStudySet(
                 id: set.id,
                 userId: userId,
                 name: set.name,
@@ -733,10 +748,14 @@ class CloudSyncManager: ObservableObject {
                 createdAt: nil,
                 updatedAt: nil
             )
+        }
 
+        let setBatchSize = 100
+        for i in stride(from: 0, to: cloudSets2.count, by: setBatchSize) {
+            let batch = Array(cloudSets2[i..<min(i + setBatchSize, cloudSets2.count)])
             try await client
                 .from("study_sets")
-                .upsert(cloudSet, onConflict: "id")
+                .upsert(batch, onConflict: "id")
                 .execute()
         }
     }
@@ -828,6 +847,92 @@ class CloudSyncManager: ObservableObject {
             #if DEBUG
             print("☁️ Error saving test result: \(error)")
             #endif
+            PendingSyncManager.shared.enqueueTestResult(
+                PendingTestResult(
+                    questionCount: questionCount,
+                    correctCount: correctCount,
+                    timeTaken: timeTaken,
+                    categoryBreakdown: categoryBreakdown
+                )
+            )
+        }
+    }
+
+    // MARK: - Incremental User Stats Push
+
+    /// Debounced one-way push of current local stats to `user_stats`.
+    /// Safe to call frequently (e.g. per-card); coalesces into a single write after 3 seconds.
+    func syncUserStatsToCloud() {
+        statsSyncTask?.cancel()
+        statsSyncTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: statsSyncDebounceSeconds * 1_000_000_000)
+            } catch {
+                return // cancelled
+            }
+            await syncUserStatsToCloudNow()
+        }
+    }
+
+    /// Immediate (non-debounced) push of local stats to `user_stats`.
+    /// Call this when the app is about to background so we don't lose the pending debounce.
+    func syncUserStatsToCloudNow() async {
+        statsSyncTask?.cancel()
+        statsSyncTask = nil
+
+        guard isSyncEnabled else { return }
+        guard AuthManager.shared.isAuthenticated else { return }
+
+        do {
+            let session = try await client.auth.session
+            let userId = session.user.id
+
+            let persistence = PersistenceManager.shared
+            let localStats = persistence.loadUserStats()
+            let localXP = DailyGoalsManager.shared.totalXP
+            let localStreak = DailyGoalsManager.shared.currentStreak
+            let localLongestStreak = DailyGoalsManager.shared.longestStreak
+
+            // Convert category accuracy to cloud format
+            var cloudCatAcc: [String: [String: Int]] = [:]
+            for (category, stats) in localStats.categoryAccuracy {
+                cloudCatAcc[category] = ["correct": stats.correct, "total": stats.total]
+            }
+
+            let dateFormatter = ISO8601DateFormatter()
+            let uploadStats = CloudUserStats(
+                id: nil,
+                userId: userId,
+                totalCardsStudied: localStats.totalCardsStudied,
+                totalCorrect: localStats.totalCorrectAnswers,
+                totalIncorrect: localStats.totalCardsStudied - localStats.totalCorrectAnswers,
+                currentStreak: localStreak,
+                longestStreak: max(localLongestStreak, localStreak),
+                lastStudyDate: localStats.lastStudyDate.map { dateFormatter.string(from: $0) },
+                totalXp: localXP,
+                currentLevel: DailyGoalsManager.shared.currentLevel,
+                studySessionsCompleted: localStats.sessions.count,
+                testsCompleted: localStats.testsCompleted,
+                perfectSessions: localStats.perfectTests,
+                categoryAccuracy: cloudCatAcc.isEmpty ? nil : cloudCatAcc,
+                totalTimeSpentSeconds: localStats.totalTimeSpentSeconds,
+                createdAt: nil,
+                updatedAt: nil
+            )
+
+            try await client
+                .from("user_stats")
+                .upsert(uploadStats, onConflict: "user_id")
+                .execute()
+
+            #if DEBUG
+            print("☁️ Pushed user_stats to cloud (incremental)")
+            #endif
+        } catch {
+            #if DEBUG
+            print("☁️ Error pushing user_stats: \(error)")
+            #endif
+            PendingSyncManager.shared.enqueue(.userStats)
         }
     }
 
@@ -857,6 +962,14 @@ class CloudSyncManager: ObservableObject {
 
     func updateDailyActivity(cardsStudied: Int, correctAnswers: Int, xpEarned: Int, minutesStudied: Int = 0) async {
         guard isSyncEnabled else { return }
+
+        // Prevent duplicate increments from rapid retries (within 2 seconds)
+        let now = Date()
+        if let lastUpdate = lastDailyActivityUpdate,
+           now.timeIntervalSince(lastUpdate) < 2.0 {
+            return
+        }
+        lastDailyActivityUpdate = now
 
         do {
             let session = try await client.auth.session
@@ -1156,5 +1269,107 @@ class CloudSyncManager: ObservableObject {
         #if DEBUG
         print("☁️ Card report submitted: \(reason)")
         #endif
+    }
+}
+
+// MARK: - Pending Sync Manager
+
+/// Lightweight UserDefaults-backed queue for retrying failed cloud writes.
+enum PendingSyncOperation: String, Codable {
+    case userStats
+}
+
+struct PendingTestResult: Codable {
+    let questionCount: Int
+    let correctCount: Int
+    let timeTaken: Int?
+    let categoryBreakdown: [String: Int]
+}
+
+@MainActor
+class PendingSyncManager {
+    static let shared = PendingSyncManager()
+
+    private let opsKey = "pendingSyncOperations"
+    private let testResultsKey = "pendingSyncTestResults"
+
+    private init() {}
+
+    // MARK: - Enqueue
+
+    func enqueue(_ operation: PendingSyncOperation) {
+        var ops = loadOps()
+        // Avoid duplicates for idempotent operations
+        if !ops.contains(operation.rawValue) {
+            ops.append(operation.rawValue)
+            UserDefaults.standard.set(ops, forKey: opsKey)
+        }
+        #if DEBUG
+        print("☁️ Enqueued pending sync: \(operation.rawValue)")
+        #endif
+    }
+
+    func enqueueTestResult(_ result: PendingTestResult) {
+        var results = loadTestResults()
+        results.append(result)
+        if let data = try? JSONEncoder().encode(results) {
+            UserDefaults.standard.set(data, forKey: testResultsKey)
+        }
+        #if DEBUG
+        print("☁️ Enqueued pending test result")
+        #endif
+    }
+
+    // MARK: - Flush
+
+    func flushPendingSync() {
+        let ops = loadOps()
+        let testResults = loadTestResults()
+
+        guard !ops.isEmpty || !testResults.isEmpty else { return }
+
+        #if DEBUG
+        print("☁️ Flushing pending sync: \(ops.count) ops, \(testResults.count) test results")
+        #endif
+
+        Task {
+            var opsSucceeded = true
+            var testResultsSucceeded = true
+
+            for rawOp in ops {
+                guard let op = PendingSyncOperation(rawValue: rawOp) else { continue }
+                switch op {
+                case .userStats:
+                    await CloudSyncManager.shared.syncUserStatsToCloudNow()
+                }
+            }
+
+            for result in testResults {
+                await CloudSyncManager.shared.saveTestResult(
+                    questionCount: result.questionCount,
+                    correctCount: result.correctCount,
+                    timeTaken: result.timeTaken,
+                    categoryBreakdown: result.categoryBreakdown
+                )
+            }
+
+            // Clear queues only after successful processing
+            UserDefaults.standard.removeObject(forKey: opsKey)
+            UserDefaults.standard.removeObject(forKey: testResultsKey)
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func loadOps() -> [String] {
+        UserDefaults.standard.stringArray(forKey: opsKey) ?? []
+    }
+
+    private func loadTestResults() -> [PendingTestResult] {
+        guard let data = UserDefaults.standard.data(forKey: testResultsKey),
+              let results = try? JSONDecoder().decode([PendingTestResult].self, from: data) else {
+            return []
+        }
+        return results
     }
 }

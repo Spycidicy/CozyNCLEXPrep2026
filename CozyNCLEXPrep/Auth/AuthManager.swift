@@ -530,19 +530,23 @@ enum AuthError: Error, LocalizedError {
     }
 
     static func from(_ error: Error) -> AuthError {
+        // Check error description for both localized and debug representations
+        // to handle all locales correctly
         let message = error.localizedDescription.lowercased()
+        let debugDescription = String(describing: error).lowercased()
+        let combined = message + " " + debugDescription
 
-        if message.contains("invalid") && message.contains("email") {
+        if combined.contains("invalid") && combined.contains("email") {
             return .invalidEmail
-        } else if message.contains("password") && message.contains("weak") {
+        } else if combined.contains("password") && (combined.contains("weak") || combined.contains("too short")) {
             return .weakPassword
-        } else if message.contains("already") || message.contains("exists") {
+        } else if combined.contains("already") || combined.contains("exists") || combined.contains("user_already_exists") {
             return .emailInUse
-        } else if message.contains("not found") || message.contains("no user") {
+        } else if combined.contains("not found") || combined.contains("no user") || combined.contains("user_not_found") {
             return .userNotFound
-        } else if message.contains("wrong") || message.contains("incorrect") {
+        } else if combined.contains("invalid_credentials") || combined.contains("wrong") || combined.contains("incorrect") {
             return .wrongPassword
-        } else if message.contains("network") || message.contains("connection") {
+        } else if combined.contains("network") || combined.contains("connection") || error is URLError {
             return .networkError
         }
 

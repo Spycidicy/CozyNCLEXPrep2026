@@ -247,15 +247,15 @@ struct IntroOnboardingView: View {
                     if pages[currentPage].pageType == .promise {
                         VStack(spacing: 14) {
                             OnboardingPromiseRow(text: "I'll study a little every day", isChecked: promiseChecks[0], delay: 0) {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { promiseChecks[0] = true }
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { promiseChecks[0].toggle() }
                                 checkAllPromises()
                             }
                             OnboardingPromiseRow(text: "I won't give up when it gets hard", isChecked: promiseChecks[1], delay: 1) {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { promiseChecks[1] = true }
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { promiseChecks[1].toggle() }
                                 checkAllPromises()
                             }
                             OnboardingPromiseRow(text: "I believe I can pass the NCLEX", isChecked: promiseChecks[2], delay: 2) {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { promiseChecks[2] = true }
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { promiseChecks[2].toggle() }
                                 checkAllPromises()
                             }
                         }
@@ -401,6 +401,13 @@ struct IntroOnboardingView: View {
                                 }
                             }
                         }
+
+                        Button(action: { onComplete() }) {
+                            Text("Already have an account? **Log In**")
+                                .font(.system(size: 14, weight: .regular, design: .rounded))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.top, 4)
                     }
 
                     if currentPage < pages.count - 1 && pages[currentPage].pageType != .promise {

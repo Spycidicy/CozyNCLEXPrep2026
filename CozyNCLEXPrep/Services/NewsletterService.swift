@@ -40,9 +40,9 @@ class NewsletterService: ObservableObject {
             isSubscribing = false
             return true
         } catch {
-            // If already subscribed, that's fine
-            if error.localizedDescription.contains("duplicate") ||
-               error.localizedDescription.contains("unique") {
+            // If already subscribed (unique constraint violation), that's fine
+            let errorString = String(describing: error)
+            if errorString.contains("23505") || errorString.contains("duplicate") || errorString.contains("unique") {
                 isSubscribing = false
                 return true
             }

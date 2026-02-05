@@ -20,13 +20,15 @@ struct AuthView: View {
     @State private var showError = false
     @State private var errorMessage = ""
     @State private var showResetPassword = false
-    @State private var subscribeToNewsletter = true
+    @State private var subscribeToNewsletter = false
 
     var onAuthenticated: (() -> Void)?
+    var onContinueAsGuest: (() -> Void)?
 
-    init(startInSignUpMode: Bool = false, onAuthenticated: (() -> Void)? = nil) {
+    init(startInSignUpMode: Bool = false, onAuthenticated: (() -> Void)? = nil, onContinueAsGuest: (() -> Void)? = nil) {
         _isSignUp = State(initialValue: startInSignUpMode)
         self.onAuthenticated = onAuthenticated
+        self.onContinueAsGuest = onContinueAsGuest
     }
 
     var body: some View {
@@ -197,7 +199,34 @@ struct AuthView: View {
                         .foregroundColor(.mintGreen)
                     }
                     .padding(.top, 8)
-                    .padding(.bottom, 40)
+
+                    // Continue as Guest
+                    if onContinueAsGuest != nil {
+                        VStack(spacing: 8) {
+                            Rectangle()
+                                .fill(Color.gray.opacity(0.2))
+                                .frame(height: 1)
+                                .padding(.horizontal, 40)
+
+                            Button(action: { onContinueAsGuest?() }) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "person.crop.circle.badge.questionmark")
+                                        .font(.system(size: 16))
+                                    Text("Try without an account")
+                                        .font(.system(size: 15, weight: .medium, design: .rounded))
+                                }
+                                .foregroundColor(.secondary)
+                            }
+                            .padding(.top, 4)
+
+                            Text("Your progress saves locally")
+                                .font(.system(size: 12, design: .rounded))
+                                .foregroundColor(.secondary.opacity(0.7))
+                        }
+                        .padding(.top, 8)
+                    }
+
+                    Spacer().frame(height: 40)
                 }
             }
         }

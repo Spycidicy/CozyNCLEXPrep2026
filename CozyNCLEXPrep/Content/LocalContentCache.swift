@@ -141,7 +141,9 @@ class LocalContentCache {
 
     /// Check if cache exists and has content
     var hasCachedContent: Bool {
-        loadCachedFlashcards() != nil
+        guard let cacheURL = cacheURL else { return false }
+        let fileURL = cacheURL.appendingPathComponent(cacheFileName)
+        return fileManager.fileExists(atPath: fileURL.path)
     }
 }
 
